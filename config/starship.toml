@@ -1,0 +1,307 @@
+add_newline = true
+command_timeout = 1000
+
+# ===== THEME SELECTION =====
+# Change this to switch themes (matches omarchy theme names)
+# Available: tokyo-night, catppuccin, catppuccin-latte, gruvbox, nord,
+#            everforest, kanagawa, rose-pine, flexoki-light, matte-black,
+#            osaka-jade, ristretto
+palette = "tokyo-night"
+
+format = """
+$localip$os$username$hostname$cmd_duration\
+$fill\
+$git_branch$git_status$git_commit\
+$c\
+$cpp\
+$java\
+$kotlin\
+$rust\
+$zig\
+$python\
+$golang\
+$lua\
+$docker_context\
+$kubernetes
+$directory$status$character"""
+
+[fill]
+symbol = " "
+
+[hostname]
+ssh_only = false
+disabled = false
+style = "bold info"
+format = '[@$hostname]($style)'
+
+[localip]
+ssh_only = false
+disabled = false
+style = "bold info"
+format = '([\[$localipv4\]]($style))'
+
+# OS indicator with arrow
+[os]
+disabled = false
+format = '[ $symbol ]($style)'
+style = "bold info"
+
+# Username with arrow
+[username]
+show_always = true
+format = "[$user]($style)"
+style_user = "bold info"
+style_root = "bold error"
+
+# Directory: ~ or / .../parent/current
+[directory]
+read_only = " 󰌾"
+truncation_length = 0
+truncate_to_repo = false
+format = "[  $path ]($style)"
+style = "bold primary"
+truncation_symbol = "../"
+
+# Git branch
+[git_branch]
+format = '([$symbol$branch]($style))'
+symbol = " "
+style = "bold primary"
+#truncation_length = 0  # No truncation
+
+# Git status - monochrome symbols only
+[git_status]
+format = '([ \[$all_status$ahead_behind\]]($style))'
+style = "bold primary"
+conflicted = "="
+ahead = "⇡"
+behind = "⇣"
+diverged = "⇕"
+up_to_date = ""
+untracked = "?"
+stashed = "$"
+modified = "!"
+staged = "+"
+renamed = "»"
+deleted = "✘"
+
+# Git commit info
+[git_commit]
+commit_hash_length = 7
+format = '([ <$hash> ]($style))'
+style = "info"
+only_detached = false
+tag_disabled = false
+
+# Elapsed time - monochrome hourglass symbol, starting from 1s
+[cmd_duration]
+min_time = 1  # Show always
+show_milliseconds = false
+format = '[ ⏱ $duration]($style)'
+style = "bold error"
+
+[status]
+disabled = false
+symbol = '❯'
+format = '[\[$status\] ](bold error)'
+
+# Prompt character on new line
+[character]
+success_symbol = "[❯](bold primary)"
+error_symbol = '[❯](bold error)'
+vimcmd_symbol = "[❮](bold primary)"
+
+[os.symbols]
+Alpine = "⛰"
+Arch = " "
+CentOS = " "
+Debian = " "
+FreeBSD = " "
+Gentoo = " "
+Kali = " "
+Linux = " "
+Macos = " "
+OpenBSD = "󰈺 "
+Ubuntu = " "
+Unknown = " "
+Windows = "󰍲 "
+
+# Add these language and container modules to your ~/.config/starship.toml
+# All styled in consistent blue with version numbers in brackets
+
+# C Programming
+[c]
+symbol = ' c'
+format = '[\[$symbol\]]($style)'
+style = "lang"
+detect_extensions = ["c", "h"]
+
+# C++ Programming
+[cpp]
+symbol = ' c++'
+format = '[\[$symbol\]]($style)'
+style = "lang"
+detect_extensions = ["cpp", "cxx", "cc", "c++", "hpp", "hxx", "h++"]
+
+# Java
+[java]
+symbol = ' java'
+format = '[\[$symbol\]]($style)'
+style = "lang"
+detect_files = ["pom.xml", "build.gradle.kts", "build.sbt", ".java-version"]
+detect_extensions = ["java", "class", "jar"]
+
+# Kotlin
+[kotlin]
+symbol = ' kotlin'
+format = '[\[$symbol\]]($style)'
+style = "lang"
+kotlin_binary = 'kotlinc'
+detect_extensions = ["kt", "kts"]
+detect_files = ["build.gradle.kts", "build.gradle", "settings.gradle.kts", "gradle.properties"]
+detect_folders = ["src/main/kotlin", "src/test/kotlin"]
+
+# Rust
+[rust]
+symbol = '󱘗 rust'
+format = '[\[$symbol\]]($style)'
+style = "lang"
+detect_files = ["Cargo.toml"]
+detect_extensions = ["rs"]
+
+# Zig
+[zig]
+symbol = ' zig'
+format = '[\[$symbol\]]($style)'
+style = "lang"
+detect_files = ["build.zig"]
+detect_extensions = ["zig"]
+
+# Python
+[python]
+symbol = ' python'
+format = '[\[$symbol\]]($style)'
+style = "lang"
+detect_files = [".python-version", "Pipfile", "pyproject.toml", "requirements.txt", "setup.py", "__init__.py"]
+detect_extensions = ["py"]
+
+# Go
+[golang]
+symbol = ' go'
+format = '[\[$symbol\]]($style)'
+style = "lang"
+detect_files = ["go.mod", "go.sum", "glide.yaml", "Gopkg.yml", "Gopkg.lock", ".go-version"]
+detect_extensions = ["go"]
+
+# Lua
+[lua]
+symbol = " lua"
+format = '[\[$symbol\]]($style)'
+style = "lang"
+detect_files = [".lua-version"]
+detect_extensions = ["lua"]
+
+# Docker
+[docker_context]
+symbol = " docker"
+format = '[\[$symbol$context\]]($style)'
+style = "container"
+only_with_files = true
+detect_files = ["docker-compose.yml", "docker-compose.yaml", "Dockerfile"]
+detect_folders = [".devcontainer"]
+
+# Kubernetes
+[kubernetes]
+symbol = "☸ kubernetes"
+format = '[\[$symbol$context\]]($style)'
+style = "container"
+disabled = false
+
+
+# ===== COLOR PALETTES =====
+# Change the palette line at the top to switch themes
+# Semantic color names: primary (green), info (yellow), error (red), lang (blue), container (purple)
+
+[palettes.tokyo-night]
+primary = "#9ece6a"      # green - directory, git, character
+info = "#e0af68"         # yellow - time, user, host, os, git_commit
+error = "#f7768e"        # red - errors, duration
+lang = "#7aa2f7"         # blue - language modules
+container = "#bb9af7"    # purple - docker/k8s
+
+[palettes.catppuccin]
+primary = "#a6e3a1"      # green
+info = "#f9e2af"         # yellow
+error = "#f38ba8"        # red
+lang = "#89b4fa"         # blue
+container = "#cba6f7"    # mauve
+
+[palettes.gruvbox]
+primary = "#b8bb26"      # green
+info = "#fabd2f"         # yellow
+error = "#fb4934"        # red
+lang = "#83a598"         # blue
+container = "#d3869b"    # purple
+
+[palettes.nord]
+primary = "#a3be8c"      # green
+info = "#ebcb8b"         # yellow
+error = "#bf616a"        # red
+lang = "#88c0d0"         # frost blue
+container = "#b48ead"    # aurora purple
+
+[palettes.everforest]
+primary = "#a7c080"      # green
+info = "#dbbc7f"         # yellow
+error = "#e67e80"        # red
+lang = "#7fbbb3"         # blue
+container = "#d699b6"    # purple
+
+[palettes.kanagawa]
+primary = "#98bb6c"      # green
+info = "#e6c384"         # yellow
+error = "#e82424"        # red
+lang = "#7e9cd8"         # blue
+container = "#957fb8"    # purple
+
+[palettes.rose-pine]
+primary = "#9ccfd8"      # foam (green-ish)
+info = "#f6c177"         # gold (yellow)
+error = "#eb6f92"        # love (red)
+lang = "#31748f"         # pine (blue)
+container = "#c4a7e7"    # iris (purple)
+
+[palettes.catppuccin-latte]
+primary = "#40a02b"      # green
+info = "#df8e1d"         # yellow
+error = "#d20f39"        # red
+lang = "#1e66f5"         # blue
+container = "#ea76cb"    # magenta
+
+[palettes.flexoki-light]
+primary = "#879A39"      # green
+info = "#D0A215"         # yellow
+error = "#D14D41"        # red
+lang = "#205EA6"         # blue
+container = "#CE5D97"    # magenta
+
+[palettes.matte-black]
+primary = "#FFC107"      # green (warm tone)
+info = "#e68e0d"         # yellow/orange
+error = "#D35F5F"        # red
+lang = "#f59e0b"         # blue (orange tone)
+container = "#B91C1C"    # magenta (deep red)
+
+[palettes.osaka-jade]
+primary = "#549e6a"      # green
+info = "#E5C736"         # yellow
+error = "#FF5345"        # red
+lang = "#509475"         # blue
+container = "#D2689C"    # magenta
+
+[palettes.ristretto]
+primary = "#adda78"      # green
+info = "#f9cc6c"         # yellow
+error = "#fd6883"        # red
+lang = "#f38d70"         # blue (coral)
+container = "#a8a9eb"    # magenta
