@@ -1,0 +1,61 @@
+# Git Configuration
+# Cross-platform with directory-based identity switching
+
+# =============================================================================
+# Core Settings
+# =============================================================================
+[init]
+	defaultBranch = main
+
+[pull]
+	rebase = true              # Rebase (instead of merge) on pull
+
+[push]
+	autoSetupRemote = true     # Automatically set upstream branch on push
+
+[diff]
+	algorithm = histogram      # Clearer diffs on moved/edited lines
+	colorMoved = plain         # Highlight moved blocks in diffs
+	mnemonicPrefix = true      # More intuitive refs in diff output
+
+[commit]
+	verbose = true             # Include diff comment in commit message template
+
+[column]
+	ui = auto                  # Output in columns when possible
+
+[branch]
+	sort = -committerdate      # Sort branches by most recent commit first
+
+[tag]
+	sort = -version:refname    # Sort version numbers as you would expect
+
+[rerere]
+	enabled = true             # Record and reuse conflict resolutions
+	autoupdate = true          # Apply stored conflict resolutions automatically
+
+# =============================================================================
+# Identity (remote URL-based switching)
+# =============================================================================
+#[user]
+#	name = name
+#	email = email
+
+# Include config based on remote URL (requires SSH host aliases in ~/.ssh/config)
+# Clone personal repos: git clone git@github.com-personal:user/repo.git
+# Clone work repos: git clone git@github.com-work:user/repo.git
+[includeIf "hasconfig:remote.*.url:git@github.com-personal:*/**"]
+	path = ~/.config/git/config_personal
+
+[includeIf "hasconfig:remote.*.url:git@github.com-work:*/**"]
+	path = ~/.config/git/config_work
+
+# =============================================================================
+# Signing (SSH-based)
+# =============================================================================
+[gpg]
+	format = ssh
+
+[commit]
+	gpgsign = true
+

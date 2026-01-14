@@ -1,0 +1,7 @@
+# Git Work Signing
+# Used for repos cloned with: git clone git@github.com-work:user/repo.git
+#
+# TODO: Add your work signing key
+
+[user]
+	# signingkey = sk-ssh-ed25519@openssh.com AAAA...
