@@ -37,9 +37,9 @@
 # =============================================================================
 # Identity (remote URL-based switching)
 # =============================================================================
-#[user]
-#	name = name
-#	email = email
+[user]
+	name = Dmitrii Bozhko
+	email = dvbozhko@gmail.com
 
 # Include config based on remote URL (requires SSH host aliases in ~/.ssh/config)
 # Clone personal repos: git clone git@github.com-personal:user/repo.git

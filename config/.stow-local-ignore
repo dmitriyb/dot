@@ -1,0 +1,14 @@
+# Stow ignore patterns for config package
+# Files matching these patterns won't be symlinked
+
+# Documentation
+README\.md
+LICENSE
+
+# Editor swap/backup files
+.*\.swp
+.*\.bak
+.*~
+
+# macOS
+\.DS_Store
