@@ -97,7 +97,7 @@ tag_disabled = false
 [cmd_duration]
 min_time = 1  # Show always
 show_milliseconds = false
-format = '[ ⏱ $duration]($style)'
+format = '[ ⏱  $duration]($style)'
 style = "bold error"
 
 [status]
