@@ -1,39 +1,87 @@
 # Fish shell configuration
+# Cross-platform config using capability-based detection (Badya pattern)
 
-# Environment variables
+# =============================================================================
+# Helper Functions (Badya pattern)
+# =============================================================================
+
+# Check if command exists
+function _have
+    command -q $argv[1]
+end
+
+# Source file if readable
+function _source_if
+    test -r $argv[1]; and source $argv[1]
+end
+
+# =============================================================================
+# Platform Detection (Homebrew for macOS)
+# =============================================================================
+
+# Homebrew (macOS Apple Silicon)
+if test -d /opt/homebrew
+    eval (/opt/homebrew/bin/brew shellenv)
+end
+
+# Homebrew (macOS Intel)
+if test -d /usr/local/Homebrew
+    eval (/usr/local/bin/brew shellenv)
+end
+
+# =============================================================================
+# Environment Variables
+# =============================================================================
+
 set -gx SUDO_EDITOR "$EDITOR"
 set -gx BAT_THEME ansi
 
-set -gx GPG_TTY $(tty)
-gpg-connect-agent updatestartuptty /bye >/dev/null
+# GPG configuration
+if _have gpg-connect-agent
+    set -gx GPG_TTY (tty)
+    gpg-connect-agent updatestartuptty /bye >/dev/null 2>&1
+end
 
 # Add local bin to PATH
 set -gx PATH $HOME/.local/bin $PATH
 
+# =============================================================================
+# Omarchy Theme Integration
+# =============================================================================
+
 # Load Omarchy theme for fish
-if test -f ~/.config/omarchy/current/theme/fish.theme
-    source ~/.config/omarchy/current/theme/fish.theme
-end
+_source_if ~/.config/omarchy/current/theme/fish.theme
 
 # Reload theme on SIGUSR1 signal (triggered by omarchy theme switching)
 function __omarchy_reload_theme --on-signal SIGUSR1
-    if test -f ~/.config/omarchy/current/theme/fish.theme
-        source ~/.config/omarchy/current/theme/fish.theme
-    end
+    _source_if ~/.config/omarchy/current/theme/fish.theme
 end
 
+# =============================================================================
+# Tool Initialization (capability-based)
+# =============================================================================
+
 # Initialize zoxide if available
-if command -q zoxide
+if _have zoxide
     zoxide init fish | source
 end
 
 # Initialize starship prompt
-if command -q starship
+if _have starship
     starship init fish | source
 end
 
+# Initialize direnv if available
+if _have direnv
+    direnv hook fish | source
+end
+
+# =============================================================================
+# Aliases (capability-based)
+# =============================================================================
+
 # File system aliases (eza)
-if command -q eza
+if _have eza
     alias ls 'eza -lh --group-directories-first --icons=auto'
     alias lsa 'ls -a'
     alias lt 'eza --tree --level=2 --long --icons --git'
@@ -41,10 +89,12 @@ if command -q eza
 end
 
 # FZF with preview
-alias ff 'fzf --preview "bat --style=numbers --color=always {}"'
+if _have fzf; and _have bat
+    alias ff 'fzf --preview "bat --style=numbers --color=always {}"'
+end
 
 # Directory navigation with zoxide
-if command -q zoxide
+if _have zoxide
     function zd
         if test (count $argv) -eq 0
             builtin cd ~
@@ -57,9 +107,11 @@ if command -q zoxide
     alias cd zd
 end
 
-# Open function
-function open
-    xdg-open $argv >/dev/null 2>&1 &
+# Open function (capability-based: macOS has 'open', Linux uses 'xdg-open')
+if not _have open
+    function open
+        xdg-open $argv >/dev/null 2>&1 &
+    end
 end
 
 # Directory navigation shortcuts
