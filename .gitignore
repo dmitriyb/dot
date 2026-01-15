@@ -15,3 +15,6 @@
 # Temporary files
 *.tmp
 *.bak
+
+# TPM plugins (installed at runtime)
+config/tmux/plugins/
