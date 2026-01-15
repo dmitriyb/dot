@@ -4,4 +4,4 @@
 # TODO: Add your work signing key
 
 [user]
-	# signingkey = sk-ssh-ed25519@openssh.com AAAA...
+	signingkey = key::sk-ssh-ed25519@openssh.com AAAAGnNrLXNzaC1lZDI1NTE5QG9wZW5zc2guY29tAAAAIMbxh0MsNWwmtVW8JMG22TGQ2UBCCKnmH9GQyNh9k3N2AAAACnNzaDpnaXRodWI= 

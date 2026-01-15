@@ -4,10 +4,12 @@
 # Dynamic theme colors from Omarchy (optional include)
 config-file = ?"~/.config/omarchy/current/theme/ghostty.conf"
 
+# Local machine-specific overrides (font size, etc.)
+config-file = ?"~/.config/ghostty/local.conf"
+
 # Font
 font-family = "JetBrainsMono Nerd Font"
 font-style = Regular
-font-size = 9
 
 # Window
 window-theme = ghostty
