@@ -44,6 +44,16 @@ if pgrep -x ghostty &>/dev/null; then
     killall -SIGUSR2 ghostty 2>/dev/null || true
 fi
 
+# Update btop theme symlink and reload
+BTOP_THEMES_DIR="${XDG_CONFIG_HOME:-$HOME/.config}/btop/themes"
+if [ -d "${XDG_CONFIG_HOME:-$HOME/.config}/btop" ]; then
+    mkdir -p "$BTOP_THEMES_DIR"
+    ln -sfn "$THEMES_DIR/current/btop.theme" "$BTOP_THEMES_DIR/current.theme"
+    if pgrep -x btop &>/dev/null; then
+        pkill -USR2 btop 2>/dev/null || true
+    fi
+fi
+
 # Reload neovim colorscheme (if nvr is installed)
 if command -v nvr &>/dev/null; then
     THEME_FILE="$THEMES_DIR/$THEME_NAME/neovim.lua"

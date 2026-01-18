@@ -4,6 +4,7 @@ Personal configuration files managed with [GNU Stow](https://www.gnu.org/softwar
 
 ## Contents
 
+- **btop** - Btop system monitor
 - **fish** - Fish shell configuration
 - **ghostty** - Ghostty terminal emulator
 - **git** - Git configuration
@@ -56,6 +57,7 @@ Omarchy takes precedence. Use `omarchy-theme-set` instead. The fallback chain en
 | Fish | Yes (SIGUSR1) |
 | Tmux | Yes (source-file) |
 | Ghostty | Yes (SIGUSR2) |
+| Btop | Yes (SIGUSR2) |
 | Starship | Yes (next prompt) |
 | Neovim | Optional (requires nvr) |
 
