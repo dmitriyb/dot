@@ -20,16 +20,40 @@ fi
 ln -sfn "$THEME_NAME" "$THEMES_DIR/current"
 
 # Update starship palette if starship.toml exists
-if [ -f "${XDG_CONFIG_HOME:-$HOME/.config}/starship.toml" ]; then
-    sed -i.bak "s/^palette = .*/palette = \"$THEME_NAME\"/" \
-        "${XDG_CONFIG_HOME:-$HOME/.config}/starship.toml" 2>/dev/null
-    rm -f "${XDG_CONFIG_HOME:-$HOME/.config}/starship.toml.bak"
+STARSHIP_CONFIG="${XDG_CONFIG_HOME:-$HOME/.config}/starship.toml"
+if [ -f "$STARSHIP_CONFIG" ]; then
+    if [[ "$OSTYPE" == "darwin"* ]]; then
+        sed -i '' "s/^palette = .*/palette = \"$THEME_NAME\"/" "$STARSHIP_CONFIG"
+    else
+        sed -i "s/^palette = .*/palette = \"$THEME_NAME\"/" "$STARSHIP_CONFIG"
+    fi
 fi
 
-# Signal fish to reload theme
-pkill -USR1 fish 2>/dev/null || true
+# Reload fish theme
+if command -v fish &>/dev/null; then
+    pkill -USR1 fish 2>/dev/null || true
+fi
 
-# Reload tmux config if tmux is running
-tmux source-file ~/.config/tmux/tmux.conf 2>/dev/null || true
+# Reload tmux theme
+if command -v tmux &>/dev/null && tmux list-sessions &>/dev/null; then
+    tmux source-file ~/.config/tmux/tmux.conf 2>/dev/null
+fi
 
-echo "Theme: $THEME_NAME (restart ghostty/nvim for full effect)"
+# Reload ghostty config
+if pgrep -x ghostty &>/dev/null; then
+    killall -SIGUSR2 ghostty 2>/dev/null || true
+fi
+
+# Reload neovim colorscheme (if nvr is installed)
+if command -v nvr &>/dev/null; then
+    THEME_FILE="$THEMES_DIR/$THEME_NAME/neovim.lua"
+    if [ -f "$THEME_FILE" ]; then
+        # Extract colorscheme name from neovim.lua
+        COLORSCHEME=$(grep -o 'colorscheme = "[^"]*"' "$THEME_FILE" | cut -d'"' -f2)
+        if [ -n "$COLORSCHEME" ]; then
+            nvr --nostart --remote-send "<Cmd>colorscheme $COLORSCHEME<CR>" 2>/dev/null || true
+        fi
+    fi
+fi
+
+echo "Theme: $THEME_NAME"
