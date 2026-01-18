@@ -1,0 +1,12 @@
+#!/bin/bash
+# Show current theme
+# Usage: theme-current
+
+THEMES_DIR="${XDG_CONFIG_HOME:-$HOME/.config}/themes"
+
+if [ -L "$THEMES_DIR/current" ]; then
+    readlink "$THEMES_DIR/current" | sed -E 's/(^|-)([a-z])/\1\u\2/g; s/-/ /g'
+else
+    echo "No theme set"
+    exit 1
+fi

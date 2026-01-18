@@ -6,8 +6,8 @@ THEMES_DIR="${XDG_CONFIG_HOME:-$HOME/.config}/themes"
 THEME_NAME="$1"
 
 if [ -z "$THEME_NAME" ]; then
-    echo "Available themes:"
-    ls -1 "$THEMES_DIR" | grep -v '^current$'
+    echo "Usage: theme-set <theme-name>"
+    echo "Run 'theme-list' to see available themes"
     exit 0
 fi
 

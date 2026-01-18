@@ -1,0 +1,9 @@
+#!/bin/bash
+# List available themes
+# Usage: theme-list
+
+THEMES_DIR="${XDG_CONFIG_HOME:-$HOME/.config}/themes"
+
+find "$THEMES_DIR" -mindepth 1 -maxdepth 1 -type d -printf '%f\n' | sort | while read -r name; do
+    echo "$name" | sed -E 's/(^|-)([a-z])/\1\u\2/g; s/-/ /g'
+done
