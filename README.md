@@ -10,6 +10,7 @@ Personal configuration files managed with [GNU Stow](https://www.gnu.org/softwar
 - **nvim** - Neovim (LazyVim-based)
 - **tmux** - Tmux terminal multiplexer
 - **starship.toml** - Starship prompt
+- **themes** - Portable theme system (Tokyo Night, Catppuccin, Gruvbox, Kanagawa)
 
 ## Installation
 
@@ -27,19 +28,40 @@ brew install stow
 
 ### Setup
 
-Stow the configs:
+```bash
+cd ~/Work/dot
+stow config bin
+```
+
+## Themes
+
+Portable theme system that works on macOS and coexists with [omarchy](https://github.com/getomarchy/omarchy) on Linux.
+
+### On macOS (or Linux without omarchy)
 
 ```bash
-cd ~/Work/dot/config
-stow -t ~/.config .
+theme-list      # List available themes
+theme-current   # Show current theme
+theme-set <name> # Switch theme (hot-reloads fish, tmux, ghostty)
 ```
+
+### On Linux with omarchy
+
+Omarchy takes precedence. Use `omarchy-theme-set` instead. The fallback chain ensures apps load omarchy themes first, then dotfiles themes if omarchy isn't installed.
+
+### Supported apps
+
+| App | Hot Reload |
+|-----|------------|
+| Fish | Yes (SIGUSR1) |
+| Tmux | Yes (source-file) |
+| Ghostty | Yes (SIGUSR2) |
+| Starship | Yes (next prompt) |
+| Neovim | Optional (requires nvr) |
 
 ### Machine-specific overrides
 
-Some configs support local overrides that are not tracked in git:
-
 - **Ghostty**: Create `~/.config/ghostty/local.conf` for font-size, etc.
-- **Neovim**: `theme.lua` symlink to omarchy theme system (Linux-specific)
 
 ## License
 
