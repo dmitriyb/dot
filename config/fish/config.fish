@@ -39,15 +39,23 @@ end
 set -gx PATH $HOME/.local/bin $PATH
 
 # =============================================================================
-# Omarchy Theme Integration
+# Theme Integration (omarchy on Linux, dotfiles fallback on macOS)
 # =============================================================================
 
-# Load Omarchy theme for fish
-_source_if ~/.config/omarchy/current/theme/fish.theme
+# Load theme: prefer omarchy (Linux), fallback to dotfiles (macOS)
+if test -f ~/.config/omarchy/current/theme/fish.theme
+    source ~/.config/omarchy/current/theme/fish.theme
+else if test -f ~/.config/themes/current/fish.theme
+    source ~/.config/themes/current/fish.theme
+end
 
-# Reload theme on SIGUSR1 signal (triggered by omarchy theme switching)
-function __omarchy_reload_theme --on-signal SIGUSR1
-    _source_if ~/.config/omarchy/current/theme/fish.theme
+# Reload theme on SIGUSR1 signal (triggered by theme switching)
+function __reload_theme --on-signal SIGUSR1
+    if test -f ~/.config/omarchy/current/theme/fish.theme
+        source ~/.config/omarchy/current/theme/fish.theme
+    else if test -f ~/.config/themes/current/fish.theme
+        source ~/.config/themes/current/fish.theme
+    end
 end
 
 # =============================================================================

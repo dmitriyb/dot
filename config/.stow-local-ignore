@@ -12,3 +12,6 @@ LICENSE
 
 # macOS
 \.DS_Store
+
+# Theme symlink (managed by theme-set script, not stow)
+themes/current

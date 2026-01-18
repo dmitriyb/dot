@@ -1,8 +1,9 @@
 # Ghostty Terminal Configuration
 # Cross-platform (Linux + macOS)
 
-# Dynamic theme colors from Omarchy (optional include)
+# Dynamic theme colors (omarchy on Linux, dotfiles fallback on macOS)
 config-file = ?"~/.config/omarchy/current/theme/ghostty.conf"
+config-file = ?"~/.config/themes/current/ghostty.conf"
 
 # Local machine-specific overrides (font size, etc.)
 config-file = ?"~/.config/ghostty/local.conf"

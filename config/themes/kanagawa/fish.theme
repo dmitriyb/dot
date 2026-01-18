@@ -1,0 +1,32 @@
+# Kanagawa color scheme for fish shell
+
+set -g fish_color_normal dcd7ba
+set -g fish_color_command 7e9cd8
+set -g fish_color_keyword 957fb8
+set -g fish_color_quote c0a36e
+set -g fish_color_redirection dcd7ba
+set -g fish_color_end e6c384
+set -g fish_color_error c34043
+set -g fish_color_param 76946a
+set -g fish_color_comment 727169
+set -g fish_color_selection --background=2d4f67
+set -g fish_color_search_match --background=363646
+set -g fish_color_operator 7aa89f
+set -g fish_color_escape 957fb8
+set -g fish_color_autosuggestion 727169
+set -g fish_color_cancel c34043
+set -g fish_color_cwd 7e9cd8
+set -g fish_color_user 7aa89f
+set -g fish_color_host 76946a
+set -g fish_color_host_remote c0a36e
+set -g fish_color_status c34043
+set -g fish_color_valid_path --underline
+
+set -g fish_pager_color_progress 727169
+set -g fish_pager_color_prefix 7e9cd8
+set -g fish_pager_color_completion dcd7ba
+set -g fish_pager_color_description 727169
+set -g fish_pager_color_selected_background --background=2d4f67
+set -g fish_pager_color_selected_prefix 7e9cd8
+set -g fish_pager_color_selected_completion dcd7ba
+set -g fish_pager_color_selected_description 727169

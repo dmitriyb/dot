@@ -1,0 +1,35 @@
+#!/bin/bash
+# Portable theme switcher for macOS (and Linux without omarchy)
+# Usage: theme-set [theme-name]
+
+THEMES_DIR="${XDG_CONFIG_HOME:-$HOME/.config}/themes"
+THEME_NAME="$1"
+
+if [ -z "$THEME_NAME" ]; then
+    echo "Available themes:"
+    ls -1 "$THEMES_DIR" | grep -v '^current$'
+    exit 0
+fi
+
+if [ ! -d "$THEMES_DIR/$THEME_NAME" ]; then
+    echo "Theme not found: $THEME_NAME"
+    exit 1
+fi
+
+# Update current symlink
+ln -sfn "$THEME_NAME" "$THEMES_DIR/current"
+
+# Update starship palette if starship.toml exists
+if [ -f "${XDG_CONFIG_HOME:-$HOME/.config}/starship.toml" ]; then
+    sed -i.bak "s/^palette = .*/palette = \"$THEME_NAME\"/" \
+        "${XDG_CONFIG_HOME:-$HOME/.config}/starship.toml" 2>/dev/null
+    rm -f "${XDG_CONFIG_HOME:-$HOME/.config}/starship.toml.bak"
+fi
+
+# Signal fish to reload theme
+pkill -USR1 fish 2>/dev/null || true
+
+# Reload tmux config if tmux is running
+tmux source-file ~/.config/tmux/tmux.conf 2>/dev/null || true
+
+echo "Theme: $THEME_NAME (restart ghostty/nvim for full effect)"
