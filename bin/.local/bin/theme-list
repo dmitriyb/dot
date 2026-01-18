@@ -4,6 +4,5 @@
 
 THEMES_DIR="${XDG_CONFIG_HOME:-$HOME/.config}/themes"
 
-find "$THEMES_DIR" -mindepth 1 -maxdepth 1 -type d -printf '%f\n' | sort | while read -r name; do
-    echo "$name" | sed -E 's/(^|-)([a-z])/\1\u\2/g; s/-/ /g'
-done
+find -L "$THEMES_DIR" -mindepth 1 -maxdepth 1 -type d ! -name current -exec basename {} \; | sort | \
+    awk -F'-' '{for(i=1;i<=NF;i++) $i=toupper(substr($i,1,1)) substr($i,2)} 1' OFS=' '

@@ -5,7 +5,7 @@
 THEMES_DIR="${XDG_CONFIG_HOME:-$HOME/.config}/themes"
 
 if [ -L "$THEMES_DIR/current" ]; then
-    readlink "$THEMES_DIR/current" | sed -E 's/(^|-)([a-z])/\1\u\2/g; s/-/ /g'
+    readlink "$THEMES_DIR/current" | awk -F'-' '{for(i=1;i<=NF;i++) $i=toupper(substr($i,1,1)) substr($i,2)} 1' OFS=' '
 else
     echo "No theme set"
     exit 1
