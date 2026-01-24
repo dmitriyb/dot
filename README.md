@@ -35,7 +35,7 @@ brew install --cask ghostty docker font-jetbrains-mono-nerd-font
 
 ```bash
 cd ~/Work/dot
-stow -t ~ config bin
+stow -t ~/.config config && stow -t ~ bin
 ```
 
 ## Themes
