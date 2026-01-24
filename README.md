@@ -17,21 +17,25 @@ Personal configuration files managed with [GNU Stow](https://www.gnu.org/softwar
 
 ### Prerequisites
 
-- [GNU Stow](https://www.gnu.org/software/stow/)
+#### Arch Linux
 
 ```bash
-# Arch Linux
-sudo pacman -S stow
+sudo pacman -S stow fish tmux neovim starship btop git eza fzf bat zoxide direnv lazygit ffmpeg imagemagick docker ttf-jetbrains-mono-nerd
+yay -S ghostty tmux-plugin-manager
+```
 
-# macOS
-brew install stow
+#### macOS
+
+```bash
+brew install stow fish tmux neovim starship btop git eza fzf bat zoxide direnv lazygit ffmpeg imagemagick tpm
+brew install --cask ghostty docker font-jetbrains-mono-nerd-font
 ```
 
 ### Setup
 
 ```bash
 cd ~/Work/dot
-stow config bin
+stow -t ~ config bin
 ```
 
 ## Themes
