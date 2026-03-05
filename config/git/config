@@ -34,6 +34,10 @@
 	enabled = true             # Record and reuse conflict resolutions
 	autoupdate = true          # Apply stored conflict resolutions automatically
 
+[alias]
+  # Thanks Badya, this creates a pretty graph view of the log
+  lg = log --graph --pretty=format:'%Cred%h%Creset -%C(auto)%d%Creset %s %Cgreen(%ad) %C(bold blue)<%an>%Creset' --abbrev-commit
+
 # =============================================================================
 # Identity (remote URL-based switching)
 # =============================================================================
