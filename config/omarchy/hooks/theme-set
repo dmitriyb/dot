@@ -1,0 +1,20 @@
+#!/bin/bash
+
+# This hook is called when omarchy theme is changed
+THEME_NAME="$1"
+
+# Reload fish shell theme (fish already listens for SIGUSR1 in config.fish)
+if command -v fish &> /dev/null; then
+  killall -SIGUSR1 fish 2>/dev/null
+fi
+
+# Update starship palette
+STARSHIP_CONFIG="$HOME/.config/starship.toml"
+if [ -f "$STARSHIP_CONFIG" ]; then
+    sed -i "s/^palette = .*/palette = \"$THEME_NAME\"/" "$STARSHIP_CONFIG"
+fi
+
+# Reload tmux theme
+if command -v tmux &> /dev/null && tmux list-sessions &> /dev/null; then
+    tmux source-file ~/.config/tmux/tmux.conf 2>/dev/null
+fi

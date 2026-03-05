@@ -1,0 +1,46 @@
+#!/bin/bash
+
+# Post-update hook for omarchy
+# Ensures custom configurations persist after template refreshes
+
+set -e
+
+CUSTOM_DIR="$HOME/.config/omarchy"
+HYPRLAND_CONF="$HOME/.config/hypr/hyprland.conf"
+WAYBAR_CONF="$HOME/.config/waybar/config.jsonc"
+
+echo -e "\n\e[32mApplying custom configurations...\e[0m"
+
+# 1. Ensure custom Hyprland config is sourced
+#    (In case template refresh removed the source line)
+if [ -f "$CUSTOM_DIR/custom-hyprland.conf" ]; then
+  if ! grep -q "source.*custom-hyprland.conf" "$HYPRLAND_CONF"; then
+    echo "" >> "$HYPRLAND_CONF"
+    echo "source = ~/.config/omarchy/custom-hyprland.conf" >> "$HYPRLAND_CONF"
+    echo "✓ Added custom Hyprland config source"
+  fi
+fi
+
+# 2. Merge Waybar customizations with jq
+if [ -f "$CUSTOM_DIR/custom-waybar.json" ] && [ -f "$WAYBAR_CONF" ]; then
+  if command -v jq &> /dev/null; then
+    jq -s '.[0] * .[1]' "$WAYBAR_CONF" "$CUSTOM_DIR/custom-waybar.json" > "$WAYBAR_CONF.tmp"
+
+    if [ -s "$WAYBAR_CONF.tmp" ]; then
+      mv "$WAYBAR_CONF.tmp" "$WAYBAR_CONF"
+      echo "✓ Applied custom Waybar settings"
+
+      # Restart Waybar if possible
+      if command -v omarchy-restart-waybar &> /dev/null; then
+        omarchy-restart-waybar &> /dev/null || true
+      fi
+    else
+      rm -f "$WAYBAR_CONF.tmp"
+      echo "⚠ Failed to merge Waybar config"
+    fi
+  else
+    echo "⚠ jq not installed - install with: sudo pacman -S jq"
+  fi
+fi
+
+echo -e "\e[32mCustom configurations applied!\e[0m\n"
