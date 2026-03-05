@@ -19,3 +19,6 @@
 # TPM plugins (installed at runtime)
 config/tmux/plugins/
 config/nvim/lazy-lock.json
+
+# Active theme (machine-specific)
+config/themes/current
