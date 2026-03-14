@@ -122,6 +122,9 @@ alias .... 'cd ../../..'
 
 # Tools
 alias d docker
+alias c claude
+alias ceh claude --effort high
+alias cem claude --effort medium
 
 # Neovim function
 function n
