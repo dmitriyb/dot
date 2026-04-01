@@ -9,6 +9,7 @@ Personal configuration files managed with [GNU Stow](https://www.gnu.org/softwar
 - **ghostty** - Ghostty terminal emulator
 - **git** - Git configuration
 - **nvim** - Neovim (LazyVim-based)
+- **sesh** - Sesh smart tmux session manager
 - **tmux** - Tmux terminal multiplexer
 - **starship.toml** - Starship prompt
 - **themes** - Portable theme system (Tokyo Night, Catppuccin, Gruvbox, Kanagawa)
@@ -21,13 +22,13 @@ Personal configuration files managed with [GNU Stow](https://www.gnu.org/softwar
 
 ```bash
 sudo pacman -S stow fish tmux neovim starship btop git eza fzf bat zoxide direnv lazygit ffmpeg imagemagick docker ttf-jetbrains-mono-nerd
-yay -S ghostty tmux-plugin-manager
+yay -S ghostty tmux-plugin-manager sesh-bin
 ```
 
 #### macOS
 
 ```bash
-brew install stow fish tmux neovim starship btop git eza fzf bat zoxide direnv lazygit ffmpeg imagemagick tpm
+brew install stow fish tmux neovim starship btop git eza fzf bat zoxide direnv lazygit ffmpeg imagemagick tpm sesh
 brew install --cask ghostty docker font-jetbrains-mono-nerd-font
 ```
 
