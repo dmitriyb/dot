@@ -182,16 +182,14 @@ function img2png
         "$basename.png"
 end
 
-# Auto-start ssh-agent
+# Auto-start ssh-agent with a fixed socket path
 # Prefer Homebrew's ssh-agent on macOS (better FIDO2/SK key support)
-if test -x /opt/homebrew/bin/ssh-agent
-    set -gx SSH_AUTH_SOCK "$HOME/.ssh/agent.sock"
-    if not ssh-add -l >/dev/null 2>&1
-        rm -f $SSH_AUTH_SOCK
+set -gx SSH_AUTH_SOCK "$HOME/.ssh/agent.sock"
+if not test -S $SSH_AUTH_SOCK; or not pgrep -qf "ssh-agent.*agent.sock"
+    rm -f $SSH_AUTH_SOCK
+    if test -x /opt/homebrew/bin/ssh-agent
         eval (/opt/homebrew/bin/ssh-agent -a $SSH_AUTH_SOCK -c) >/dev/null
+    else
+        eval (ssh-agent -a $SSH_AUTH_SOCK -c) >/dev/null
     end
-else if not set -q SSH_AUTH_SOCK; or not test -S $SSH_AUTH_SOCK
-    eval (ssh-agent -c) >/dev/null
-    set -gx SSH_AUTH_SOCK $SSH_AUTH_SOCK
-    set -gx SSH_AGENT_PID $SSH_AGENT_PID
 end
