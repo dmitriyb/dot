@@ -1,0 +1,89 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+IMAGE="claude-dev"
+VOLUME="claude-personal"
+BYPASS=false
+
+# Parse flags
+while [[ $# -gt 0 ]]; do
+    case "$1" in
+        --bypass)
+            BYPASS=true
+            shift
+            ;;
+        --workspace)
+            WORKSPACE="$2"
+            shift 2
+            ;;
+        *)
+            echo "Unknown flag: $1"
+            echo "Usage: docker-claude [--bypass] [--workspace <path>]"
+            exit 1
+            ;;
+    esac
+done
+
+# Platform-specific default workspace
+if [[ -z "${WORKSPACE:-}" ]]; then
+    if [[ "$(uname)" == "Darwin" ]]; then
+        WORKSPACE="$HOME/work"
+    else
+        WORKSPACE="$HOME/Work"
+    fi
+fi
+
+# Build if image doesn't exist
+SCRIPT_DIR="$(cd "$(dirname "$(readlink -f "$0")")" && cd ../../.. && pwd)/docker/claude"
+if ! docker image inspect "$IMAGE" &>/dev/null; then
+    echo "Building $IMAGE..."
+    docker build -t "$IMAGE" "$SCRIPT_DIR"
+fi
+
+# Check if volume has auth credentials
+has_auth() {
+    docker run --rm -v "$VOLUME":/check "$IMAGE" -c "test -d /check/credentials" 2>/dev/null
+}
+
+# Setup token from OS keychain (for first-time auth)
+get_setup_token() {
+    if [[ "$(uname)" == "Darwin" ]]; then
+        security find-generic-password -s anthropic -a personal -w 2>/dev/null
+    else
+        secret-tool lookup service anthropic account personal 2>/dev/null
+    fi
+}
+
+# First-time setup: inject OAuth token from keychain
+if [[ "$BYPASS" == false ]] && ! has_auth; then
+    TOKEN=$(get_setup_token)
+    if [[ -z "$TOKEN" ]]; then
+        echo "Error: No setup token found in keychain and no existing auth."
+        echo ""
+        echo "Generate a setup token from an authenticated Claude Code instance:"
+        echo "  claude setup-token"
+        echo ""
+        echo "Then store it:"
+        echo "  macOS: security add-generic-password -s anthropic -a personal -w '<token>'"
+        echo "  Linux: secret-tool store --label='anthropic' service anthropic account personal"
+        exit 1
+    fi
+    echo "First run: setting up authentication..."
+    docker run --rm -v "$VOLUME":/home/dev/.claude "$IMAGE" -c "echo '$TOKEN' | claude setup-token"
+fi
+
+# Bypass mode: mount host ~/.claude (OAuth), no volume
+if [[ "$BYPASS" == true ]]; then
+    exec docker run -it --rm \
+        -v "$HOME/.claude":/home/dev/.claude \
+        -v "$SSH_AUTH_SOCK":/ssh-agent -e SSH_AUTH_SOCK=/ssh-agent \
+        -v "$WORKSPACE":/workspace \
+        "$IMAGE"
+fi
+
+# Normal mode: use persistent volume with OAuth creds
+exec docker run -it --rm \
+    -v "$VOLUME":/home/dev/.claude \
+    -v "$SSH_AUTH_SOCK":/ssh-agent -e SSH_AUTH_SOCK=/ssh-agent \
+    -v "$WORKSPACE":/workspace \
+    "$IMAGE"

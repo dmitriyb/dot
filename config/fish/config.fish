@@ -125,6 +125,7 @@ alias d docker
 alias c claude
 alias ceh 'claude --effort high'
 alias cem 'claude --effort medium'
+alias dc docker-claude
 
 # Neovim function
 function n
