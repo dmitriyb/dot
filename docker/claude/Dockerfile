@@ -4,8 +4,7 @@ FROM fedora:latest
 RUN dnf install -y \
     fish tmux neovim btop git eza fzf bat zoxide direnv \
     ffmpeg ImageMagick stow git-lfs openssh-clients \
-    nodejs npm curl \
-    procps-ng \
+    curl procps-ng \
     && dnf clean all
 
 # Install starship (not in Fedora repos)
@@ -14,8 +13,7 @@ RUN curl -fsSL https://starship.rs/install.sh | sh -s -- -y
 # Install lazygit (not in Fedora repos)
 RUN dnf copr enable -y atim/lazygit && dnf install -y lazygit && dnf clean all
 
-# Install Claude Code
-RUN npm install -g @anthropic-ai/claude-code
+# Claude Code will be installed as dev user after dotfiles setup
 
 # Install TPM (tmux plugin manager)
 RUN git clone https://github.com/tmux-plugins/tpm /usr/share/tmux-plugin-manager
@@ -25,6 +23,9 @@ RUN useradd -m -s /usr/bin/fish dev
 
 USER dev
 WORKDIR /home/dev
+
+# Install Claude Code (native binary into ~/.local/bin)
+RUN curl -fsSL https://claude.ai/install.sh | bash
 
 # Clone and stow dotfiles
 RUN git clone https://github.com/dmitriyb/dot.git /home/dev/dot \
@@ -36,12 +37,33 @@ RUN git clone https://github.com/dmitriyb/dot.git /home/dev/dot \
 # Set theme
 RUN /home/dev/.local/bin/theme-set gruvbox
 
+# Re-apply theme after __fish_config_interactive overwrites colors on first prompt
+RUN printf '%s\n' \
+    'function __fix_theme_colors --on-event fish_prompt' \
+    '    source ~/.config/themes/current/fish.theme 2>/dev/null' \
+    '    functions -e __fix_theme_colors' \
+    'end' \
+    > /home/dev/.config/fish/conf.d/99-theme-reload.fish
+
 # Skip onboarding, set vim mode and theme
 RUN echo '{"hasCompletedOnboarding":true,"theme":"dark-ansi","editorMode":"vim","numStartups":1}' > /home/dev/.claude.json
+
+# Pre-create mount point directories (Docker copies ownership to new named volumes)
+RUN mkdir -p /home/dev/.claude /home/dev/.local/share /home/dev/.local/state
+
+# Override tmux prefix for nested use (host uses C-a)
+RUN echo 'set -g prefix C-b' >> /home/dev/.config/tmux/tmux.conf \
+    && echo 'bind C-b last-window' >> /home/dev/.config/tmux/tmux.conf
 
 # Install tmux plugins
 RUN /usr/share/tmux-plugin-manager/bin/install_plugins
 
+# Pre-install neovim plugins
+RUN nvim --headless "+Lazy! sync" +qa
+
+# Entrypoint: copies settings to volume on first run, then starts fish
+COPY --chown=dev:dev entrypoint.fish /home/dev/entrypoint.fish
+
 WORKDIR /workspace
 
-ENTRYPOINT ["fish"]
+ENTRYPOINT ["fish", "/home/dev/entrypoint.fish"]

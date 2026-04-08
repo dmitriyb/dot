@@ -125,7 +125,8 @@ alias d docker
 alias c claude
 alias ceh 'claude --effort high'
 alias cem 'claude --effort medium'
-alias dc docker-claude
+alias dcp 'docker-claude -p'
+alias dcw 'docker-claude -w'
 
 # Neovim function
 function n
@@ -184,13 +185,16 @@ function img2png
 end
 
 # Auto-start ssh-agent with a fixed socket path
+# Skip if SSH_AUTH_SOCK is already valid (e.g. forwarded in Docker)
 # Prefer Homebrew's ssh-agent on macOS (better FIDO2/SK key support)
-set -gx SSH_AUTH_SOCK "$HOME/.ssh/agent.sock"
-if not test -S $SSH_AUTH_SOCK; or not pgrep -qf "ssh-agent.*agent.sock"
-    rm -f $SSH_AUTH_SOCK
-    if test -x /opt/homebrew/bin/ssh-agent
-        eval (/opt/homebrew/bin/ssh-agent -a $SSH_AUTH_SOCK -c) >/dev/null
-    else
-        eval (ssh-agent -a $SSH_AUTH_SOCK -c) >/dev/null
+if not test -S "$SSH_AUTH_SOCK"
+    set -gx SSH_AUTH_SOCK "$HOME/.ssh/agent.sock"
+    if not test -S $SSH_AUTH_SOCK; or not pgrep -qf "ssh-agent.*agent.sock"
+        rm -f $SSH_AUTH_SOCK
+        if test -x /opt/homebrew/bin/ssh-agent
+            eval (/opt/homebrew/bin/ssh-agent -a $SSH_AUTH_SOCK -c) >/dev/null
+        else
+            eval (ssh-agent -a $SSH_AUTH_SOCK -c) >/dev/null
+        end
     end
 end
