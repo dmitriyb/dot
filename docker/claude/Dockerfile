@@ -18,8 +18,9 @@ RUN dnf copr enable -y atim/lazygit && dnf install -y lazygit && dnf clean all
 # Install TPM (tmux plugin manager)
 RUN git clone https://github.com/tmux-plugins/tpm /usr/share/tmux-plugin-manager
 
-# Create non-root user
-RUN useradd -m -s /usr/bin/fish dev
+# Create non-root user matching host UID for socket permissions
+ARG HOST_UID=1000
+RUN useradd -m -s /usr/bin/fish -u $HOST_UID dev
 
 USER dev
 WORKDIR /home/dev

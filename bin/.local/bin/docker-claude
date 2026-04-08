@@ -3,6 +3,7 @@ set -euo pipefail
 
 IMAGE="claude-dev"
 MODE=""
+REBUILD=false
 
 # Parse flags
 while [[ $# -gt 0 ]]; do
@@ -13,6 +14,10 @@ while [[ $# -gt 0 ]]; do
             ;;
         -w|--work)
             MODE="work"
+            shift
+            ;;
+        -r|--rebuild)
+            REBUILD=true
             shift
             ;;
         --workspace)
@@ -27,9 +32,20 @@ while [[ $# -gt 0 ]]; do
     esac
 done
 
+# Build image if missing or rebuild requested
+SCRIPT_DIR="$(cd "$(dirname "$(readlink -f "$0")")" && cd ../../.. && pwd)/docker/claude"
+if [[ "$REBUILD" == true ]]; then
+    echo "Building $IMAGE..."
+    docker build --no-cache --build-arg HOST_UID="$(id -u)" -t "$IMAGE" "$SCRIPT_DIR"
+    [[ -z "$MODE" ]] && exit 0
+elif ! docker image inspect "$IMAGE" &>/dev/null; then
+    echo "Building $IMAGE..."
+    docker build --build-arg HOST_UID="$(id -u)" -t "$IMAGE" "$SCRIPT_DIR"
+fi
+
 if [[ -z "$MODE" ]]; then
     echo "Error: specify account mode."
-    echo "Usage: docker-claude (-p|--personal | -w|--work) [--workspace <path>]"
+    echo "Usage: docker-claude (-p|--personal | -w|--work) [-r|--rebuild] [--workspace <path>]"
     exit 1
 fi
 
@@ -42,12 +58,6 @@ if [[ -z "${WORKSPACE:-}" ]]; then
     fi
 fi
 
-# Build if image doesn't exist
-SCRIPT_DIR="$(cd "$(dirname "$(readlink -f "$0")")" && cd ../../.. && pwd)/docker/claude"
-if ! docker image inspect "$IMAGE" &>/dev/null; then
-    echo "Building $IMAGE..."
-    docker build -t "$IMAGE" "$SCRIPT_DIR"
-fi
 
 # Resolve credentials from OS keychain
 get_personal_token() {
@@ -67,6 +77,13 @@ get_work_key() {
 }
 
 # Persistent volumes for runtime state (never shadows ~/.local/bin from image)
+# SSH agent forwarding
+SSH_AGENT_ARGS=(-v "$SSH_AUTH_SOCK":/ssh-agent -e SSH_AUTH_SOCK=/ssh-agent)
+# Docker Desktop (macOS) mounts sockets as root:root — need group access
+if [[ "$(uname)" == "Darwin" ]]; then
+    SSH_AGENT_ARGS+=(--group-add 0)
+fi
+
 SHARE_VOLUME="claude-share"
 STATE_VOLUME="claude-state"
 
@@ -88,7 +105,7 @@ if [[ "$MODE" == "personal" ]]; then
         -v claude-personal:/home/dev/.claude \
         -v "$SHARE_VOLUME":/home/dev/.local/share \
         -v "$STATE_VOLUME":/home/dev/.local/state \
-        -v "$SSH_AUTH_SOCK":/ssh-agent -e SSH_AUTH_SOCK=/ssh-agent \
+        "${SSH_AGENT_ARGS[@]}" \
         -v "$WORKSPACE":/workspace \
         "$IMAGE"
 fi
@@ -107,7 +124,7 @@ if [[ "$MODE" == "work" ]]; then
         -v claude-work:/home/dev/.claude \
         -v "$SHARE_VOLUME":/home/dev/.local/share \
         -v "$STATE_VOLUME":/home/dev/.local/state \
-        -v "$SSH_AUTH_SOCK":/ssh-agent -e SSH_AUTH_SOCK=/ssh-agent \
+        "${SSH_AGENT_ARGS[@]}" \
         -v "$WORKSPACE":/workspace \
         "$IMAGE"
 fi
