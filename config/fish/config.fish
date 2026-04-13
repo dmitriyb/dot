@@ -125,6 +125,7 @@ alias d docker
 alias c claude
 alias ceh 'claude --effort high'
 alias cem 'claude --effort medium'
+alias dc docker-claude
 alias dcp 'docker-claude -p'
 alias dcw 'docker-claude -w'
 
@@ -187,7 +188,7 @@ end
 # Auto-start ssh-agent with a fixed socket path
 # Skip if SSH_AUTH_SOCK is already valid (e.g. forwarded in Docker)
 # Prefer Homebrew's ssh-agent on macOS (better FIDO2/SK key support)
-if not test -S "$SSH_AUTH_SOCK"
+if not test -S "$SSH_AUTH_SOCK"; or string match -q "*/com.apple.launchd.*" "$SSH_AUTH_SOCK"
     set -gx SSH_AUTH_SOCK "$HOME/.ssh/agent.sock"
     if not test -S $SSH_AUTH_SOCK; or not pgrep -qf "ssh-agent.*agent.sock"
         rm -f $SSH_AUTH_SOCK

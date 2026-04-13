@@ -1,0 +1,48 @@
+FROM claude-dev-base
+
+USER root
+
+# Install bun (for MCP servers) and openssh-server (for IDEA Remote Development)
+RUN dnf install -y unzip openssh-server sudo && dnf clean all
+
+# Configure sshd: non-privileged port, key-only auth
+RUN ssh-keygen -A \
+    && sed -i 's/^#Port 22/Port 2222/' /etc/ssh/sshd_config \
+    && sed -i 's/^#PasswordAuthentication yes/PasswordAuthentication no/' /etc/ssh/sshd_config \
+    && sed -i 's/^#PubkeyAuthentication yes/PubkeyAuthentication yes/' /etc/ssh/sshd_config \
+    && echo "AllowUsers dev" >> /etc/ssh/sshd_config \
+    && mkdir -p /run/sshd
+
+# Allow dev to start sshd without password
+RUN echo "dev ALL=(root) NOPASSWD: /usr/sbin/sshd" >> /etc/sudoers.d/dev-sshd
+
+USER dev
+
+# Install bun
+RUN curl -fsSL https://bun.sh/install | bash
+
+# Add bun to PATH
+RUN echo 'set -gx PATH ~/.bun/bin $PATH' \
+    >> /home/dev/.config/fish/conf.d/01-docker-path.fish
+
+# Prepare SSH authorized_keys with host's dedicated key
+RUN mkdir -p /home/dev/.ssh && chmod 700 /home/dev/.ssh
+ARG DOCKER_CLAUDE_PUBKEY=""
+RUN if [ -n "$DOCKER_CLAUDE_PUBKEY" ]; then \
+        echo "$DOCKER_CLAUDE_PUBKEY" > /home/dev/.ssh/authorized_keys \
+        && chmod 600 /home/dev/.ssh/authorized_keys; \
+    fi
+
+COPY --chown=dev:dev entrypoint.work.fish /home/dev/entrypoint.fish
+
+WORKDIR /workspace
+
+# Debug logging and timeout tuning for large projects
+ENV CLAUDE_CODE_DEBUG_LOG_LEVEL=verbose
+ENV CLAUDE_ENABLE_STREAM_WATCHDOG=1
+ENV API_TIMEOUT_MS=900000
+ENV CLAUDE_STREAM_IDLE_TIMEOUT_MS=180000
+
+EXPOSE 2222
+
+ENTRYPOINT ["fish", "/home/dev/entrypoint.fish"]

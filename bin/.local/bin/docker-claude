@@ -1,9 +1,12 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-IMAGE="claude-dev"
+BASE_IMAGE="claude-dev-base"
+PERSONAL_IMAGE="claude-dev-personal"
+WORK_IMAGE="claude-dev-work"
 MODE=""
 REBUILD=false
+NO_CACHE=false
 
 # Parse flags
 while [[ $# -gt 0 ]]; do
@@ -20,27 +23,74 @@ while [[ $# -gt 0 ]]; do
             REBUILD=true
             shift
             ;;
+        --no-cache)
+            NO_CACHE=true
+            REBUILD=true
+            shift
+            ;;
         --workspace)
             WORKSPACE="$2"
             shift 2
             ;;
         *)
             echo "Unknown flag: $1"
-            echo "Usage: docker-claude (-p|--personal | -w|--work) [--workspace <path>]"
+            echo "Usage: docker-claude (-p|--personal | -w|--work) [-r] [--no-cache] [--workspace <path>]"
             exit 1
             ;;
     esac
 done
 
-# Build image if missing or rebuild requested
+# Build images if missing or rebuild requested
 SCRIPT_DIR="$(cd "$(dirname "$(readlink -f "$0")")" && cd ../../.. && pwd)/docker/claude"
+BUILD_ARGS=(--build-arg HOST_UID="$(id -u)")
+
+build_base() {
+    local cache_flag=()
+    [[ "$NO_CACHE" == true ]] && cache_flag=(--no-cache)
+    echo "Building $BASE_IMAGE..."
+    docker build "${cache_flag[@]}" "${BUILD_ARGS[@]}" -f "$SCRIPT_DIR/Dockerfile.base" -t "$BASE_IMAGE" "$SCRIPT_DIR"
+}
+
+build_personal() {
+    echo "Building $PERSONAL_IMAGE..."
+    docker build -f "$SCRIPT_DIR/Dockerfile.personal" -t "$PERSONAL_IMAGE" "$SCRIPT_DIR"
+}
+
+build_work() {
+    # Generate dedicated SSH key for IDEA Remote Development if missing
+    local key_path="$HOME/.ssh/docker_claude_id_ed25519"
+    if [[ ! -f "$key_path" ]]; then
+        echo "Generating SSH key for Docker Claude IDEA access..."
+        ssh-keygen -t ed25519 -f "$key_path" -N "" -C "docker-claude"
+    fi
+    local pubkey
+    pubkey=$(cat "$key_path.pub")
+
+    echo "Building $WORK_IMAGE..."
+    docker build \
+        --build-arg "DOCKER_CLAUDE_PUBKEY=$pubkey" \
+        -f "$SCRIPT_DIR/Dockerfile.work" -t "$WORK_IMAGE" "$SCRIPT_DIR"
+}
+
 if [[ "$REBUILD" == true ]]; then
-    echo "Building $IMAGE..."
-    docker build --no-cache --build-arg HOST_UID="$(id -u)" -t "$IMAGE" "$SCRIPT_DIR"
-    [[ -z "$MODE" ]] && exit 0
-elif ! docker image inspect "$IMAGE" &>/dev/null; then
-    echo "Building $IMAGE..."
-    docker build --build-arg HOST_UID="$(id -u)" -t "$IMAGE" "$SCRIPT_DIR"
+    build_base
+    if [[ -z "$MODE" ]]; then
+        build_personal
+        build_work
+        exit 0
+    fi
+    [[ "$MODE" == "personal" ]] && build_personal
+    [[ "$MODE" == "work" ]] && build_work
+else
+    if ! docker image inspect "$BASE_IMAGE" &>/dev/null; then
+        build_base
+    fi
+    if [[ "$MODE" == "personal" ]] && ! docker image inspect "$PERSONAL_IMAGE" &>/dev/null; then
+        build_personal
+    fi
+    if [[ "$MODE" == "work" ]] && ! docker image inspect "$WORK_IMAGE" &>/dev/null; then
+        build_work
+    fi
 fi
 
 if [[ -z "$MODE" ]]; then
@@ -101,13 +151,14 @@ if [[ "$MODE" == "personal" ]]; then
         exit 1
     fi
     exec docker run -it --rm \
+        --memory=8g --cpus=4 \
         -e CLAUDE_CODE_OAUTH_TOKEN="$TOKEN" \
         -v claude-personal:/home/dev/.claude \
         -v "$SHARE_VOLUME":/home/dev/.local/share \
         -v "$STATE_VOLUME":/home/dev/.local/state \
         "${SSH_AGENT_ARGS[@]}" \
         -v "$WORKSPACE":/workspace \
-        "$IMAGE"
+        "$PERSONAL_IMAGE"
 fi
 
 if [[ "$MODE" == "work" ]]; then
@@ -119,12 +170,21 @@ if [[ "$MODE" == "work" ]]; then
         echo "The key is stored automatically in macOS Keychain."
         exit 1
     fi
+
+    # Work mode: native ext4 volume (no VirtioFS bind mount)
+    # Repos are shallow-cloned inside the container on first run
+    # Connect via IDEA Remote Development: ssh -p 2222 dev@localhost
+    WORK_REPO_VOLUME="claude-work-repos"
+
     exec docker run -it --rm \
+        --memory=8g --cpus=4 \
         -e ANTHROPIC_API_KEY="$KEY" \
+        -e JETBRAINS_MCP_STREAM_URL=http://host.docker.internal:64342/stream \
         -v claude-work:/home/dev/.claude \
+        -v "$WORK_REPO_VOLUME":/workspace \
         -v "$SHARE_VOLUME":/home/dev/.local/share \
         -v "$STATE_VOLUME":/home/dev/.local/state \
         "${SSH_AGENT_ARGS[@]}" \
-        -v "$WORKSPACE":/workspace \
-        "$IMAGE"
+        -p 2222:2222 \
+        "$WORK_IMAGE"
 fi

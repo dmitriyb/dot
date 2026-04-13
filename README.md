@@ -13,6 +13,8 @@ Personal configuration files managed with [GNU Stow](https://www.gnu.org/softwar
 - **tmux** - Tmux terminal multiplexer
 - **starship.toml** - Starship prompt
 - **themes** - Portable theme system (Tokyo Night, Catppuccin, Gruvbox, Kanagawa)
+- **claude** - Claude Code settings
+- **docker/claude** - [Dockerized Claude Code environment](docker/claude/README.md)
 
 ## Installation
 

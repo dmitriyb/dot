@@ -1,0 +1,15 @@
+FROM claude-dev-base
+
+USER root
+
+# Install Zig
+RUN dnf install -y zig && dnf clean all \
+    || (curl -fsSL https://ziglang.org/download/0.14.0/zig-linux-aarch64-0.14.0.tar.xz \
+        | tar -xJ -C /usr/local --strip-components=1)
+
+USER dev
+
+COPY --chown=dev:dev entrypoint.personal.fish /home/dev/entrypoint.fish
+
+WORKDIR /workspace
+ENTRYPOINT ["fish", "/home/dev/entrypoint.fish"]
