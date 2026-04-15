@@ -3,7 +3,7 @@ FROM claude-dev-base
 USER root
 
 # Install bun (for MCP servers) and openssh-server (for IDEA Remote Development)
-RUN dnf install -y unzip openssh-server sudo && dnf clean all
+RUN dnf install -y unzip openssh-server sudo java-21-openjdk-devel && dnf clean all
 
 # Configure sshd: non-privileged port, key-only auth
 RUN ssh-keygen -A \

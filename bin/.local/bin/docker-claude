@@ -19,6 +19,10 @@ while [[ $# -gt 0 ]]; do
             MODE="work"
             shift
             ;;
+        --direct)
+            MODE="direct"
+            shift
+            ;;
         -r|--rebuild)
             REBUILD=true
             shift
@@ -34,7 +38,7 @@ while [[ $# -gt 0 ]]; do
             ;;
         *)
             echo "Unknown flag: $1"
-            echo "Usage: docker-claude (-p|--personal | -w|--work) [-r] [--no-cache] [--workspace <path>]"
+            echo "Usage: docker-claude (-p|--personal | -w|--work | --direct) [-r] [--no-cache] [--workspace <path>]"
             exit 1
             ;;
     esac
@@ -45,10 +49,12 @@ SCRIPT_DIR="$(cd "$(dirname "$(readlink -f "$0")")" && cd ../../.. && pwd)/docke
 BUILD_ARGS=(--build-arg HOST_UID="$(id -u)")
 
 build_base() {
-    local cache_flag=()
-    [[ "$NO_CACHE" == true ]] && cache_flag=(--no-cache)
     echo "Building $BASE_IMAGE..."
-    docker build "${cache_flag[@]}" "${BUILD_ARGS[@]}" -f "$SCRIPT_DIR/Dockerfile.base" -t "$BASE_IMAGE" "$SCRIPT_DIR"
+    if [[ "$NO_CACHE" == true ]]; then
+        docker build --no-cache "${BUILD_ARGS[@]}" -f "$SCRIPT_DIR/Dockerfile.base" -t "$BASE_IMAGE" "$SCRIPT_DIR"
+    else
+        docker build "${BUILD_ARGS[@]}" -f "$SCRIPT_DIR/Dockerfile.base" -t "$BASE_IMAGE" "$SCRIPT_DIR"
+    fi
 }
 
 build_personal() {
@@ -80,7 +86,7 @@ if [[ "$REBUILD" == true ]]; then
         exit 0
     fi
     [[ "$MODE" == "personal" ]] && build_personal
-    [[ "$MODE" == "work" ]] && build_work
+    [[ "$MODE" == "work" || "$MODE" == "direct" ]] && build_work
 else
     if ! docker image inspect "$BASE_IMAGE" &>/dev/null; then
         build_base
@@ -88,14 +94,14 @@ else
     if [[ "$MODE" == "personal" ]] && ! docker image inspect "$PERSONAL_IMAGE" &>/dev/null; then
         build_personal
     fi
-    if [[ "$MODE" == "work" ]] && ! docker image inspect "$WORK_IMAGE" &>/dev/null; then
+    if [[ "$MODE" == "work" || "$MODE" == "direct" ]] && ! docker image inspect "$WORK_IMAGE" &>/dev/null; then
         build_work
     fi
 fi
 
 if [[ -z "$MODE" ]]; then
     echo "Error: specify account mode."
-    echo "Usage: docker-claude (-p|--personal | -w|--work) [-r|--rebuild] [--workspace <path>]"
+    echo "Usage: docker-claude (-p|--personal | -w|--work | --direct) [-r] [--workspace <path>]"
     exit 1
 fi
 
@@ -161,7 +167,43 @@ if [[ "$MODE" == "personal" ]]; then
         "$PERSONAL_IMAGE"
 fi
 
+# Common work args (shared between wire and direct modes)
+WORK_REPO_VOLUME="claude-work-repos"
+WORK_COMMON_ARGS=(
+    -it --rm
+    --memory=8g --cpus=4
+    -e JETBRAINS_MCP_STREAM_URL=http://host.docker.internal:64342/stream
+    -v claude-work:/home/dev/.claude
+    -v "$WORK_REPO_VOLUME":/workspace
+    -v "$SHARE_VOLUME":/home/dev/.local/share
+    -v "$STATE_VOLUME":/home/dev/.local/state
+    "${SSH_AGENT_ARGS[@]}"
+    -p 2222:2222
+)
+
 if [[ "$MODE" == "work" ]]; then
+    # Wire proxy mode (default work mode)
+    if ! command -v wire &>/dev/null; then
+        echo "Error: wire CLI not found. Install it first."
+        exit 1
+    fi
+    WIRE_KEY=$(wire proxy start --ensure-updated --return-key)
+    if [[ -z "$WIRE_KEY" ]]; then
+        echo "Error: failed to start wire proxy or get key."
+        exit 1
+    fi
+    WIRE_PORT=$(wire config 2>&1 | awk '/Proxy port:/{print $3}')
+    WIRE_BASE_URL="http://host.docker.internal:${WIRE_PORT}/wire/${WIRE_KEY}/claude-code/anthropic"
+
+    exec docker run \
+        "${WORK_COMMON_ARGS[@]}" \
+        -e ANTHROPIC_API_KEY=wire-proxy \
+        -e ANTHROPIC_BASE_URL="$WIRE_BASE_URL" \
+        "$WORK_IMAGE"
+fi
+
+if [[ "$MODE" == "direct" ]]; then
+    # Direct API key mode (from OS keychain)
     KEY=$(get_work_key)
     if [[ -z "$KEY" ]]; then
         echo "Error: No work API key found in keychain."
@@ -171,20 +213,8 @@ if [[ "$MODE" == "work" ]]; then
         exit 1
     fi
 
-    # Work mode: native ext4 volume (no VirtioFS bind mount)
-    # Repos are shallow-cloned inside the container on first run
-    # Connect via IDEA Remote Development: ssh -p 2222 dev@localhost
-    WORK_REPO_VOLUME="claude-work-repos"
-
-    exec docker run -it --rm \
-        --memory=8g --cpus=4 \
+    exec docker run \
+        "${WORK_COMMON_ARGS[@]}" \
         -e ANTHROPIC_API_KEY="$KEY" \
-        -e JETBRAINS_MCP_STREAM_URL=http://host.docker.internal:64342/stream \
-        -v claude-work:/home/dev/.claude \
-        -v "$WORK_REPO_VOLUME":/workspace \
-        -v "$SHARE_VOLUME":/home/dev/.local/share \
-        -v "$STATE_VOLUME":/home/dev/.local/state \
-        "${SSH_AGENT_ARGS[@]}" \
-        -p 2222:2222 \
         "$WORK_IMAGE"
 fi

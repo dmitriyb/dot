@@ -28,19 +28,20 @@ Work account credentials are picked up automatically from the macOS Keychain (st
 
 ```bash
 docker-claude -p              # Personal account (Max subscription via OAuth)
-docker-claude -w              # Work account (Console via API key)
+docker-claude -w              # Work account (via wire proxy, default)
+docker-claude --direct        # Work account (direct API key from keychain)
 docker-claude -r              # Rebuild all images (pulls latest dotfiles)
-docker-claude -r -p           # Rebuild base + personal
-docker-claude -r -w           # Rebuild base + work
+docker-claude -r -w           # Rebuild base + work, then launch
+docker-claude --no-cache      # Full fresh rebuild (re-downloads everything)
 docker-claude --workspace ~/projects -p  # Custom workspace mount (personal only)
 ```
 
-Aliases: `dc` (docker-claude), `dcp` (-p), `dcw` (-w).
+Aliases: `dc` (docker-claude), `dcp` (-p), `dcw` (-w), `dcwd` (--direct).
 
 ## Architecture
 
 - **Three images**: `claude-dev-base` (shared), `claude-dev-personal`, `claude-dev-work`
-- **Separate auth**: personal uses `CLAUDE_CODE_OAUTH_TOKEN`, work uses `ANTHROPIC_API_KEY` -- both extracted from OS keychain at runtime
+- **Separate auth**: personal uses `CLAUDE_CODE_OAUTH_TOKEN` (keychain), work uses wire proxy by default (`--direct` falls back to `ANTHROPIC_API_KEY` from keychain)
 - **Persistent volumes**: `claude-personal` / `claude-work` for Claude Code state, `claude-work-repos` for work repos (native ext4), `claude-share` / `claude-state` for nvim plugins, fish history, tmux resurrect
 - **SSH agent forwarding**: host agent forwarded into container (YubiKey signing works for git)
 - **IDEA access**: dedicated ed25519 key for SSH, auto-generated per machine at build time

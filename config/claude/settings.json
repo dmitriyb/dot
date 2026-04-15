@@ -1,5 +1,6 @@
 {
   "model": "opus[1m]",
   "alwaysThinkingEnabled": true,
-  "autoUpdatesChannel": "latest"
+  "autoUpdatesChannel": "latest",
+  "enableAllProjectMcpServers": true
 }

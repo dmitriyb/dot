@@ -128,6 +128,7 @@ alias cem 'claude --effort medium'
 alias dc docker-claude
 alias dcp 'docker-claude -p'
 alias dcw 'docker-claude -w'
+alias dcwd 'docker-claude --direct'
 
 # Neovim function
 function n
@@ -199,3 +200,6 @@ if not test -S "$SSH_AUTH_SOCK"; or string match -q "*/com.apple.launchd.*" "$SS
         end
     end
 end
+# >>> wire-claude-code >>>
+alias claude 'wire run claude-code'
+# <<< wire-claude-code <<<

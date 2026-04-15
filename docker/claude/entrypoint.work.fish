@@ -5,9 +5,18 @@ if not test -f ~/.claude/settings.json
     cp ~/.config/claude/settings.json ~/.claude/settings.json
 end
 
+# Persist .claude.json in the volume (survives --rm)
+# The baked-in /home/dev/.claude.json has onboarding defaults;
+# copy it to the volume on first run, then always symlink.
+if not test -f ~/.claude/.claude.json
+    cp ~/.claude.json ~/.claude/.claude.json 2>/dev/null
+end
+ln -sf ~/.claude/.claude.json ~/.claude.json
+
 # Import SSH public keys from forwarded agent for IDEA Remote Development access
 if test -n "$SSH_AUTH_SOCK"
-    ssh-add -L > ~/.ssh/authorized_keys 2>/dev/null
+    ssh-add -L >> ~/.ssh/authorized_keys 2>/dev/null
+    sort -u -o ~/.ssh/authorized_keys ~/.ssh/authorized_keys
     chmod 600 ~/.ssh/authorized_keys 2>/dev/null
 end
 
