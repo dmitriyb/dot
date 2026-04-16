@@ -33,6 +33,8 @@ RUN if [ -n "$DOCKER_CLAUDE_PUBKEY" ]; then \
         && chmod 600 /home/dev/.ssh/authorized_keys; \
     fi
 
+RUN /home/dev/.local/bin/theme-set gruvbox
+
 COPY --chown=dev:dev entrypoint.work.fish /home/dev/entrypoint.fish
 
 WORKDIR /workspace

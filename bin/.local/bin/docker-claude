@@ -156,14 +156,16 @@ if [[ "$MODE" == "personal" ]]; then
         echo "  Linux: secret-tool store --label='anthropic' service anthropic account personal"
         exit 1
     fi
+    PERSONAL_REPO_VOLUME="claude-personal-repos"
+
     exec docker run -it --rm \
         --memory=8g --cpus=4 \
         -e CLAUDE_CODE_OAUTH_TOKEN="$TOKEN" \
         -v claude-personal:/home/dev/.claude \
+        -v "$PERSONAL_REPO_VOLUME":/workspace \
         -v "$SHARE_VOLUME":/home/dev/.local/share \
         -v "$STATE_VOLUME":/home/dev/.local/state \
         "${SSH_AGENT_ARGS[@]}" \
-        -v "$WORKSPACE":/workspace \
         "$PERSONAL_IMAGE"
 fi
 

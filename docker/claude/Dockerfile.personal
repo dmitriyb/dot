@@ -9,6 +9,8 @@ RUN dnf install -y zig && dnf clean all \
 
 USER dev
 
+RUN /home/dev/.local/bin/theme-set catppuccin
+
 COPY --chown=dev:dev entrypoint.personal.fish /home/dev/entrypoint.fish
 
 WORKDIR /workspace
