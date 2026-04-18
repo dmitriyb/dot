@@ -200,6 +200,3 @@ if not test -S "$SSH_AUTH_SOCK"; or string match -q "*/com.apple.launchd.*" "$SS
         end
     end
 end
-# >>> wire-claude-code >>>
-alias claude 'wire run claude-code'
-# <<< wire-claude-code <<<
