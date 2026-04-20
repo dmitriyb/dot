@@ -4,7 +4,7 @@ Isolated Claude Code environments running in Fedora containers with full dotfile
 
 ## What's inside
 
-**Base** (shared): Fish, tmux, neovim (with plugins), starship, eza, bat, fzf, zoxide, lazygit, direnv, btop, [beads_rust](https://github.com/Dicklesworthstone/beads_rust), [beads_viewer](https://github.com/Dicklesworthstone/beads_viewer), and Claude Code (native binary).
+**Base** (shared): Fish, tmux, neovim (with plugins), starship, eza, bat, fzf, zoxide, lazygit, direnv, glow, [beads_rust](https://github.com/Dicklesworthstone/beads_rust), [beads_viewer](https://github.com/Dicklesworthstone/beads_viewer), and Claude Code (native binary).
 
 **Personal**: + Zig. No MCP servers. Fast startup.
 
@@ -46,5 +46,5 @@ Aliases: `dc` (docker-claude), `dcp` (-p), `dcw` (-w), `dcwd` (--direct).
 - **SSH agent forwarding**: host agent forwarded into container (YubiKey signing works for git)
 - **IDEA access**: dedicated ed25519 key for SSH, auto-generated per machine at build time
 - **MCP servers**: work entrypoint filters to only Docker-compatible servers (ijproxy via host IDE, Context7, PluginModelAnalyzer)
-- **Nested tmux**: container uses `C-b` prefix, `alt+arrow` for window nav (host uses `C-a`, `shift+arrow`)
+- **Nested tmux**: container uses `C-b` prefix, `ctrl+arrow` for window nav (host uses `C-a`, `shift+arrow`)
 - **Images are built per-machine**: `HOST_UID` build arg matches container user to host UID

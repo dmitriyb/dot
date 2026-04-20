@@ -2,7 +2,7 @@ FROM fedora:latest
 
 # Install core tools from Fedora repos
 RUN dnf install -y \
-    fish tmux neovim git eza fzf bat zoxide direnv \
+    fish tmux neovim git eza fzf bat zoxide direnv glow \
     stow git-lfs openssh-clients curl procps-ng \
     golang python3 \
     && dnf clean all

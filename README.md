@@ -23,14 +23,14 @@ Personal configuration files managed with [GNU Stow](https://www.gnu.org/softwar
 #### Arch Linux
 
 ```bash
-sudo pacman -S stow fish tmux neovim starship btop git eza fzf bat zoxide direnv lazygit ffmpeg imagemagick docker ttf-jetbrains-mono-nerd
+sudo pacman -S stow fish tmux neovim starship btop git eza fzf bat zoxide direnv lazygit glow ffmpeg imagemagick docker ttf-jetbrains-mono-nerd
 yay -S ghostty tmux-plugin-manager sesh-bin
 ```
 
 #### macOS
 
 ```bash
-brew install stow fish tmux neovim starship btop git eza fzf bat zoxide direnv lazygit ffmpeg imagemagick tpm sesh
+brew install stow fish tmux neovim starship btop git eza fzf bat zoxide direnv lazygit glow ffmpeg imagemagick tpm sesh
 brew install --cask ghostty docker font-jetbrains-mono-nerd-font
 ```
 
