@@ -31,6 +31,9 @@ shell-integration = fish
 shell-integration-features = no-cursor,ssh-env
 
 # Keyboard bindings
+# Alt+Arrow word jumping (macOS has this by default, Linux needs explicit mapping)
+keybind = alt+left=esc:b
+keybind = alt+right=esc:f
 keybind = shift+insert=paste_from_clipboard
 keybind = control+insert=copy_to_clipboard
 keybind = super+control+shift+alt+arrow_down=resize_split:down,100

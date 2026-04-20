@@ -60,13 +60,13 @@ RUN echo '{"hasCompletedOnboarding":true,"theme":"dark-ansi","editorMode":"vim",
 RUN mkdir -p /home/dev/.claude /home/dev/.local/share /home/dev/.local/state
 
 # Override tmux prefix for nested use (host uses C-a)
-# Override tmux for nested use: C-b prefix, alt+arrow for window nav
+# Override tmux for nested use: C-b prefix, ctrl+arrow for window nav
 RUN echo 'set -g prefix C-b' >> /home/dev/.config/tmux/tmux.conf \
     && echo 'bind C-b last-window' >> /home/dev/.config/tmux/tmux.conf \
     && echo 'unbind -n S-Left' >> /home/dev/.config/tmux/tmux.conf \
     && echo 'unbind -n S-Right' >> /home/dev/.config/tmux/tmux.conf \
-    && echo 'bind -n M-Left previous-window' >> /home/dev/.config/tmux/tmux.conf \
-    && echo 'bind -n M-Right next-window' >> /home/dev/.config/tmux/tmux.conf
+    && echo 'bind -n C-Left previous-window' >> /home/dev/.config/tmux/tmux.conf \
+    && echo 'bind -n C-Right next-window' >> /home/dev/.config/tmux/tmux.conf
 
 # Install tmux plugins (increase git timeout for flaky Docker networking)
 RUN git config --global http.lowSpeedLimit 1000 \
