@@ -7,6 +7,7 @@ echo "Setting up dotfiles from $DOTDIR..."
 
 # Stow config and bin
 cd "$DOTDIR"
+mkdir -p ~/.config
 stow -t ~/.config config
 stow -t ~ bin
 echo "Stowed config and bin."

@@ -28,10 +28,8 @@ RUN curl -fsSL https://claude.ai/install.sh | bash
 
 # Clone and stow dotfiles
 RUN git clone https://github.com/dmitriyb/dot.git /home/dev/dot \
-    && mkdir -p /home/dev/.config \
     && cd /home/dev/dot \
-    && stow -t /home/dev/.config config \
-    && stow -t /home/dev bin
+    && bash setup.sh
 
 # Theme is set per-variant image (personal=catppuccin, work=gruvbox)
 
