@@ -132,7 +132,8 @@ get_work_key() {
     fi
 }
 
-# Persistent volumes for runtime state (never shadows ~/.local/bin from image)
+# Persistent volumes for fish history and tmux resurrect (targeted mounts
+# so image-baked binaries like claude and nvim plugins aren't shadowed)
 # SSH agent forwarding
 SSH_AGENT_ARGS=(-v "$SSH_AUTH_SOCK":/ssh-agent -e SSH_AUTH_SOCK=/ssh-agent)
 # Docker Desktop (macOS) mounts sockets as root:root — need group access
@@ -140,8 +141,8 @@ if [[ "$(uname)" == "Darwin" ]]; then
     SSH_AGENT_ARGS+=(--group-add 0)
 fi
 
-SHARE_VOLUME="claude-share"
-STATE_VOLUME="claude-state"
+FISH_DATA_VOLUME="claude-fish-data"
+TMUX_DATA_VOLUME="claude-tmux-data"
 
 if [[ "$MODE" == "personal" ]]; then
     TOKEN=$(get_personal_token)
@@ -163,8 +164,8 @@ if [[ "$MODE" == "personal" ]]; then
         -e CLAUDE_CODE_OAUTH_TOKEN="$TOKEN" \
         -v claude-personal:/home/dev/.claude \
         -v "$PERSONAL_REPO_VOLUME":/workspace \
-        -v "$SHARE_VOLUME":/home/dev/.local/share \
-        -v "$STATE_VOLUME":/home/dev/.local/state \
+        -v "$FISH_DATA_VOLUME":/home/dev/.local/share/fish \
+        -v "$TMUX_DATA_VOLUME":/home/dev/.local/share/tmux \
         "${SSH_AGENT_ARGS[@]}" \
         "$PERSONAL_IMAGE"
 fi
@@ -177,8 +178,8 @@ WORK_COMMON_ARGS=(
     -e JETBRAINS_MCP_STREAM_URL=http://host.docker.internal:64342/stream
     -v claude-work:/home/dev/.claude
     -v "$WORK_REPO_VOLUME":/workspace
-    -v "$SHARE_VOLUME":/home/dev/.local/share
-    -v "$STATE_VOLUME":/home/dev/.local/state
+    -v "$FISH_DATA_VOLUME":/home/dev/.local/share/fish
+    -v "$TMUX_DATA_VOLUME":/home/dev/.local/share/tmux
     "${SSH_AGENT_ARGS[@]}"
     -p 2222:2222
 )

@@ -38,8 +38,10 @@ brew install --cask ghostty docker font-jetbrains-mono-nerd-font
 
 ```bash
 cd ~/Work/dot
-stow -t ~/.config config && stow -t ~ bin
+./setup.sh
 ```
+
+Idempotent — safe to re-run. Stows config, bin, and SSH host aliases, and injects `Include config.d/*` into `~/.ssh/config`.
 
 ## Themes
 

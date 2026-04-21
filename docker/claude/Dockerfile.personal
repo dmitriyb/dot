@@ -9,6 +9,12 @@ RUN dnf install -y zig && dnf clean all \
 
 USER dev
 
+# Install beads_rust (pre-built binary)
+RUN curl -fsSL https://raw.githubusercontent.com/Dicklesworthstone/beads_rust/main/install.sh | bash
+
+# Install beads_viewer (TUI for beads dependency graphs)
+RUN GOPATH=/home/dev/go go install github.com/Dicklesworthstone/beads_viewer/cmd/bv@latest
+
 RUN /home/dev/.local/bin/theme-set catppuccin
 
 COPY --chown=dev:dev entrypoint.personal.fish /home/dev/entrypoint.fish
