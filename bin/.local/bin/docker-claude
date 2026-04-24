@@ -132,6 +132,41 @@ get_work_key() {
     fi
 }
 
+get_personal_gh_token() {
+    if [[ "$(uname)" == "Darwin" ]]; then
+        security find-generic-password -s gh -a personal -w 2>/dev/null
+    else
+        secret-tool lookup service gh account personal 2>/dev/null
+    fi
+}
+
+get_work_gh_token() {
+    if [[ "$(uname)" == "Darwin" ]]; then
+        security find-generic-password -s gh -a work -w 2>/dev/null
+    else
+        secret-tool lookup service gh account work 2>/dev/null
+    fi
+}
+
+# Fill GH_ARGS with "-e GH_TOKEN=<token>" if a token is stored for $1,
+# else leave GH_ARGS empty and warn. GH_TOKEN makes the in-container
+# `gh` CLI stateless — no hosts.yml written, auth owned by host keychain.
+resolve_gh_args() {
+    local label="$1" token
+    case "$label" in
+        personal) token=$(get_personal_gh_token) ;;
+        work)     token=$(get_work_gh_token) ;;
+    esac
+    GH_ARGS=()
+    if [[ -n "${token:-}" ]]; then
+        GH_ARGS=(-e "GH_TOKEN=$token")
+    else
+        echo "Note: no gh token in keychain (service=gh, account=$label). 'gh' CLI in container will be unauthenticated." >&2
+        echo "  macOS: security add-generic-password -s gh -a $label -w '<PAT>'" >&2
+        echo "  Linux: secret-tool store --label='gh $label' service gh account $label" >&2
+    fi
+}
+
 # Persistent volumes for fish history and tmux resurrect (targeted mounts
 # so image-baked binaries like claude and nvim plugins aren't shadowed)
 # SSH agent forwarding
@@ -158,6 +193,7 @@ if [[ "$MODE" == "personal" ]]; then
         exit 1
     fi
     PERSONAL_REPO_VOLUME="claude-personal-repos"
+    resolve_gh_args personal
 
     exec docker run -it --rm \
         --memory=8g --cpus=4 \
@@ -167,6 +203,7 @@ if [[ "$MODE" == "personal" ]]; then
         -v "$FISH_DATA_VOLUME":/home/dev/.local/share/fish \
         -v "$TMUX_DATA_VOLUME":/home/dev/.local/share/tmux \
         "${SSH_AGENT_ARGS[@]}" \
+        ${GH_ARGS[@]+"${GH_ARGS[@]}"} \
         "$PERSONAL_IMAGE"
 fi
 
@@ -197,11 +234,13 @@ if [[ "$MODE" == "work" ]]; then
     fi
     WIRE_PORT=$(wire config 2>&1 | awk '/Proxy port:/{print $3}')
     WIRE_BASE_URL="http://host.docker.internal:${WIRE_PORT}/wire/${WIRE_KEY}/claude-code/anthropic"
+    resolve_gh_args work
 
     exec docker run \
         "${WORK_COMMON_ARGS[@]}" \
         -e ANTHROPIC_API_KEY=wire-proxy \
         -e ANTHROPIC_BASE_URL="$WIRE_BASE_URL" \
+        ${GH_ARGS[@]+"${GH_ARGS[@]}"} \
         "$WORK_IMAGE"
 fi
 
@@ -215,9 +254,11 @@ if [[ "$MODE" == "direct" ]]; then
         echo "The key is stored automatically in macOS Keychain."
         exit 1
     fi
+    resolve_gh_args work
 
     exec docker run \
         "${WORK_COMMON_ARGS[@]}" \
         -e ANTHROPIC_API_KEY="$KEY" \
+        ${GH_ARGS[@]+"${GH_ARGS[@]}"} \
         "$WORK_IMAGE"
 fi

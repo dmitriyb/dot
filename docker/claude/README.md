@@ -24,6 +24,20 @@ secret-tool store --label='anthropic' service anthropic account personal
 
 Work account credentials are picked up automatically from the macOS Keychain (stored by `claude login`).
 
+Optionally, store GitHub CLI tokens so `gh` works in-container without on-disk auth state:
+
+```bash
+# macOS
+security add-generic-password -s gh -a personal -w '<PAT>'
+security add-generic-password -s gh -a work     -w '<PAT>'
+
+# Arch Linux
+secret-tool store --label='gh personal' service gh account personal
+secret-tool store --label='gh work'     service gh account work
+```
+
+Tokens are passed in as `GH_TOKEN` at container start. If absent, `gh` just stays unauthenticated — no error.
+
 ## Usage
 
 ```bash
@@ -41,7 +55,7 @@ Aliases: `dc` (docker-claude), `dcp` (-p), `dcw` (-w), `dcwd` (--direct).
 ## Architecture
 
 - **Three images**: `claude-dev-base` (shared), `claude-dev-personal`, `claude-dev-work`
-- **Separate auth**: personal uses `CLAUDE_CODE_OAUTH_TOKEN` (keychain), work uses wire proxy by default (`--direct` falls back to `ANTHROPIC_API_KEY` from keychain)
+- **Separate auth**: personal uses `CLAUDE_CODE_OAUTH_TOKEN` (keychain), work uses wire proxy by default (`--direct` falls back to `ANTHROPIC_API_KEY` from keychain); `gh` CLI uses `GH_TOKEN` from keychain (optional)
 - **Persistent volumes**: `claude-personal` / `claude-work` for Claude Code state, `claude-work-repos` for work repos (native ext4), `claude-share` / `claude-state` for nvim plugins, fish history, tmux resurrect
 - **SSH agent forwarding**: host agent forwarded into container (YubiKey signing works for git)
 - **IDEA access**: dedicated ed25519 key for SSH, auto-generated per machine at build time
