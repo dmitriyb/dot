@@ -124,7 +124,8 @@ alias .... 'cd ../../..'
 alias d docker
 alias c claude
 alias ceh 'claude --effort high'
-alias cem 'claude --effort medium'
+alias cex 'claude --effort xhigh'
+alias cem 'claude --effort maximum'
 alias dc docker-claude
 alias dcp 'docker-claude -p'
 alias dcw 'docker-claude -w'

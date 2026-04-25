@@ -19,7 +19,7 @@ RUN GOPATH=/home/dev/go go install github.com/Dicklesworthstone/beads_viewer/cmd
 RUN curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y
 
 # Install beads_viewer_rust (graph-aware issue triage engine for .beads data)
-RUN . "$HOME/.cargo/env" && cargo install --git https://github.com/Dicklesworthstone/beads_viewer_rust.git bvr
+RUN . "$HOME/.cargo/env" && cargo install --git https://github.com/Dicklesworthstone/beads_viewer_rust.git beads_viewer_rust
 
 # Add cargo bin to PATH
 RUN echo 'set -gx PATH ~/.cargo/bin $PATH' \

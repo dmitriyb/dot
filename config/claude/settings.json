@@ -2,5 +2,8 @@
   "model": "opus[1m]",
   "alwaysThinkingEnabled": true,
   "autoUpdatesChannel": "latest",
-  "enableAllProjectMcpServers": true
+  "enableAllProjectMcpServers": true,
+  "permissions": {
+    "defaultMode": "auto"
+  }
 }
