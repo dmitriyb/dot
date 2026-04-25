@@ -1,9 +1,8 @@
 #!/usr/bin/env fish
-# Ensure Claude Code settings exist in ~/.claude/ (mounted volume)
-if not test -f ~/.claude/settings.json
-    mkdir -p ~/.claude
-    cp ~/.config/claude/settings.json ~/.claude/settings.json
-end
+# settings.json is image-authoritative — overwrite from seed every launch.
+# Other ~/.claude state (projects/, todos/, .claude.json) stays in the volume.
+mkdir -p ~/.claude
+cp ~/.config/claude/settings.json ~/.claude/settings.json
 
 # Persist .claude.json in the volume (survives --rm)
 if not test -f ~/.claude/.claude.json

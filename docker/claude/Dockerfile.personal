@@ -2,10 +2,15 @@ FROM claude-dev-base
 
 USER root
 
-# Install Zig
-RUN dnf install -y zig && dnf clean all \
-    || (curl -fsSL https://ziglang.org/download/0.14.0/zig-linux-aarch64-0.14.0.tar.xz \
-        | tar -xJ -C /usr/local --strip-components=1)
+# Install jq
+RUN dnf install -y jq && dnf clean all
+
+# Install Zig (latest stable from upstream — Fedora's package lags releases)
+RUN ZIG_VERSION=$(curl -fsSL https://ziglang.org/download/index.json \
+        | jq -r 'to_entries | map(select(.key != "master")) | .[0].key') \
+    && ARCH=$(uname -m) \
+    && curl -fsSL "https://ziglang.org/download/${ZIG_VERSION}/zig-${ARCH}-linux-${ZIG_VERSION}.tar.xz" \
+        | tar -xJ -C /usr/local --strip-components=1
 
 USER dev
 
