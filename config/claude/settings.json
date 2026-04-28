@@ -3,6 +3,7 @@
   "alwaysThinkingEnabled": true,
   "autoUpdatesChannel": "latest",
   "enableAllProjectMcpServers": true,
+  "skipAutoPermissionPrompt": true,
   "permissions": {
     "defaultMode": "auto"
   }
