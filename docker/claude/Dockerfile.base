@@ -7,6 +7,24 @@ RUN dnf install -y \
     golang python3 \
     && dnf clean all
 
+# Bake GitHub's ed25519 host key. Verified at build time by cross-referencing
+# ssh-keyscan against api.github.com/meta (different trust paths) — fails on
+# mismatch. Lets git push/fetch over SSH run unattended.
+RUN set -e; \
+    SCANNED=$(ssh-keyscan -t ed25519 github.com 2>/dev/null); \
+    SCANNED_FP=$(echo "$SCANNED" | ssh-keygen -lf - | awk '{print $2}' | sed 's/^SHA256://'); \
+    META_FP=$(curl -fsSL https://api.github.com/meta \
+        | python3 -c "import json,sys; print(json.load(sys.stdin)['ssh_key_fingerprints']['SHA256_ED25519'])" \
+        | sed 's/^SHA256://'); \
+    [ "$SCANNED_FP" = "$META_FP" ] || { \
+        echo "github.com ed25519 fingerprint mismatch:" >&2; \
+        echo "  ssh-keyscan: SHA256:$SCANNED_FP" >&2; \
+        echo "  api/meta:    SHA256:$META_FP" >&2; \
+        exit 1; \
+    }; \
+    mkdir -p /etc/ssh; \
+    echo "$SCANNED" > /etc/ssh/ssh_known_hosts
+
 # Install starship (not in Fedora repos)
 RUN curl -fsSL https://starship.rs/install.sh | sh -s -- -y
 
