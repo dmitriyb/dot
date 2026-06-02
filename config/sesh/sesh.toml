@@ -1,11 +1,11 @@
 #:schema https://github.com/joshmedeski/sesh/raw/main/sesh.schema.json
 
-# Show 2 path components (parent/dir) for clearer session names
-dir_length = 2
+# Show just the directory name in session names
+dir_length = 1
 
 # Sort: configured sessions first, then active tmux, then zoxide history
 sort_order = ["config", "tmux", "zoxide"]
 
 [default_session]
-startup_command = "nvim"
-preview_command = "eza --all --git --icons --group-directories-first {}"
+startup_command = "lsa"
+preview_command = "eza -l --all --git --icons --group-directories-first {}"
