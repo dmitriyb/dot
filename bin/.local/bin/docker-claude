@@ -115,55 +115,78 @@ if [[ -z "${WORKSPACE:-}" ]]; then
 fi
 
 
-# Resolve credentials from OS keychain
-get_personal_token() {
+# Platform-specific "not found" exit code from the keychain CLI.
+if [[ "$(uname)" == "Darwin" ]]; then
+    KEYCHAIN_NOTFOUND_RC=44   # errSecItemNotFound
+else
+    KEYCHAIN_NOTFOUND_RC=1    # secret-tool / libsecret
+fi
+
+# Pure passthrough: dispatch to the right OS keychain tool, return its stdout
+# and exit code verbatim. No policy.
+_keychain_read() {
+    local service="$1" account="${2:-}"
     if [[ "$(uname)" == "Darwin" ]]; then
-        security find-generic-password -s anthropic -a personal -w 2>/dev/null
+        if [[ -n "$account" ]]; then
+            security find-generic-password -s "$service" -a "$account" -w 2>/dev/null
+        else
+            security find-generic-password -s "$service" -w 2>/dev/null
+        fi
     else
-        secret-tool lookup service anthropic account personal 2>/dev/null
+        if [[ -n "$account" ]]; then
+            secret-tool lookup service "$service" account "$account" 2>/dev/null
+        else
+            secret-tool lookup service "$service" 2>/dev/null
+        fi
     fi
 }
 
-get_work_key() {
-    if [[ "$(uname)" == "Darwin" ]]; then
-        security find-generic-password -s "Claude Code" -w 2>/dev/null
+# Required secret: prints an Error and aborts if missing or unreadable.
+keychain_require() {
+    local service="$1" account="$2" label="$3" hint="$4" value rc=0
+    value=$(_keychain_read "$service" "$account") || rc=$?
+    if (( rc == 0 )); then
+        printf '%s' "$value"
+    elif (( rc == KEYCHAIN_NOTFOUND_RC )); then
+        echo "Error: $label not found in keychain (service=$service${account:+, account=$account})." >&2
+        if [[ -n "$hint" ]]; then
+            echo "$hint" >&2
+        fi
+        exit 1
     else
-        secret-tool lookup service "Claude Code" 2>/dev/null
+        echo "Error: keychain lookup failed for $label (service=$service${account:+, account=$account}, rc=$rc)." >&2
+        exit "$rc"
     fi
 }
 
-get_personal_gh_token() {
-    if [[ "$(uname)" == "Darwin" ]]; then
-        security find-generic-password -s gh -a personal -w 2>/dev/null
+# Optional secret: prints a Warning and returns empty if missing or unreadable.
+keychain_optional() {
+    local service="$1" account="$2" label="$3" hint="$4" value rc=0
+    value=$(_keychain_read "$service" "$account") || rc=$?
+    if (( rc == 0 )); then
+        printf '%s' "$value"
+    elif (( rc == KEYCHAIN_NOTFOUND_RC )); then
+        echo "Warning: $label not found in keychain (service=$service${account:+, account=$account}); continuing without it." >&2
+        if [[ -n "$hint" ]]; then
+            echo "$hint" >&2
+        fi
     else
-        secret-tool lookup service gh account personal 2>/dev/null
+        echo "Warning: keychain lookup failed for $label (rc=$rc); continuing without it." >&2
     fi
 }
 
-get_work_gh_token() {
-    if [[ "$(uname)" == "Darwin" ]]; then
-        security find-generic-password -s gh -a work -w 2>/dev/null
-    else
-        secret-tool lookup service gh account work 2>/dev/null
-    fi
-}
-
-# Fill GH_ARGS with "-e GH_TOKEN=<token>" if a token is stored for $1,
-# else leave GH_ARGS empty and warn. GH_TOKEN makes the in-container
-# `gh` CLI stateless — no hosts.yml written, auth owned by host keychain.
+# Fill GH_ARGS with "-e GH_TOKEN=<token>" if a token is stored for $1, else
+# leave GH_ARGS empty. GH_TOKEN makes the in-container `gh` CLI stateless —
+# no hosts.yml written, auth owned by host keychain.
 resolve_gh_args() {
     local label="$1" token
-    case "$label" in
-        personal) token=$(get_personal_gh_token) ;;
-        work)     token=$(get_work_gh_token) ;;
-    esac
+    token=$(keychain_optional gh "$label" "gh token for '$label' account" \
+"In-container 'gh' CLI will be unauthenticated.
+  macOS: security add-generic-password -s gh -a $label -w '<PAT>'
+  Linux: secret-tool store --label='gh $label' service gh account $label")
     GH_ARGS=()
-    if [[ -n "${token:-}" ]]; then
+    if [[ -n "$token" ]]; then
         GH_ARGS=(-e "GH_TOKEN=$token")
-    else
-        echo "Note: no gh token in keychain (service=gh, account=$label). 'gh' CLI in container will be unauthenticated." >&2
-        echo "  macOS: security add-generic-password -s gh -a $label -w '<PAT>'" >&2
-        echo "  Linux: secret-tool store --label='gh $label' service gh account $label" >&2
     fi
 }
 
@@ -180,18 +203,12 @@ FISH_DATA_VOLUME="claude-fish-data"
 TMUX_DATA_VOLUME="claude-tmux-data"
 
 if [[ "$MODE" == "personal" ]]; then
-    TOKEN=$(get_personal_token)
-    if [[ -z "$TOKEN" ]]; then
-        echo "Error: No personal OAuth token found in keychain."
-        echo ""
-        echo "Generate a setup token from an authenticated Claude Code instance:"
-        echo "  claude setup-token"
-        echo ""
-        echo "Then store it:"
-        echo "  macOS: security add-generic-password -s anthropic -a personal -w '<token>'"
-        echo "  Linux: secret-tool store --label='anthropic' service anthropic account personal"
-        exit 1
-    fi
+    TOKEN=$(keychain_require anthropic personal "personal Anthropic OAuth token" \
+"Generate a setup token from an authenticated Claude Code instance:
+  claude setup-token
+Then store it:
+  macOS: security add-generic-password -s anthropic -a personal -w '<token>'
+  Linux: secret-tool store --label='anthropic' service anthropic account personal")
     PERSONAL_REPO_VOLUME="claude-personal-repos"
     resolve_gh_args personal
 
@@ -246,14 +263,9 @@ fi
 
 if [[ "$MODE" == "direct" ]]; then
     # Direct API key mode (from OS keychain)
-    KEY=$(get_work_key)
-    if [[ -z "$KEY" ]]; then
-        echo "Error: No work API key found in keychain."
-        echo ""
-        echo "Log into Claude Code with your work account first (claude login)."
-        echo "The key is stored automatically in macOS Keychain."
-        exit 1
-    fi
+    KEY=$(keychain_require "Claude Code" "" "work Claude Code API key" \
+"Log into Claude Code with your work account first (claude login).
+The key is stored automatically in the OS keychain.")
     resolve_gh_args work
 
     exec docker run \
