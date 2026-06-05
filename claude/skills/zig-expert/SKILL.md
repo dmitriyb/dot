@@ -93,7 +93,66 @@ allocator.free(self.data[0..byte_size]);
 
 For arena, pool, and custom allocator patterns see `references/custom-allocators.md`.
 
-## 5. Struct Patterns
+## 5. Concurrency & I/O — the `Io` interface (Zig 0.16)
+
+Zig 0.16 reintroduces async via `std.Io`: a **caller-provided interface, exactly like `Allocator` (§4)**. Any function that does I/O or spawns work takes an `io: std.Io` param, and the *caller* picks the execution model. No `async`/`await` keywords color your functions — the same function runs sync or async depending on the `Io` it's handed (stackful fibers, "colorblind").
+
+### Obtaining and passing `Io`
+
+```zig
+// Set up once in main(), like an allocator. Options default sensibly.
+var threaded: std.Io.Threaded = .init(gpa, .{});
+defer threaded.deinit();
+const io = threaded.io();
+
+// Reusable code takes io as a parameter — same rule as Allocator
+fn fetch(io: std.Io, url: []const u8) !Response { ... }
+```
+
+Implementations live under `std.Io.*`: `Threaded` (thread pool), `Uring` (Linux io_uring), `Kqueue` / `Dispatch` (macOS).
+
+### Spawning — `async` vs `concurrent`
+
+| Call | Returns | Guarantee |
+|------|---------|-----------|
+| `io.async(fn, args)` | `Future(R)` | May run inline/later; allows single-threaded blocking impls |
+| `io.concurrent(fn, args)` | `ConcurrentError!Future(R)` | Real parallelism, or `error.ConcurrencyUnavailable` |
+
+Default to `async`. Reach for `concurrent` only when correctness *requires* parallel progress (e.g. a producer the current task will block on).
+
+```zig
+var f = io.async(compute, .{ io, input });
+const result = f.await(io);          // await is idempotent, not threadsafe
+```
+
+### Cleanup & cancellation discipline
+
+A `Future` owns resources until awaited or canceled; `cancel` is `await` plus a cancellation request.
+
+```zig
+var task = io.async(work, .{ io, args });
+defer _ = task.cancel(io);           // guarantees cleanup on early return
+const r = task.await(io);            // normal path
+```
+
+- A **cancellation point** is any `Io` call that can return `error.Canceled` (`Cancelable = error{Canceled}`). After a cancel request, only the *next* point returns it — **never silently swallow `error.Canceled`**.
+- Awaiting siblings: **await all first, then `try`** — an early `try` leaks the un-awaited tasks.
+
+  ```zig
+  const ra = a.await(io);
+  const rb = b.await(io);
+  try ra;  try rb;                   // handle errors only after both awaited
+  ```
+- Guard a critical region with `io.swapCancelProtection(.blocked)` (+ `defer` restore); re-arm with `io.recancel()`; poll a long CPU loop with `io.checkCancel()`.
+
+### Fan-out & racing
+
+- **`std.Io.Group`** — spawn N tasks (`g.async` / `g.concurrent`), then `g.await(io)` / `g.cancel(io)`. Per-task resources free as each finishes, so a long-lived group is fine.
+- **`std.Io.Select(U)`** — race tasks whose results land in tagged union `U`; `s.await()` returns the first to finish, `s.awaitMany(buf, min)` for several.
+
+See `references/async-io.md` for impl choice, io-threaded file ops, full `Select`, and cancellation edge cases.
+
+## 6. Struct Patterns
 
 ### Init/deinit convention
 
@@ -139,7 +198,7 @@ pub fn deinit(self: *Self) void {
 
 Use this only when ownership lifetime is clear and the allocator must outlive the struct.
 
-## 6. Pointer Safety
+## 7. Pointer Safety
 
 ### Pointer types — when to use each
 
@@ -187,7 +246,7 @@ if (opt_ptr) |ptr| {
 
 See `references/pointers-unsafe.md` for advanced patterns.
 
-## 7. Type Safety
+## 8. Type Safety
 
 - Prefer `const` by default — make everything const unless mutation is required
 - Use explicit integer casts with care — compiler checks narrowing in debug
@@ -208,7 +267,7 @@ const wide: usize = @as(usize, some_u32);
 const narrow: u8 = @intCast(some_u32);
 ```
 
-## 8. Performance
+## 9. Performance
 
 ### General patterns
 
@@ -247,7 +306,7 @@ var hot_data: [64]u8 align(64) = undefined;
 // GPU backends may require specific alignment — see references/gpu-memory.md
 ```
 
-## 9. Testing
+## 10. Testing
 
 ### Convention
 
@@ -283,7 +342,7 @@ try testing.expectApproxEqRel(expected, actual, 1e-6);
 try testing.expectError(error.InvalidShape, Tensor.init(allocator, &.{}, .f32, .cpu));
 ```
 
-## 10. Documentation
+## 11. Documentation
 
 - Focus on **why** and **invariants**, not restating what the code does
 - Document **ownership** in doc comments: who allocates, who frees
@@ -294,7 +353,7 @@ try testing.expectError(error.InvalidShape, Tensor.init(allocator, &.{}, .f32, .
 // Implementation comment only where logic is non-obvious
 ```
 
-## 11. C ABI
+## 12. C ABI
 
 ### Rules
 
@@ -324,7 +383,7 @@ export fn tensor_destroy(t: *Tensor) void {
 
 See `references/c-interop.md` for full patterns including Python ctypes integration.
 
-## 12. Quick Checklists
+## 13. Quick Checklists
 
 ### Per-function
 
@@ -356,3 +415,11 @@ See `references/c-interop.md` for full patterns including Python ctypes integrat
 - [ ] Epsilon guard on all divisions in numerical code
 - [ ] Retain capacity for reusable containers
 - [ ] Alignment specified for SIMD/GPU data
+
+### Async / Io
+
+- [ ] I/O-performing functions take an `io: std.Io` param (like Allocator)
+- [ ] `io.async` by default; `io.concurrent` only when parallel progress is required
+- [ ] Every `Future` is awaited or `defer`-canceled
+- [ ] `error.Canceled` never silently ignored
+- [ ] All sibling futures awaited before any `try`
