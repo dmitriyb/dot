@@ -12,6 +12,12 @@ stow -t ~/.config config
 stow -t ~ bin
 echo "Stowed config and bin."
 
+# Stow user-level Claude Code skills (claude/skills/* → ~/.claude/skills/*).
+# mkdir first so stow folds at the per-skill leaf, not the whole ~/.claude dir.
+mkdir -p ~/.claude/skills
+stow -t ~/.claude claude
+echo "Stowed Claude skills."
+
 # Stow SSH config (ssh/.ssh/config.d/* → ~/.ssh/config.d/*)
 mkdir -p ~/.ssh/config.d
 stow -t ~ ssh
