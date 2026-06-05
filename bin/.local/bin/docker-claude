@@ -215,7 +215,7 @@ Then store it:
     exec docker run -it --rm \
         --memory=8g --cpus=4 \
         -e CLAUDE_CODE_OAUTH_TOKEN="$TOKEN" \
-        -v claude-personal:/home/dev/.claude \
+        -v claude-personal-projects:/home/dev/.claude/projects \
         -v "$PERSONAL_REPO_VOLUME":/workspace \
         -v "$FISH_DATA_VOLUME":/home/dev/.local/share/fish \
         -v "$TMUX_DATA_VOLUME":/home/dev/.local/share/tmux \
@@ -230,7 +230,7 @@ WORK_COMMON_ARGS=(
     -it --rm
     --memory=8g --cpus=4
     -e JETBRAINS_MCP_STREAM_URL=http://host.docker.internal:64342/stream
-    -v claude-work:/home/dev/.claude
+    -v claude-work-projects:/home/dev/.claude/projects
     -v "$WORK_REPO_VOLUME":/workspace
     -v "$FISH_DATA_VOLUME":/home/dev/.local/share/fish
     -v "$TMUX_DATA_VOLUME":/home/dev/.local/share/tmux

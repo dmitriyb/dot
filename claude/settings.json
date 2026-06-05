@@ -4,7 +4,10 @@
   "autoUpdatesChannel": "latest",
   "enableAllProjectMcpServers": true,
   "skipAutoPermissionPrompt": true,
+  "theme": "dark-ansi",
+  "editorMode": "vim",
+  "effortLevel": "high",
   "permissions": {
-    "defaultMode": "auto"
+    "defaultMode": "plan"
   }
 }

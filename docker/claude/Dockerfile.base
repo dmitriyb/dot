@@ -64,7 +64,7 @@ RUN printf '%s\n' \
     > /home/dev/.config/fish/conf.d/99-theme-reload.fish
 
 # Skip onboarding, set vim mode and theme
-RUN echo '{"hasCompletedOnboarding":true,"theme":"dark-ansi","editorMode":"vim","numStartups":1}' > /home/dev/.claude.json
+RUN echo '{"hasCompletedOnboarding":true}' > /home/dev/.claude.json
 
 # Pre-create mount point directories (Docker copies ownership to new named volumes)
 RUN mkdir -p /home/dev/.claude /home/dev/.local/share/fish /home/dev/.local/share/tmux

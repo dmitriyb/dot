@@ -1,17 +1,16 @@
 #!/usr/bin/env fish
-# Ensure Claude Code settings exist in ~/.claude/ (mounted volume)
-if not test -f ~/.claude/settings.json
-    mkdir -p ~/.claude
-    cp ~/.config/claude/settings.json ~/.claude/settings.json
-end
-
-# Persist .claude.json in the volume (survives --rm)
-# The baked-in /home/dev/.claude.json has onboarding defaults;
-# copy it to the volume on first run, then always symlink.
-if not test -f ~/.claude/.claude.json
-    cp ~/.claude.json ~/.claude/.claude.json 2>/dev/null
-end
-ln -sf ~/.claude/.claude.json ~/.claude.json
+# ~/.claude is ephemeral (image-baked settings.json + skills). Only projects/ persists
+# via a submounted volume. Set the container's default mode to auto.
+python3 -c '
+import json, os
+src = os.path.expanduser("~/dot/claude/settings.json")
+dst = os.path.expanduser("~/.claude/settings.json")
+cfg = json.load(open(src))
+cfg.setdefault("permissions", {})["defaultMode"] = "auto"
+os.makedirs(os.path.dirname(dst), exist_ok=True)
+if os.path.lexists(dst): os.remove(dst)
+with open(dst, "w") as f: json.dump(cfg, f, indent=2)
+'
 
 # Import SSH public keys from forwarded agent for IDEA Remote Development access
 if test -n "$SSH_AUTH_SOCK"

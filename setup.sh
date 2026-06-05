@@ -12,9 +12,13 @@ stow -t ~/.config config
 stow -t ~ bin
 echo "Stowed config and bin."
 
-# Stow user-level Claude Code skills (claude/skills/* → ~/.claude/skills/*).
+# Stow user-level Claude Code config (claude/settings.json + claude/skills/* → ~/.claude/).
 # mkdir first so stow folds at the per-skill leaf, not the whole ~/.claude dir.
 mkdir -p ~/.claude/skills
+# Back up any pre-existing real settings.json so stow can own that path.
+if [ -e ~/.claude/settings.json ] && [ ! -L ~/.claude/settings.json ]; then
+    mv ~/.claude/settings.json ~/.claude/settings.json.pre-stow.bak
+fi
 stow -t ~/.claude claude
 echo "Stowed Claude skills."
 
