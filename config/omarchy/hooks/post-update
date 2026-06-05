@@ -6,18 +6,17 @@
 set -e
 
 CUSTOM_DIR="$HOME/.config/omarchy"
-HYPRLAND_CONF="$HOME/.config/hypr/hyprland.conf"
+HYPRLAND_LUA="$HOME/.config/hypr/hyprland.lua"
 WAYBAR_CONF="$HOME/.config/waybar/config.jsonc"
 
 echo -e "\n\e[32mApplying custom configurations...\e[0m"
 
-# 1. Ensure custom Hyprland config is sourced
-#    (In case template refresh removed the source line)
-if [ -f "$CUSTOM_DIR/custom-hyprland.conf" ]; then
-  if ! grep -q "source.*custom-hyprland.conf" "$HYPRLAND_CONF"; then
-    echo "" >> "$HYPRLAND_CONF"
-    echo "source = ~/.config/omarchy/custom-hyprland.conf" >> "$HYPRLAND_CONF"
-    echo "✓ Added custom Hyprland config source"
+# 1. Ensure custom Hyprland Lua config is required
+#    (In case template refresh removed the require line)
+if [ -f "$CUSTOM_DIR/custom-hyprland.lua" ] && [ -f "$HYPRLAND_LUA" ]; then
+  if ! grep -q 'require("omarchy.custom-hyprland")' "$HYPRLAND_LUA"; then
+    printf '\nrequire("omarchy.custom-hyprland")\n' >> "$HYPRLAND_LUA"
+    echo "✓ Added custom Hyprland config require"
   fi
 fi
 
