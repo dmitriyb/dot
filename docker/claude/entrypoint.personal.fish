@@ -20,9 +20,28 @@ if not test -f /workspace/README.md
         'Clone repos here (native ext4, persistent across restarts).' \
         '' \
         '```bash' \
-        'git clone --depth 1 --single-branch git@github.com:<user>/<repo>.git' \
+        'git clone --depth 1 --single-branch https://github.com/<user>/<repo>.git' \
         '```' \
         > /workspace/README.md
+end
+
+# Agent mode: the forwarded ssh-agent holds only a no-touch signing key. Sign with
+# it, and route GitHub transport over HTTPS + GH_TOKEN so the key signs but never
+# authenticates.
+if test "$AGENT_MODE" = 1
+    # Derive the signing key from the forwarded agent (it holds exactly one key).
+    set -l pub (ssh-add -L 2>/dev/null | head -n1)
+    if test -n "$pub"
+        git config --global user.signingkey "key::$pub"
+    end
+
+    # HTTPS remotes also stop the `git@github.com-personal:` includeIf from pulling
+    # in the touch-key signingkey, so the global key above wins.
+    if test -n "$GH_TOKEN"
+        gh auth setup-git 2>/dev/null
+        git config --global url."https://github.com/".insteadOf "git@github.com-personal:"
+        git config --global url."https://github.com/".insteadOf "git@github.com:"
+    end
 end
 
 # Start fish interactive shell

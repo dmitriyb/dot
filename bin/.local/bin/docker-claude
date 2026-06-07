@@ -7,6 +7,7 @@ WORK_IMAGE="claude-dev-work"
 MODE=""
 REBUILD=false
 NO_CACHE=false
+AGENT_MODE=false
 
 # Parse flags
 while [[ $# -gt 0 ]]; do
@@ -32,13 +33,17 @@ while [[ $# -gt 0 ]]; do
             REBUILD=true
             shift
             ;;
+        -a|--agent)
+            AGENT_MODE=true
+            shift
+            ;;
         --workspace)
             WORKSPACE="$2"
             shift 2
             ;;
         *)
             echo "Unknown flag: $1"
-            echo "Usage: docker-claude (-p|--personal | -w|--work | --direct) [-r] [--no-cache] [--workspace <path>]"
+            echo "Usage: docker-claude (-p|--personal | -w|--work | --direct) [-a|--agent] [-r] [--no-cache] [--workspace <path>]"
             exit 1
             ;;
     esac
@@ -190,6 +195,56 @@ resolve_gh_args() {
     fi
 }
 
+# Committed list of SHA-256 hashes identifying the sign-only / no-touch resident
+# key(s). Only hashes are stored, never the key name. See the file for details.
+SIGNING_HASH_FILE="$HOME/.ssh/signing-key-hashes"
+
+_sha256() {
+    if command -v sha256sum >/dev/null 2>&1; then
+        sha256sum | awk '{print $1}'
+    else
+        shasum -a 256 | awk '{print $1}'
+    fi
+}
+
+# True if the given key handle's application suffix is listed in SIGNING_HASH_FILE.
+_is_signing_key() {
+    local suffix h
+    suffix="${1##*_sk_rk_}"
+    h="$(printf '%s' "$suffix" | _sha256)"
+    grep -vE '^[[:space:]]*(#|$)' "$SIGNING_HASH_FILE" 2>/dev/null | grep -qix "$h"
+}
+
+# Ephemeral signing agent for agent-mode containers. Sets SIGN_SOCK and loads ONLY
+# the no-touch sign-only key (identified by hash). The resident key is pulled off
+# the YubiKey at launch (PIN + 1 touch); its handle file is removed as soon as it
+# is loaded. The agent is killed and its socket removed on script exit (via trap),
+# so the normal environment keeps no signing agent and no sk files at rest.
+start_signing_agent() {
+    if [[ ! -s "$SIGNING_HASH_FILE" ]] || ! grep -qiE '^[[:space:]]*[0-9a-f]{64}[[:space:]]*$' "$SIGNING_HASH_FILE"; then
+        echo "Error: no signing-key hash configured in $SIGNING_HASH_FILE." >&2
+        echo "Add one with: printf '%s' '<app-suffix>' | sha256sum" >&2
+        exit 1
+    fi
+    SIGN_SOCK="$(mktemp -u --tmpdir dc-agent.XXXXXX.sock)"
+    eval "$(ssh-agent -a "$SIGN_SOCK")" >/dev/null
+    SIGN_PID="$SSH_AGENT_PID"
+    trap 'kill "$SIGN_PID" 2>/dev/null; rm -f "$SIGN_SOCK"' EXIT
+    local dir key; dir="$(mktemp -d)"
+    ( cd "$dir" && ssh-keygen -K >/dev/null )   # download resident creds (PIN + touch)
+    shopt -s nullglob
+    for key in "$dir"/id_*_sk_rk_*; do
+        [[ "$key" == *.pub ]] && continue
+        if _is_signing_key "$key"; then
+            SSH_AUTH_SOCK="$SIGN_SOCK" ssh-add "$key" >/dev/null 2>&1
+        fi
+    done
+    rm -rf "$dir"
+    if [[ "$(SSH_AUTH_SOCK="$SIGN_SOCK" ssh-add -L 2>/dev/null | grep -c .)" != 1 ]]; then
+        echo "Warning: signing agent does not hold exactly one key." >&2
+    fi
+}
+
 # Persistent volumes for fish history and tmux resurrect (targeted mounts
 # so image-baked binaries like claude and nvim plugins aren't shadowed)
 # SSH agent forwarding
@@ -211,6 +266,29 @@ Then store it:
   Linux: secret-tool store --label='anthropic' service anthropic account personal")
     PERSONAL_REPO_VOLUME="claude-personal-repos"
     resolve_gh_args personal
+
+    if [[ "$AGENT_MODE" == true ]]; then
+        # Agent mode: forward an ephemeral no-touch signing-only agent. Transport
+        # uses GH_TOKEN over HTTPS (see entrypoint), so the key signs but can't auth.
+        start_signing_agent
+        PERSONAL_AGENT_ARGS=(-v "$SIGN_SOCK":/ssh-agent -e SSH_AUTH_SOCK=/ssh-agent -e AGENT_MODE=1)
+        if [[ "$(uname)" == "Darwin" ]]; then
+            PERSONAL_AGENT_ARGS+=(--group-add 0)
+        fi
+        # NOT exec: control returns here on container exit so the trap tears down
+        # the signing agent and removes its socket.
+        docker run -it --rm \
+            --memory=8g --cpus=4 \
+            -e CLAUDE_CODE_OAUTH_TOKEN="$TOKEN" \
+            -v claude-personal-projects:/home/dev/.claude/projects \
+            -v "$PERSONAL_REPO_VOLUME":/workspace \
+            -v "$FISH_DATA_VOLUME":/home/dev/.local/share/fish \
+            -v "$TMUX_DATA_VOLUME":/home/dev/.local/share/tmux \
+            "${PERSONAL_AGENT_ARGS[@]}" \
+            ${GH_ARGS[@]+"${GH_ARGS[@]}"} \
+            "$PERSONAL_IMAGE"
+        exit 0
+    fi
 
     exec docker run -it --rm \
         --memory=8g --cpus=4 \

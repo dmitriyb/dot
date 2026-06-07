@@ -41,7 +41,7 @@ cd ~/Work/dot
 ./setup.sh
 ```
 
-Idempotent — safe to re-run. Stows config, bin, and SSH host aliases, and injects `Include config.d/*` into `~/.ssh/config`.
+Idempotent — safe to re-run. Stows config, bin, Claude Code skills/settings, and SSH host aliases, and injects `Include config.d/*` into `~/.ssh/config`.
 
 ## Themes
 

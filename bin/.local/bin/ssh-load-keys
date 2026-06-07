@@ -1,0 +1,57 @@
+#!/usr/bin/env bash
+# ssh-load-keys — load resident FIDO2 keys from the YubiKey into the running
+# ssh-agent, EXCLUDING any sign-only / no-touch key listed in ~/.ssh/signing-key-hashes.
+#
+# A no-touch key must never live in the main (forwarded) agent: it would let
+# anything inside a forwarded container sign with no touch. Those keys are only
+# loaded into the ephemeral agent created by `docker-claude --agent`.
+#
+# Resident keys are downloaded with `ssh-keygen -K` (PIN + one touch), loaded
+# selectively, then the handle files are discarded — nothing is left on disk.
+set -euo pipefail
+
+SIGNING_HASH_FILE="$HOME/.ssh/signing-key-hashes"
+
+if [[ ! -S "${SSH_AUTH_SOCK:-}" ]]; then
+    echo "No ssh-agent found (SSH_AUTH_SOCK is unset or invalid)." >&2
+    exit 1
+fi
+
+_sha256() {
+    if command -v sha256sum >/dev/null 2>&1; then
+        sha256sum | awk '{print $1}'
+    else
+        shasum -a 256 | awk '{print $1}'
+    fi
+}
+
+# True if the given key handle's application suffix is listed in SIGNING_HASH_FILE.
+_is_signing_key() {
+    local suffix h
+    suffix="${1##*_sk_rk_}"
+    h="$(printf '%s' "$suffix" | _sha256)"
+    grep -vE '^[[:space:]]*(#|$)' "$SIGNING_HASH_FILE" 2>/dev/null | grep -qix "$h"
+}
+
+dir="$(mktemp -d)"
+trap 'rm -rf "$dir"' EXIT
+
+# Downloads every resident credential as id_<type>_sk_rk_<application> handle files.
+( cd "$dir" && ssh-keygen -K >/dev/null )
+
+shopt -s nullglob
+loaded=0
+for key in "$dir"/id_*_sk_rk_*; do
+    [[ "$key" == *.pub ]] && continue          # private handle files only
+    _is_signing_key "$key" && continue         # keep sign-only keys out of the main agent
+    if ssh-add "$key" >/dev/null 2>&1; then
+        loaded=$((loaded + 1))
+    fi
+done
+
+if [[ "$loaded" -eq 0 ]]; then
+    echo "Warning: no keys were loaded." >&2
+fi
+
+echo "Loaded keys (sign-only keys excluded):"
+ssh-add -l
