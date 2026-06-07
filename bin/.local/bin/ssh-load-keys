@@ -37,7 +37,8 @@ dir="$(mktemp -d)"
 trap 'rm -rf "$dir"' EXIT
 
 # Downloads every resident credential as id_<type>_sk_rk_<application> handle files.
-( cd "$dir" && ssh-keygen -K >/dev/null )
+# -N "" skips the passphrase prompt; the files are deleted moments later anyway.
+( cd "$dir" && ssh-keygen -K -N "" >/dev/null )
 
 shopt -s nullglob
 loaded=0

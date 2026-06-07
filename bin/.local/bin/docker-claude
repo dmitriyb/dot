@@ -231,7 +231,7 @@ start_signing_agent() {
     SIGN_PID="$SSH_AGENT_PID"
     trap 'kill "$SIGN_PID" 2>/dev/null; rm -f "$SIGN_SOCK"' EXIT
     local dir key; dir="$(mktemp -d)"
-    ( cd "$dir" && ssh-keygen -K >/dev/null )   # download resident creds (PIN + touch)
+    ( cd "$dir" && ssh-keygen -K -N "" >/dev/null )   # download resident creds (PIN + touch); -N "" skips passphrase
     shopt -s nullglob
     for key in "$dir"/id_*_sk_rk_*; do
         [[ "$key" == *.pub ]] && continue
