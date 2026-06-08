@@ -2,4 +2,5 @@
 # Used for repos cloned with: git clone git@github.com-personal:user/repo.git
 
 [user]
-	signingkey = key::sk-ssh-ed25519@openssh.com AAAAGnNrLXNzaC1lZDI1NTE5QG9wZW5zc2guY29tAAAAIIUZ0gbE9FLztxEHbQ5qlkgb3rqf5BzoEW/XjnnvlsSIAAAACnNzaDpnaXRodWI=
+  email = dvbozhko@gmail.com
+  signingkey = key::sk-ssh-ed25519@openssh.com AAAAGnNrLXNzaC1lZDI1NTE5QG9wZW5zc2guY29tAAAAIIUZ0gbE9FLztxEHbQ5qlkgb3rqf5BzoEW/XjnnvlsSIAAAACnNzaDpnaXRodWI=
