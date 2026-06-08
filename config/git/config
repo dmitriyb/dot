@@ -47,11 +47,14 @@
 
 # Include config based on remote URL (requires SSH host aliases in ~/.ssh/config)
 # Clone personal repos: git clone git@github.com-personal:user/repo.git
-# Clone work repos: git clone git@github.com-work:user/repo.git
+# Clone work repos: git clone git@github.com-work:user/repo.git and git clone ssh://git@git.jetbrains.team/*
 [includeIf "hasconfig:remote.*.url:git@github.com-personal:*/**"]
 	path = ~/.config/git/config_personal
 
 [includeIf "hasconfig:remote.*.url:git@github.com-work:*/**"]
+	path = ~/.config/git/config_work
+
+[includeIf "hasconfig:remote.*.url:ssh://git@git.jetbrains.team/**"]
 	path = ~/.config/git/config_work
 
 # =============================================================================
