@@ -254,9 +254,6 @@ if [[ "$(uname)" == "Darwin" ]]; then
     SSH_AGENT_ARGS+=(--group-add 0)
 fi
 
-FISH_DATA_VOLUME="claude-fish-data"
-TMUX_DATA_VOLUME="claude-tmux-data"
-
 if [[ "$MODE" == "personal" ]]; then
     TOKEN=$(keychain_require anthropic personal "personal Anthropic OAuth token" \
 "Generate a setup token from an authenticated Claude Code instance:
@@ -295,8 +292,8 @@ Then store it:
         -e CLAUDE_CODE_OAUTH_TOKEN="$TOKEN" \
         -v claude-personal-projects:/home/dev/.claude/projects \
         -v "$PERSONAL_REPO_VOLUME":/workspace \
-        -v "$FISH_DATA_VOLUME":/home/dev/.local/share/fish \
-        -v "$TMUX_DATA_VOLUME":/home/dev/.local/share/tmux \
+        -v claude-fish-data-personal:/home/dev/.local/share/fish \
+        -v claude-tmux-data-personal:/home/dev/.local/share/tmux \
         "${SSH_AGENT_ARGS[@]}" \
         ${GH_ARGS[@]+"${GH_ARGS[@]}"} \
         "$PERSONAL_IMAGE"
@@ -310,8 +307,8 @@ WORK_COMMON_ARGS=(
     -e JETBRAINS_MCP_STREAM_URL=http://host.docker.internal:64342/stream
     -v claude-work-projects:/home/dev/.claude/projects
     -v "$WORK_REPO_VOLUME":/workspace
-    -v "$FISH_DATA_VOLUME":/home/dev/.local/share/fish
-    -v "$TMUX_DATA_VOLUME":/home/dev/.local/share/tmux
+    -v claude-fish-data-work:/home/dev/.local/share/fish
+    -v claude-tmux-data-work:/home/dev/.local/share/tmux
     "${SSH_AGENT_ARGS[@]}"
     -p 2222:2222
 )
