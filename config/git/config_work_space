@@ -1,5 +1,5 @@
-# Git Work Signing
-# Used for repos cloned with: git clone git@github.com-work:user/repo.git
+# Git Work Space Signing
+# Used for repos cloned with: git clone ssh://git@git.jetbrains.team/*
 
 [user]
   email = dmitry.bozhko@jetbrains.com

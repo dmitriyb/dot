@@ -52,10 +52,10 @@
 	path = ~/.config/git/config_personal
 
 [includeIf "hasconfig:remote.*.url:git@github.com-work:*/**"]
-	path = ~/.config/git/config_work
+	path = ~/.config/git/config_work_github
 
 [includeIf "hasconfig:remote.*.url:ssh://git@git.jetbrains.team/**"]
-	path = ~/.config/git/config_work
+	path = ~/.config/git/config_work_space
 
 # =============================================================================
 # Signing (SSH-based)
