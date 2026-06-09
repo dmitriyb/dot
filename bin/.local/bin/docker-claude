@@ -277,7 +277,6 @@ Then store it:
         docker run -it --rm \
             --memory=8g --cpus=4 \
             -e CLAUDE_CODE_OAUTH_TOKEN="$TOKEN" \
-            -v claude-personal-projects:/home/dev/.claude/projects \
             -v "$PERSONAL_REPO_VOLUME":/workspace \
             -v "$FISH_DATA_VOLUME":/home/dev/.local/share/fish \
             -v "$TMUX_DATA_VOLUME":/home/dev/.local/share/tmux \
@@ -290,7 +289,6 @@ Then store it:
     exec docker run -it --rm \
         --memory=8g --cpus=4 \
         -e CLAUDE_CODE_OAUTH_TOKEN="$TOKEN" \
-        -v claude-personal-projects:/home/dev/.claude/projects \
         -v "$PERSONAL_REPO_VOLUME":/workspace \
         -v claude-fish-data-personal:/home/dev/.local/share/fish \
         -v claude-tmux-data-personal:/home/dev/.local/share/tmux \
@@ -305,7 +303,6 @@ WORK_COMMON_ARGS=(
     -it --rm
     --memory=8g --cpus=4
     -e JETBRAINS_MCP_STREAM_URL=http://host.docker.internal:64342/stream
-    -v claude-work-projects:/home/dev/.claude/projects
     -v "$WORK_REPO_VOLUME":/workspace
     -v claude-fish-data-work:/home/dev/.local/share/fish
     -v claude-tmux-data-work:/home/dev/.local/share/tmux

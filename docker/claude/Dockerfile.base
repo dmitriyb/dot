@@ -66,8 +66,9 @@ RUN printf '%s\n' \
 # Skip onboarding, set vim mode and theme
 RUN echo '{"hasCompletedOnboarding":true}' > /home/dev/.claude.json
 
-# Pre-create mount point directories (Docker copies ownership to new named volumes)
-RUN mkdir -p /home/dev/.claude /home/dev/.local/share/fish /home/dev/.local/share/tmux
+# Pre-create volume mount points (Docker copies ownership to new named volumes).
+# ~/.claude already exists from setup.sh; only fish/tmux dirs are volume mountpoints.
+RUN mkdir -p /home/dev/.local/share/fish /home/dev/.local/share/tmux
 
 # Override tmux prefix for nested use (host uses C-a)
 # Override tmux for nested use: C-b prefix, ctrl+arrow for window nav
