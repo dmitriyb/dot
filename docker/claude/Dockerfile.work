@@ -2,8 +2,8 @@ FROM claude-dev-base
 
 USER root
 
-# Install bun (for MCP servers) and openssh-server (for IDEA Remote Development)
-RUN dnf install -y unzip openssh-server sudo java-25-openjdk-devel gcc-c++ cmake ninja-build python3-pip wget && dnf clean all
+# Build tooling and openssh-server (for IDEA Remote Development); bun is installed below
+RUN dnf install -y unzip openssh-server sudo gcc-c++ cmake ninja-build python3-pip wget && dnf clean all
 
 # Configure sshd: non-privileged port, key-only auth
 RUN ssh-keygen -A \

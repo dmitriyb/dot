@@ -3,7 +3,7 @@ FROM fedora:latest
 # Install core tools from Fedora repos
 RUN dnf install -y \
     fish tmux neovim git gh eza fzf bat zoxide direnv glow \
-    stow git-lfs openssh-clients curl procps-ng \
+    stow git-lfs openssh-clients curl procps-ng xz \
     golang python3 \
     && dnf clean all
 
@@ -48,6 +48,31 @@ RUN curl -fsSL https://claude.ai/install.sh | bash
 RUN git clone https://github.com/dmitriyb/dot.git /home/dev/dot \
     && cd /home/dev/dot \
     && bash setup.sh
+
+# Install Nix (single-user, daemonless — there is no systemd in the container). Pairs
+# with direnv for per-project devshells: a project with a flake.nix/.envrc pulls its
+# exact toolchain (e.g. its own JDK) instead of baking versions into the image.
+# /nix must be created by root, then handed to dev for the single-user install.
+USER root
+RUN mkdir -m 0755 /nix && chown dev /nix
+USER dev
+RUN curl -fsSL https://nixos.org/nix/install | sh -s -- --no-daemon \
+    && mkdir -p /home/dev/.config/nix \
+    && echo 'experimental-features = nix-command flakes' > /home/dev/.config/nix/nix.conf
+
+# nix-direnv: cached `use flake` / `use nix` for direnv (re-entry skips re-evaluation)
+RUN . /home/dev/.nix-profile/etc/profile.d/nix.sh \
+    && nix profile install nixpkgs#nix-direnv \
+    && mkdir -p /home/dev/.config/direnv \
+    && echo 'source /home/dev/.nix-profile/share/nix-direnv/direnvrc' \
+        > /home/dev/.config/direnv/direnvrc
+
+# Nix env for fish (single-user install exposes ~/.nix-profile; installer only wires bash)
+RUN printf '%s\n' \
+    'set -gx PATH /home/dev/.nix-profile/bin $PATH' \
+    'set -gx NIX_PATH /home/dev/.nix-defexpr/channels' \
+    'set -gx NIX_SSL_CERT_FILE /etc/pki/tls/certs/ca-bundle.crt' \
+    > /home/dev/.config/fish/conf.d/02-nix.fish
 
 # Theme is set per-variant image (personal=catppuccin, work=gruvbox)
 
