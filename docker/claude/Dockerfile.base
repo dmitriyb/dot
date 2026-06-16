@@ -60,8 +60,12 @@ RUN curl -fsSL https://nixos.org/nix/install | sh -s -- --no-daemon \
     && mkdir -p /home/dev/.config/nix \
     && echo 'experimental-features = nix-command flakes' > /home/dev/.config/nix/nix.conf
 
-# nix-direnv: cached `use flake` / `use nix` for direnv (re-entry skips re-evaluation)
-RUN . /home/dev/.nix-profile/etc/profile.d/nix.sh \
+# Nix's curl (GnuTLS) rejects Fedora's CA bundle, so bootstrap from the store's nss-cacert
+# to install cacert into the profile (stable, gc-safe cert), then add nix-direnv. PATH is
+# set directly: nix.sh no-ops under RUN since Docker doesn't export the $USER it guards on.
+RUN export PATH=/home/dev/.nix-profile/bin:$PATH \
+        NIX_SSL_CERT_FILE="$(ls -d /nix/store/*-nss-cacert-*/etc/ssl/certs/ca-bundle.crt | head -n1)" \
+    && nix profile install nixpkgs#cacert \
     && nix profile install nixpkgs#nix-direnv \
     && mkdir -p /home/dev/.config/direnv \
     && echo 'source /home/dev/.nix-profile/share/nix-direnv/direnvrc' \
@@ -71,7 +75,7 @@ RUN . /home/dev/.nix-profile/etc/profile.d/nix.sh \
 RUN printf '%s\n' \
     'set -gx PATH /home/dev/.nix-profile/bin $PATH' \
     'set -gx NIX_PATH /home/dev/.nix-defexpr/channels' \
-    'set -gx NIX_SSL_CERT_FILE /etc/pki/tls/certs/ca-bundle.crt' \
+    'set -gx NIX_SSL_CERT_FILE /home/dev/.nix-profile/etc/ssl/certs/ca-bundle.crt' \
     > /home/dev/.config/fish/conf.d/02-nix.fish
 
 # Theme is set per-variant image (personal=catppuccin, work=gruvbox)
