@@ -64,11 +64,15 @@ RUN curl -fsSL https://nixos.org/nix/install | sh -s -- --no-daemon \
     && echo 'experimental-features = nix-command flakes' > /home/dev/.config/nix/nix.conf
 
 # Nix's curl (GnuTLS) rejects Fedora's CA bundle, so bootstrap from the store's nss-cacert
-# to install cacert into the profile (stable, gc-safe cert), then add nix-direnv. PATH is
-# set directly: nix.sh no-ops under RUN since Docker doesn't export the $USER it guards on.
+# for build-time TLS, then add nix-direnv. PATH is set directly: nix.sh no-ops under RUN
+# since Docker doesn't export the $USER it guards on.
+# The Nix installer already adds nss-cacert to the profile, so only top it up if missing —
+# installing nixpkgs#cacert unconditionally collides when the registry's nss-cacert version
+# differs from the installer's (both are unpinned), aborting the build non-deterministically.
 RUN export PATH=/home/dev/.nix-profile/bin:$PATH \
         NIX_SSL_CERT_FILE="$(ls -d /nix/store/*-nss-cacert-*/etc/ssl/certs/ca-bundle.crt | head -n1)" \
-    && nix profile install nixpkgs#cacert \
+    && { [ -e /home/dev/.nix-profile/etc/ssl/certs/ca-bundle.crt ] \
+            || nix profile install nixpkgs#cacert; } \
     && nix profile install nixpkgs#nix-direnv \
     && mkdir -p /home/dev/.config/direnv \
     && echo 'source /home/dev/.nix-profile/share/nix-direnv/direnvrc' \
