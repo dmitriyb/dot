@@ -44,7 +44,10 @@ WORKDIR /home/dev
 # Install Claude Code (native binary into ~/.local/bin)
 RUN curl -fsSL https://claude.ai/install.sh | bash
 
-# Clone and stow dotfiles
+# Clone and stow dotfiles. DOT_PROFILE=headless → setup.sh stows shared + headless
+# and skips host-only ssh-agent activation (no init system here; the agent is
+# forwarded from the host via -e SSH_AUTH_SOCK at run time).
+ENV DOT_PROFILE=headless
 RUN git clone https://github.com/dmitriyb/dot.git /home/dev/dot \
     && cd /home/dev/dot \
     && bash setup.sh

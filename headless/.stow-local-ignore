@@ -1,0 +1,3 @@
+# Placeholder for the headless layer (servers + containers).
+# This file keeps the package tracked in git and makes `stow -t ~ headless` a no-op
+# until real headless-only configs land here. stow never symlinks its own ignore file.

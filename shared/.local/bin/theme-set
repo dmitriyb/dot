@@ -22,8 +22,16 @@ ln -sfn "$THEME_NAME" "$THEMES_DIR/current"
 # Update starship palette if starship.toml exists
 STARSHIP_CONFIG="${XDG_CONFIG_HOME:-$HOME/.config}/starship.toml"
 if [ -f "$STARSHIP_CONFIG" ]; then
-    # Resolve symlink if needed (macOS sed -i doesn't work on symlinks)
-    [ -L "$STARSHIP_CONFIG" ] && STARSHIP_CONFIG=$(realpath "$STARSHIP_CONFIG")
+    # Resolve symlink if needed (macOS sed -i doesn't work on symlinks; realpath
+    # and readlink -f are absent on stock macOS, so resolve one level by hand —
+    # stow symlinks are single-level).
+    if [ -L "$STARSHIP_CONFIG" ]; then
+        _starship_target="$(readlink "$STARSHIP_CONFIG")"
+        case "$_starship_target" in
+            /*) STARSHIP_CONFIG="$_starship_target" ;;
+            *)  STARSHIP_CONFIG="$(cd "$(dirname "$STARSHIP_CONFIG")" && pwd)/$_starship_target" ;;
+        esac
+    fi
     if [[ "$OSTYPE" == "darwin"* ]]; then
         sed -i '' "s/^palette = .*/palette = \"$THEME_NAME\"/" "$STARSHIP_CONFIG"
     else

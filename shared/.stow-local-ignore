@@ -1,4 +1,4 @@
-# Stow ignore patterns for config package
+# Stow ignore patterns for the shared package
 # Files matching these patterns won't be symlinked
 
 # Documentation
@@ -14,4 +14,4 @@ LICENSE
 \.DS_Store
 
 # Theme symlink (managed by theme-set script, not stow)
-themes/current
+.config/themes/current
