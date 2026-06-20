@@ -17,6 +17,32 @@ is_headless() {
     return 1
 }
 
+# Remove symlinks a previous run created (i.e. that point into THIS repo) before
+# stowing. This makes setup.sh idempotent and robust across any restructure — renamed
+# packages, files moved between packages, or moved within a package — by converging to
+# whatever the current layout stows, instead of leaving orphaned/dangling links that
+# would dangle or make stow abort. Only links resolving into $DOTDIR are touched; real
+# files and symlinks pointing elsewhere are left untouched.
+prune_repo_links() {
+    local dir link tgt
+    for dir in ~/.config ~/.local ~/.claude ~/.ssh ~/Library/LaunchAgents; do
+        [ -d "$dir" ] || continue
+        while IFS= read -r link; do
+            if [ -e "$link" ]; then
+                # Resolvable link: drop it only if its real target lives inside the repo.
+                tgt="$(cd "$(dirname "$link")" && cd "$(dirname "$(readlink "$link")")" 2>/dev/null && pwd)" || continue
+                case "$tgt/" in "$DOTDIR"/*) rm -f "$link" ;; esac
+            else
+                # Broken link: can't resolve it, so match the repo dir name in the link
+                # string (stow writes relative links like ../../<repo>/...). Safe to drop.
+                case "$(readlink "$link")" in
+                    "$DOTDIR"/* | */"$(basename "$DOTDIR")"/*) rm -f "$link" ;;
+                esac
+            fi
+        done < <(find "$dir" -type l 2>/dev/null)
+    done
+}
+
 # Home-mirror layout: every package mirrors ~ and stows to a single target (~).
 # Pre-create the dirs that must stay real so stow folds *inside* them (links the
 # leaves) instead of replacing the whole directory with a symlink.
@@ -27,6 +53,9 @@ if [ -e ~/.claude/settings.json ] && [ ! -L ~/.claude/settings.json ]; then
     mv ~/.claude/settings.json ~/.claude/settings.json.pre-stow.bak
     echo "Backed up existing ~/.claude/settings.json."
 fi
+
+# Clear stale links from any earlier layout so stow can re-converge cleanly.
+prune_repo_links
 
 # Shared layer (every OS): .config, .local/bin, .claude, .ssh.
 stow -t ~ shared
