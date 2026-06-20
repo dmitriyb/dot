@@ -193,7 +193,12 @@ end
 # *consumes* the socket — it never spawns, kills, or removes an agent. This avoids
 # the per-shell agent leak that fish's "config.fish runs for every non-interactive
 # shell" model otherwise causes.
-if not set -q SSH_AUTH_SOCK; or test -z "$SSH_AUTH_SOCK"; or not test -S "$SSH_AUTH_SOCK"
+#
+# Switch away from macOS's default Keychain agent (`.../com.apple.launchd.../Listeners`):
+# it holds FIDO2/SK keys but can't *sign* with them (Apple's OpenSSH has no SK support),
+# so we point at our Homebrew agent instead. A Docker-forwarded `/ssh-agent` and a live
+# systemd socket are kept as-is.
+if not set -q SSH_AUTH_SOCK; or test -z "$SSH_AUTH_SOCK"; or not test -S "$SSH_AUTH_SOCK"; or string match -q "*/com.apple.launchd.*" "$SSH_AUTH_SOCK"
     if set -q XDG_RUNTIME_DIR; and test -S "$XDG_RUNTIME_DIR/ssh-agent.socket"
         set -gx SSH_AUTH_SOCK "$XDG_RUNTIME_DIR/ssh-agent.socket"
     else if test -S "$HOME/.ssh/agent.sock"
