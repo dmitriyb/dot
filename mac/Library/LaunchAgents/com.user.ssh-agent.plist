@@ -5,12 +5,13 @@
   <key>Label</key>
   <string>com.user.ssh-agent</string>
   <!-- Homebrew's ssh-agent (better FIDO2/SK key support) on a fixed socket.
-       $HOME is resolved at runtime via sh -c so no username is hardcoded. -->
+       $HOME is resolved at runtime via sh -c so no username is hardcoded.
+       rm first: ssh-agent won't bind if a stale socket lingers after a crash. -->
   <key>ProgramArguments</key>
   <array>
     <string>/bin/sh</string>
     <string>-c</string>
-    <string>exec /opt/homebrew/bin/ssh-agent -D -a "$HOME/.ssh/agent.sock"</string>
+    <string>rm -f "$HOME/.ssh/agent.sock"; exec /opt/homebrew/bin/ssh-agent -D -a "$HOME/.ssh/agent.sock"</string>
   </array>
   <key>RunAtLoad</key>
   <true/>

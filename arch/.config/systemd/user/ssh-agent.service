@@ -4,8 +4,12 @@ Documentation=man:ssh-agent(1)
 
 [Service]
 Type=simple
-# %t = $XDG_RUNTIME_DIR (tmpfs, auto-cleaned on logout — no stale-socket handling needed).
+# ssh-agent refuses to bind if the socket path already exists. %t ($XDG_RUNTIME_DIR,
+# tmpfs) is cleared on logout, but a crash (SIGKILL/OOM/power loss) leaves a stale
+# socket that blocks the next start — so remove it first, and auto-restart on failure.
+ExecStartPre=-/usr/bin/rm -f %t/ssh-agent.socket
 ExecStart=/usr/bin/ssh-agent -D -a %t/ssh-agent.socket
+Restart=on-failure
 
 [Install]
 WantedBy=default.target
