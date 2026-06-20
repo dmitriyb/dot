@@ -1,0 +1,11 @@
+[Unit]
+Description=SSH authentication agent
+Documentation=man:ssh-agent(1)
+
+[Service]
+Type=simple
+# %t = $XDG_RUNTIME_DIR (tmpfs, auto-cleaned on logout — no stale-socket handling needed).
+ExecStart=/usr/bin/ssh-agent -D -a %t/ssh-agent.socket
+
+[Install]
+WantedBy=default.target

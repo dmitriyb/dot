@@ -1,8 +1,8 @@
 # Backup files
 .backup/
 
-# Claude Code
-.claude/
+# Claude Code (user's local config at repo root; NOT the tracked shared/.claude package)
+/.claude/
 
 # macOS
 .DS_Store
@@ -17,8 +17,8 @@
 *.bak
 
 # TPM plugins (installed at runtime)
-config/tmux/plugins/
-config/nvim/lazy-lock.json
+shared/.config/tmux/plugins/
+shared/.config/nvim/lazy-lock.json
 
 # Active theme (machine-specific)
-config/themes/current
+shared/.config/themes/current

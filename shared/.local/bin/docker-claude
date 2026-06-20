@@ -49,8 +49,21 @@ while [[ $# -gt 0 ]]; do
     esac
 done
 
+# Portable `readlink -f` (BSD/macOS readlink lacks -f): walk the symlink chain.
+resolve_path() {
+    local p="$1" target
+    while [ -L "$p" ]; do
+        target="$(readlink "$p")"
+        case "$target" in
+            /*) p="$target" ;;
+            *)  p="$(cd "$(dirname "$p")" && pwd)/$target" ;;
+        esac
+    done
+    printf '%s\n' "$p"
+}
+
 # Build images if missing or rebuild requested
-SCRIPT_DIR="$(cd "$(dirname "$(readlink -f "$0")")" && cd ../../.. && pwd)/docker/claude"
+SCRIPT_DIR="$(cd "$(dirname "$(resolve_path "$0")")" && cd ../../.. && pwd)/docker/claude"
 BUILD_ARGS=(--build-arg HOST_UID="$(id -u)")
 
 build_base() {
@@ -226,7 +239,7 @@ start_signing_agent() {
         echo "Add one with: printf '%s' '<app-suffix>' | sha256sum" >&2
         exit 1
     fi
-    SIGN_SOCK="$(mktemp -u --tmpdir dc-agent.XXXXXX.sock)"
+    SIGN_SOCK="$(mktemp -u "${TMPDIR:-/tmp}/dc-agent.XXXXXX.sock")"
     eval "$(ssh-agent -a "$SIGN_SOCK")" >/dev/null
     SIGN_PID="$SSH_AGENT_PID"
     trap 'kill "$SIGN_PID" 2>/dev/null; rm -f "$SIGN_SOCK"' EXIT

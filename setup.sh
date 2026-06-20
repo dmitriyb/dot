@@ -2,32 +2,54 @@
 set -euo pipefail
 
 DOTDIR="$(cd "$(dirname "$0")" && pwd)"
+cd "$DOTDIR"
 
 echo "Setting up dotfiles from $DOTDIR..."
 
-# Stow config and bin
-cd "$DOTDIR"
-mkdir -p ~/.config
-stow -t ~/.config config
-stow -t ~ bin
-echo "Stowed config and bin."
+# Headless = servers + containers: no graphical session, no init-managed agent.
+# Forced via DOT_PROFILE=headless (the docker image sets this). On Linux it's also
+# inferred from the absence of a Wayland/X display. macOS GUI sessions have neither
+# WAYLAND_DISPLAY nor DISPLAY but are never headless, so the inference is Linux-only.
+is_headless() {
+    [ "${DOT_PROFILE:-}" = headless ] && return 0
+    [ "$(uname)" = Darwin ] && return 1
+    [ -z "${WAYLAND_DISPLAY:-}" ] && [ -z "${DISPLAY:-}" ] && return 0
+    return 1
+}
 
-# Stow user-level Claude Code config (claude/settings.json + claude/skills/* → ~/.claude/).
-# mkdir first so stow folds at the per-skill leaf, not the whole ~/.claude dir.
-mkdir -p ~/.claude/skills
+# Home-mirror layout: every package mirrors ~ and stows to a single target (~).
+# Pre-create the dirs that must stay real so stow folds *inside* them (links the
+# leaves) instead of replacing the whole directory with a symlink.
+mkdir -p ~/.config ~/.claude/skills ~/.ssh/config.d
+
 # Back up any pre-existing real settings.json so stow can own that path.
 if [ -e ~/.claude/settings.json ] && [ ! -L ~/.claude/settings.json ]; then
     mv ~/.claude/settings.json ~/.claude/settings.json.pre-stow.bak
+    echo "Backed up existing ~/.claude/settings.json."
 fi
-stow -t ~/.claude claude
-echo "Stowed Claude skills."
 
-# Stow SSH config (ssh/.ssh/config.d/* → ~/.ssh/config.d/*)
-mkdir -p ~/.ssh/config.d
-stow -t ~ ssh
-echo "Stowed SSH config."
+# Shared layer (every OS): .config, .local/bin, .claude, .ssh.
+stow -t ~ shared
+echo "Stowed shared."
 
-# Inject Include into ~/.ssh/config if missing
+# OS-specific layer.
+case "$(uname)" in
+    Darwin)
+        stow -t ~ mac
+        echo "Stowed mac."
+        ;;
+    Linux)
+        if is_headless; then
+            stow -t ~ headless
+            echo "Stowed headless."
+        else
+            stow -t ~ arch
+            echo "Stowed arch."
+        fi
+        ;;
+esac
+
+# Inject Include into ~/.ssh/config if missing (config.d/* comes from the shared layer).
 SSH_CONFIG="$HOME/.ssh/config"
 INCLUDE_LINE="Include config.d/*"
 if [[ -f "$SSH_CONFIG" ]]; then
@@ -41,6 +63,22 @@ else
     echo "$INCLUDE_LINE" > "$SSH_CONFIG"
     chmod 600 "$SSH_CONFIG"
     echo "Created ~/.ssh/config with Include."
+fi
+
+# Activate the OS-managed ssh-agent. Skipped on headless/containers — they have no
+# init system and consume the forwarded SSH_AUTH_SOCK instead.
+if ! is_headless; then
+    case "$(uname)" in
+        Darwin)
+            launchctl bootout "gui/$(id -u)/com.user.ssh-agent" 2>/dev/null || true
+            launchctl bootstrap "gui/$(id -u)" ~/Library/LaunchAgents/com.user.ssh-agent.plist || true
+            echo "Loaded launchd ssh-agent."
+            ;;
+        Linux)
+            systemctl --user enable --now ssh-agent.service || true
+            echo "Enabled systemd user ssh-agent.service."
+            ;;
+    esac
 fi
 
 echo "Done."
