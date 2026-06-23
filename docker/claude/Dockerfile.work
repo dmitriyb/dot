@@ -16,6 +16,11 @@ RUN ssh-keygen -A \
 # Allow dev to start sshd without password
 RUN echo "dev ALL=(root) NOPASSWD: /usr/sbin/sshd" >> /etc/sudoers.d/dev-sshd
 
+# Overlay the work lockdown MANAGED settings (superset of base): the agent may not
+# commit or push — you do those yourself. Root-owned, agent cannot override.
+COPY harness/managed-settings.work.json /etc/claude-code/managed-settings.json
+RUN chmod 0644 /etc/claude-code/managed-settings.json
+
 USER dev
 
 # Install bun

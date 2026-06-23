@@ -48,7 +48,11 @@ RUN curl -fsSL https://claude.ai/install.sh | bash
 # and skips host-only ssh-agent activation (no init system here; the agent is
 # forwarded from the host via -e SSH_AUTH_SOCK at run time).
 ENV DOT_PROFILE=headless
-RUN git clone https://github.com/dmitriyb/dot.git /home/dev/dot \
+# DOT_REF bakes a specific branch (default main). docker-claude passes the dot repo's
+# current branch so a rebuild tests the branch you're working on. The branch must be
+# pushed; Docker caches the clone layer, so re-test a re-pushed branch with --no-cache.
+ARG DOT_REF=main
+RUN git clone --branch "$DOT_REF" --single-branch https://github.com/dmitriyb/dot.git /home/dev/dot \
     && cd /home/dev/dot \
     && bash setup.sh
 
@@ -122,5 +126,15 @@ RUN git config --global http.lowSpeedLimit 1000 \
 
 # Pre-install neovim plugins
 RUN nvim --headless "+Lazy! sync" +qa
+
+# Install root-owned MANAGED Claude Code settings (highest precedence; the agent,
+# running as dev, cannot override or edit these). Baseline = honest-path anti-bypass
+# deny rules; the work image overlays a stricter superset. Real enforcement is the
+# portitor proxy (later phase) — this is the casual/accidental-bypass floor.
+USER root
+RUN mkdir -p /etc/claude-code
+COPY harness/managed-settings.base.json /etc/claude-code/managed-settings.json
+RUN chmod 0644 /etc/claude-code/managed-settings.json
+USER dev
 
 WORKDIR /workspace

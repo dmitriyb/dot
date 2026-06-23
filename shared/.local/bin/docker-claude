@@ -64,7 +64,11 @@ resolve_path() {
 
 # Build images if missing or rebuild requested
 SCRIPT_DIR="$(cd "$(dirname "$(resolve_path "$0")")" && cd ../../.. && pwd)/docker/claude"
-BUILD_ARGS=(--build-arg HOST_UID="$(id -u)")
+# Bake the dot branch you're currently on so a rebuild tests your working branch, not main.
+# The branch must be pushed; Docker caches the clone layer, so re-test a re-pushed branch
+# of the same name with --no-cache.
+DOT_REF="$(git -C "$SCRIPT_DIR" rev-parse --abbrev-ref HEAD 2>/dev/null || echo main)"
+BUILD_ARGS=(--build-arg HOST_UID="$(id -u)" --build-arg DOT_REF="$DOT_REF")
 
 build_base() {
     echo "Building $BASE_IMAGE..."
