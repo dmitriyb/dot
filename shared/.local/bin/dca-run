@@ -43,11 +43,31 @@ fail_handoff() {
 	exit 1
 }
 
+# SSH to portitor uses the forwarded agent key; pin the host key if provided,
+# else accept-new (sandbox).
+mkdir -p "$HOME/.ssh"
+if [ -n "${DCA_PORTITOR_HOSTKEY:-}" ]; then
+	printf '%s\n' "$DCA_PORTITOR_HOSTKEY" >>"$HOME/.ssh/known_hosts"
+	export GIT_SSH_COMMAND="ssh -o StrictHostKeyChecking=yes -o UserKnownHostsFile=$HOME/.ssh/known_hosts"
+else
+	export GIT_SSH_COMMAND="ssh -o StrictHostKeyChecking=accept-new"
+fi
+
 # 1. Clone from portitor's mirror (the only git remote the agent can reach).
 ORIGIN="ssh://git@${PORTITOR_HOST}/srv/git/${DCA_REPO}.git"
 log "cloning $ORIGIN"
 git clone "$ORIGIN" "$WORKDIR" || fail_handoff "clone from portitor failed"
 cd "$WORKDIR"
+
+# Sign commits with the role's forwarded agent key (no touch): user.signingkey is
+# the public key; the private key lives only in the forwarded agent.
+if [ -n "${DCA_SIGNING_KEY:-}" ]; then
+	git config gpg.format ssh
+	git config user.signingkey "key::$DCA_SIGNING_KEY"
+	git config commit.gpgsign true
+	git config user.name "dca-${DCA_ROLE:-agent}"
+	git config user.email "dca-${DCA_ROLE:-agent}@portitor.local"
+fi
 
 # 2. Idempotent beads rebuild (start-* preflight also does this; explicit on boot).
 beads-rebuild "$WORKDIR" || true

@@ -110,3 +110,19 @@ start_signing_agent() {
 		echo "Warning: signing agent does not hold exactly one key." >&2
 	fi
 }
+
+# start_file_agent <keyfile> — ephemeral ssh-agent holding ONLY <keyfile> (a
+# plain no-touch file key, for the disposable sandbox). Sets SIGN_SOCK; torn down
+# on exit. Same forwarded-agent contract as start_signing_agent — the container
+# can't tell whether the key came from a file or the YubiKey; only the fingerprint
+# matters. The production path uses start_signing_agent (resident YubiKey key).
+start_file_agent() {
+	local keyfile="$1"
+	[[ -f "$keyfile" ]] || { echo "Error: role key not found: $keyfile" >&2; exit 1; }
+	SIGN_SOCK="$(mktemp -u "${TMPDIR:-/tmp}/dca-agent.XXXXXX.sock")"
+	eval "$(ssh-agent -a "$SIGN_SOCK")" >/dev/null
+	SIGN_PID="$SSH_AGENT_PID"
+	trap 'kill "$SIGN_PID" 2>/dev/null; rm -f "$SIGN_SOCK"' EXIT
+	SSH_AUTH_SOCK="$SIGN_SOCK" ssh-add "$keyfile" >/dev/null 2>&1 \
+		|| { echo "Error: failed to load role key $keyfile into agent" >&2; exit 1; }
+}

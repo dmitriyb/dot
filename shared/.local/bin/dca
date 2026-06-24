@@ -53,6 +53,17 @@ case "$SKILL" in
 	*) die "unknown skill '$SKILL'" ;;
 esac
 
+# ---- role identity (one no-touch key per role, forwarded as an ssh-agent) ----
+role_for_skill() {
+	case "$1" in
+		implement | cleanup | fix) echo implementer ;; # commit feature work; never close beads
+		review) echo reviewer ;;                        # review verdict + bead close
+	esac
+}
+ROLE="$(role_for_skill "$SKILL")"
+DCA_KEYS_DIR="${DCA_KEYS_DIR:-$HOME/.dca-keys}"
+ROLE_KEY="$DCA_KEYS_DIR/$ROLE" # sandbox file key; falls back to the resident YubiKey key
+
 # ---- images: lean base + per-stack layer ----
 SCRIPT_DIR="$(cd "$(dirname "$(resolve_path "$0")")" && cd ../../.. && pwd)/docker/claude"
 DOT_REF="$(git -C "$SCRIPT_DIR" rev-parse --abbrev-ref HEAD 2>/dev/null || echo main)"
@@ -71,6 +82,7 @@ RUN_ARGS=(
 	--memory=8g --cpus=4
 	--network "$DCA_NETWORK"
 	-e DCA_SKILL="$SKILL"
+	-e DCA_ROLE="$ROLE"
 	-e DCA_BEAD="$BEAD"
 	-e DCA_PR="$PR"
 	-e DCA_REPO="$REPO"
@@ -80,14 +92,15 @@ RUN_ARGS=(
 
 # Side-effect-free preview: no build, no keychain, no key touch.
 if [[ "$DRY_RUN" == true ]]; then
-	echo "dca (dry-run): skill=$SKILL bead=${BEAD:-–} pr=${PR:-–} repo=$REPO stack=$STACK"
+	echo "dca (dry-run): skill=$SKILL role=$ROLE bead=${BEAD:-–} pr=${PR:-–} repo=$REPO stack=$STACK"
 	echo "  image:   $STACK_IMAGE  (base $BASE_IMAGE, DOT_REF=$DOT_REF)"
 	echo "  network: $DCA_NETWORK   portitor: $PORTITOR_HOST"
+	echo "  role key: $ROLE_KEY$( [[ -f "$ROLE_KEY" ]] && echo ' (file)' || echo ' (missing → resident YubiKey)')"
 	echo "  docker run ${RUN_ARGS[*]} \\"
 	echo "    -e CLAUDE_CODE_OAUTH_TOKEN=<keychain anthropic/personal> \\"
 	echo "    -v <signing-agent-sock>:/ssh-agent -e SSH_AUTH_SOCK=/ssh-agent \\"
 	echo "    $STACK_IMAGE dca-run"
-	echo "  TODO: dca-run entrypoint (slice 3); egress lock (slice 4); push key + known_hosts + per-role key (slice 8)"
+	echo "  remaining: egress lock (slice 4); portitor deployment — gh/GH_TOKEN + authorized_keys wrap (slice 8 portitor side)"
 	exit 0
 fi
 
@@ -117,9 +130,15 @@ TOKEN=$(keychain_require anthropic personal "personal Anthropic OAuth token" \
   macOS: security add-generic-password -s anthropic -a personal -w '<token>'")
 RUN_ARGS+=(-e CLAUDE_CODE_OAUTH_TOKEN="$TOKEN")
 
-# Role signing key, forwarded as a single-key agent (the no-touch resident key).
-# TODO(slice 8): select the key per role; add the portitor push key + known_hosts.
-start_signing_agent # sets SIGN_SOCK, traps teardown on exit (PIN + 1 touch)
+# Forward the role's no-touch key as a single-key agent. Sandbox: a file key in
+# $DCA_KEYS_DIR; production: the resident YubiKey key. Same key signs the commits
+# AND authenticates SSH to portitor (one fingerprint -> one role).
+if [[ -f "$ROLE_KEY" ]]; then
+	start_file_agent "$ROLE_KEY"
+	RUN_ARGS+=(-e DCA_SIGNING_KEY="$(awk '{print $1, $2}' "$ROLE_KEY.pub")")
+else
+	start_signing_agent # resident no-touch key (PIN at launch)
+fi
 SIGN_ARGS=(-v "$SIGN_SOCK":/ssh-agent -e SSH_AUTH_SOCK=/ssh-agent)
 [[ "$(uname)" == "Darwin" ]] && SIGN_ARGS+=(--group-add 0)
 
