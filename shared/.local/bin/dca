@@ -1,0 +1,126 @@
+#!/usr/bin/env bash
+# dca — autonomous one-shot Claude agent runner (NEW architecture; plan §7a).
+#
+# Distinct from docker-claude (the interactive cockpit): headless, lean per-stack
+# image, GitHub + landing only through portitor, one role signing key + a portitor
+# push key, egress locked. Runs ONE execution-skill task per container, then exits.
+#
+#   dca --repo <name> --skill <implement|cleanup> --bead <id>
+#       [--stack go] [--effort low|medium|high] [-r|--rebuild] [--no-cache] [--dry-run]
+#
+# Scope of THIS slice (Phase 4 slice 2): image select/build, Anthropic token,
+# role signing agent, and assembling the container launch + the dca->container
+# env contract. Parts owned by later slices are parameterized and marked TODO:
+#   - the in-container flow (entrypoint `dca-run`) ............ slice 3
+#   - egress lock (network restricted to portitor + Anthropic)  slice 4
+#   - portitor push key + known_hosts, per-role key selection .. slice 8
+set -euo pipefail
+
+source "$(cd "$(dirname "$(readlink -f "$0" 2>/dev/null || echo "$0")")" && pwd)/agent-common.sh"
+
+usage() {
+	cat >&2 <<EOF
+usage: dca --repo <name> --skill <implement|cleanup> --bead <id>
+           [--stack go] [--effort low|medium|high] [-r|--rebuild] [--no-cache] [--dry-run]
+EOF
+}
+die() { echo "dca: $*" >&2; exit 1; }
+
+REPO="" SKILL="" BEAD="" STACK="go" EFFORT="medium"
+REBUILD=false NO_CACHE=false DRY_RUN=false
+while [[ $# -gt 0 ]]; do
+	case "$1" in
+		--repo | --repository) REPO="$2"; shift 2 ;;
+		--skill) SKILL="$2"; shift 2 ;;
+		--bead) BEAD="$2"; shift 2 ;;
+		--stack) STACK="$2"; shift 2 ;;
+		--effort) EFFORT="$2"; shift 2 ;;
+		-r | --rebuild) REBUILD=true; shift ;;
+		--no-cache) NO_CACHE=true; REBUILD=true; shift ;;
+		--dry-run) DRY_RUN=true; shift ;;
+		-h | --help) usage; exit 0 ;;
+		*) echo "dca: unknown flag: $1" >&2; usage; exit 2 ;;
+	esac
+done
+
+[[ -n "$REPO" ]] || die "--repo is required"
+[[ -n "$SKILL" ]] || die "--skill is required"
+[[ -n "$BEAD" ]] || die "--bead is required"
+case "$SKILL" in
+	implement | cleanup) ;;
+	review | fix) die "skill '$SKILL' lands in a later Phase 4 slice (needs portitor read-side)" ;;
+	*) die "unknown skill '$SKILL'" ;;
+esac
+
+# ---- images: lean base + per-stack layer ----
+SCRIPT_DIR="$(cd "$(dirname "$(resolve_path "$0")")" && cd ../../.. && pwd)/docker/claude"
+DOT_REF="$(git -C "$SCRIPT_DIR" rev-parse --abbrev-ref HEAD 2>/dev/null || echo main)"
+BASE_IMAGE="claude-dev-agent-base"
+STACK_IMAGE="claude-dev-agent-$STACK"
+[[ -f "$SCRIPT_DIR/Dockerfile.agent.$STACK" ]] || die "no stack image for '$STACK' (expected docker/claude/Dockerfile.agent.$STACK)"
+
+# ---- portitor + network knobs (finalized in later slices) ----
+PORTITOR_HOST="${PORTITOR_HOST:-portitor}" # ssh host for the proxy; TODO(slice 8): deploy + known_hosts
+DCA_NETWORK="${DCA_NETWORK:-bridge}"       # TODO(slice 4): lock to portitor + Anthropic only
+
+# dca -> container contract (consumed by the slice-3 `dca-run` entrypoint).
+# Common args; the Anthropic token and signing socket are added on a real run.
+RUN_ARGS=(
+	--rm
+	--memory=8g --cpus=4
+	--network "$DCA_NETWORK"
+	-e DCA_SKILL="$SKILL"
+	-e DCA_BEAD="$BEAD"
+	-e DCA_REPO="$REPO"
+	-e DCA_EFFORT="$EFFORT"
+	-e PORTITOR_HOST="$PORTITOR_HOST"
+)
+
+# Side-effect-free preview: no build, no keychain, no key touch.
+if [[ "$DRY_RUN" == true ]]; then
+	echo "dca (dry-run): skill=$SKILL bead=$BEAD repo=$REPO stack=$STACK"
+	echo "  image:   $STACK_IMAGE  (base $BASE_IMAGE, DOT_REF=$DOT_REF)"
+	echo "  network: $DCA_NETWORK   portitor: $PORTITOR_HOST"
+	echo "  docker run ${RUN_ARGS[*]} \\"
+	echo "    -e CLAUDE_CODE_OAUTH_TOKEN=<keychain anthropic/personal> \\"
+	echo "    -v <signing-agent-sock>:/ssh-agent -e SSH_AUTH_SOCK=/ssh-agent \\"
+	echo "    $STACK_IMAGE dca-run"
+	echo "  TODO: dca-run entrypoint (slice 3); egress lock (slice 4); push key + known_hosts + per-role key (slice 8)"
+	exit 0
+fi
+
+# ---- real run ----
+build_base() {
+	echo "dca: building $BASE_IMAGE (DOT_REF=$DOT_REF)..."
+	local cache=(); [[ "$NO_CACHE" == true ]] && cache=(--no-cache)
+	docker build "${cache[@]}" \
+		--build-arg HOST_UID="$(id -u)" --build-arg DOT_REF="$DOT_REF" \
+		-f "$SCRIPT_DIR/Dockerfile.agent.base" -t "$BASE_IMAGE" "$SCRIPT_DIR"
+}
+build_stack() {
+	echo "dca: building $STACK_IMAGE..."
+	docker build --build-arg AGENT_BASE="$BASE_IMAGE" \
+		-f "$SCRIPT_DIR/Dockerfile.agent.$STACK" -t "$STACK_IMAGE" "$SCRIPT_DIR"
+}
+if [[ "$REBUILD" == true ]]; then
+	build_base; build_stack
+else
+	docker image inspect "$BASE_IMAGE" &>/dev/null || build_base
+	docker image inspect "$STACK_IMAGE" &>/dev/null || build_stack
+fi
+
+TOKEN=$(keychain_require anthropic personal "personal Anthropic OAuth token" \
+"Generate one from an authenticated Claude Code instance: claude setup-token
+  Linux: secret-tool store --label='anthropic' service anthropic account personal
+  macOS: security add-generic-password -s anthropic -a personal -w '<token>'")
+RUN_ARGS+=(-e CLAUDE_CODE_OAUTH_TOKEN="$TOKEN")
+
+# Role signing key, forwarded as a single-key agent (the no-touch resident key).
+# TODO(slice 8): select the key per role; add the portitor push key + known_hosts.
+start_signing_agent # sets SIGN_SOCK, traps teardown on exit (PIN + 1 touch)
+SIGN_ARGS=(-v "$SIGN_SOCK":/ssh-agent -e SSH_AUTH_SOCK=/ssh-agent)
+[[ "$(uname)" == "Darwin" ]] && SIGN_ARGS+=(--group-add 0)
+
+# NOTE: `dca-run` (the in-container flow) is created in slice 3; until then a real
+# run will fail at the entrypoint. dry-run is the testable surface for this slice.
+docker run "${RUN_ARGS[@]}" "${SIGN_ARGS[@]}" "$STACK_IMAGE" dca-run
