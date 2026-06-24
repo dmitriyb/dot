@@ -65,8 +65,8 @@ if [ -n "${DCA_SIGNING_KEY:-}" ]; then
 	git config gpg.format ssh
 	git config user.signingkey "key::$DCA_SIGNING_KEY"
 	git config commit.gpgsign true
-	git config user.name "dca-${DCA_ROLE:-agent}"
-	git config user.email "dca-${DCA_ROLE:-agent}@portitor.local"
+	git config user.name "${DCA_GIT_NAME:-dca-${DCA_ROLE:-agent}}"
+	git config user.email "${DCA_GIT_EMAIL:-dca-${DCA_ROLE:-agent}@portitor.local}"
 fi
 
 # 2. Idempotent beads rebuild (start-* preflight also does this; explicit on boot).

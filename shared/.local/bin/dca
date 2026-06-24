@@ -64,6 +64,14 @@ ROLE="$(role_for_skill "$SKILL")"
 DCA_KEYS_DIR="${DCA_KEYS_DIR:-$HOME/.dca-keys}"
 ROLE_KEY="$DCA_KEYS_DIR/$ROLE" # sandbox file key; falls back to the resident YubiKey key
 
+# Committer identity for the agent's commits. Defaults to the host git identity
+# (the responsible account); override (e.g. a dedicated bot) via DCA_GIT_NAME/EMAIL.
+# For a GitHub "Verified" badge, this email must be on a GitHub account that has
+# the role key registered as a Signing key (the role determines authority via the
+# fingerprint regardless; this only affects GitHub's display).
+GIT_NAME="${DCA_GIT_NAME:-$(git config user.name 2>/dev/null || true)}"
+GIT_EMAIL="${DCA_GIT_EMAIL:-$(git config user.email 2>/dev/null || true)}"
+
 # ---- images: lean base + per-stack layer ----
 SCRIPT_DIR="$(cd "$(dirname "$(resolve_path "$0")")" && cd ../../.. && pwd)/docker/claude"
 DOT_REF="$(git -C "$SCRIPT_DIR" rev-parse --abbrev-ref HEAD 2>/dev/null || echo main)"
@@ -88,6 +96,8 @@ RUN_ARGS=(
 	-e DCA_PR="$PR"
 	-e DCA_REPO="$REPO"
 	-e DCA_EFFORT="$EFFORT"
+	-e DCA_GIT_NAME="$GIT_NAME"
+	-e DCA_GIT_EMAIL="$GIT_EMAIL"
 	-e PORTITOR_HOST="$PORTITOR_HOST"
 	-e HTTPS_PROXY="http://$EGRESS_PROXY:8888"
 	-e HTTP_PROXY="http://$EGRESS_PROXY:8888"
