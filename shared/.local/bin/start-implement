@@ -1,0 +1,34 @@
+#!/usr/bin/env bash
+# start-implement <bead-id> [--dry-run]
+#
+# Deterministic prelude for the `implement` skill, run OUTSIDE the agent: sync,
+# guard the bead, resolve spec context, branch off the default, claim the bead,
+# and write the agent's bundle. Shared logic lives in prelude-common.sh.
+set -euo pipefail
+source "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/prelude-common.sh"
+
+prelude_parse_args implement "$@"
+need spex
+preflight
+
+json=$(br show "$ID" --json)
+[ "$(jq 'length' <<<"$json")" -gt 0 ] || die "bead $ID not found"
+
+# Dispatch: a cleanup bead belongs to start-cleanup (it has no spex:<n> record).
+if jq -e '.[0].labels | index("spex:cleanup")' <<<"$json" >/dev/null; then
+	die "bead $ID is a cleanup bead (spex:cleanup) — use start-cleanup $ID"
+fi
+
+status=$(jq -r '.[0].status' <<<"$json")
+case "$status" in
+	open | ready) ;;
+	*) die "bead $ID status is '$status', expected open or ready" ;;
+esac
+
+title=$(jq -r '.[0].title' <<<"$json")
+record=$(jq -r '.[0].labels[]? | select(startswith("spex:")) | select(. != "spex:cleanup") | ltrimstr("spex:")' <<<"$json" | head -n1)
+branch="$(printf '%s' "$ID" | slugify)-$(printf '%s' "$title" | slugify)"
+branch="${branch%-}"
+specs=$(resolve_spec "$record")
+
+land implement "$branch" "origin/$(default_branch)" "$ID" "$title" "" "$record" "$specs"
