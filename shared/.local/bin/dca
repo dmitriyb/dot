@@ -26,13 +26,14 @@ EOF
 }
 die() { echo "dca: $*" >&2; exit 1; }
 
-REPO="" SKILL="" BEAD="" STACK="go" EFFORT="medium"
+REPO="" SKILL="" BEAD="" PR="" STACK="go" EFFORT="medium"
 REBUILD=false NO_CACHE=false DRY_RUN=false
 while [[ $# -gt 0 ]]; do
 	case "$1" in
 		--repo | --repository) REPO="$2"; shift 2 ;;
 		--skill) SKILL="$2"; shift 2 ;;
 		--bead) BEAD="$2"; shift 2 ;;
+		--pr) PR="$2"; shift 2 ;;
 		--stack) STACK="$2"; shift 2 ;;
 		--effort) EFFORT="$2"; shift 2 ;;
 		-r | --rebuild) REBUILD=true; shift ;;
@@ -45,10 +46,10 @@ done
 
 [[ -n "$REPO" ]] || die "--repo is required"
 [[ -n "$SKILL" ]] || die "--skill is required"
-[[ -n "$BEAD" ]] || die "--bead is required"
 case "$SKILL" in
-	implement | cleanup) ;;
-	review | fix) die "skill '$SKILL' lands in a later Phase 4 slice (needs portitor read-side)" ;;
+	implement | cleanup) [[ -n "$BEAD" ]] || die "--bead is required for $SKILL" ;;
+	fix) [[ -n "$PR" ]] || die "--pr is required for $SKILL" ;;
+	review) die "skill 'review' lands in slice 7b (needs the review prelude)" ;;
 	*) die "unknown skill '$SKILL'" ;;
 esac
 
@@ -71,6 +72,7 @@ RUN_ARGS=(
 	--network "$DCA_NETWORK"
 	-e DCA_SKILL="$SKILL"
 	-e DCA_BEAD="$BEAD"
+	-e DCA_PR="$PR"
 	-e DCA_REPO="$REPO"
 	-e DCA_EFFORT="$EFFORT"
 	-e PORTITOR_HOST="$PORTITOR_HOST"
@@ -78,7 +80,7 @@ RUN_ARGS=(
 
 # Side-effect-free preview: no build, no keychain, no key touch.
 if [[ "$DRY_RUN" == true ]]; then
-	echo "dca (dry-run): skill=$SKILL bead=$BEAD repo=$REPO stack=$STACK"
+	echo "dca (dry-run): skill=$SKILL bead=${BEAD:-–} pr=${PR:-–} repo=$REPO stack=$STACK"
 	echo "  image:   $STACK_IMAGE  (base $BASE_IMAGE, DOT_REF=$DOT_REF)"
 	echo "  network: $DCA_NETWORK   portitor: $PORTITOR_HOST"
 	echo "  docker run ${RUN_ARGS[*]} \\"

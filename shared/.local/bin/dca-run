@@ -18,8 +18,13 @@
 set -euo pipefail
 
 : "${DCA_SKILL:?dca-run: DCA_SKILL not set}"
-: "${DCA_BEAD:?dca-run: DCA_BEAD not set}"
 : "${DCA_REPO:?dca-run: DCA_REPO not set}"
+# Input is a bead id (implement/cleanup) or a PR number (review/fix).
+case "$DCA_SKILL" in
+	implement | cleanup) : "${DCA_BEAD:?dca-run: DCA_BEAD not set}"; INPUT="$DCA_BEAD" ;;
+	review | fix) : "${DCA_PR:?dca-run: DCA_PR not set}"; INPUT="$DCA_PR" ;;
+	*) echo "dca-run: unknown skill $DCA_SKILL" >&2; exit 2 ;;
+esac
 EFFORT="${DCA_EFFORT:-medium}"
 PORTITOR_HOST="${PORTITOR_HOST:-portitor}"
 export HARNESS_DIR="${HARNESS_DIR:-${XDG_RUNTIME_DIR:-/tmp}/harness}"
@@ -33,7 +38,7 @@ fail_handoff() {
 	log "FAILED: $*"
 	mkdir -p "$STATE_DIR"
 	[ -d "$HARNESS_DIR" ] && cp -a "$HARNESS_DIR" "$STATE_DIR/harness" 2>/dev/null || true
-	{ echo "skill=$DCA_SKILL"; echo "bead=$DCA_BEAD"; echo "repo=$DCA_REPO"; echo "workdir=$WORKDIR"; echo "reason=$*"; } > "$STATE_DIR/handoff.txt" 2>/dev/null || true
+	{ echo "skill=$DCA_SKILL"; echo "input=${INPUT:-}"; echo "repo=$DCA_REPO"; echo "workdir=$WORKDIR"; echo "reason=$*"; } > "$STATE_DIR/handoff.txt" 2>/dev/null || true
 	log "state saved to $STATE_DIR — resume manually in the container"
 	exit 1
 }
@@ -47,9 +52,10 @@ cd "$WORKDIR"
 # 2. Idempotent beads rebuild (start-* preflight also does this; explicit on boot).
 beads-rebuild "$WORKDIR" || true
 
-# 3. Deterministic prelude → bundle on the feature branch (claim is a signed commit).
-log "prelude: start-$DCA_SKILL $DCA_BEAD"
-"start-$DCA_SKILL" "$DCA_BEAD" || fail_handoff "prelude (start-$DCA_SKILL) failed"
+# 3. Deterministic prelude → bundle. implement/cleanup branch+claim off a bead;
+#    review/fix check out the PR branch. start-<skill> handles the difference.
+log "prelude: start-$DCA_SKILL $INPUT"
+"start-$DCA_SKILL" "$INPUT" || fail_handoff "prelude (start-$DCA_SKILL) failed"
 
 [ -f "$HARNESS_DIR/CONTEXT.md" ] || fail_handoff "prelude produced no bundle"
 BRANCH="$(sed -n 's/^BRANCH=//p' "$HARNESS_DIR/bundle.env")"

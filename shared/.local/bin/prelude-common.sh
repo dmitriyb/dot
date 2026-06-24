@@ -30,8 +30,28 @@ prelude_parse_args() {
 			*) ID="$a" ;;
 		esac
 	done
-	[ -n "$ID" ] || { echo "usage: start-$skill <bead-id> [--dry-run]" >&2; exit 2; }
+	[ -n "$ID" ] || { echo "usage: start-$skill <arg> [--dry-run]" >&2; exit 2; }
 	need git; need jq; need br
+}
+
+# pr_fetch <pr> -> prints the PR's review state JSON, fetched proxy-side via
+# `portitor pr fetch` (the agent has no gh). Overridable in tests with
+# PORTITOR_FETCH_CMD (a command prefix that takes the PR number as its last arg).
+pr_fetch() {
+	local pr="$1"
+	if [ -n "${PORTITOR_FETCH_CMD:-}" ]; then
+		$PORTITOR_FETCH_CMD "$pr"
+	else
+		portitor pr fetch --pr "$pr" # the `portitor` client wrapper -> proxy over SSH
+	fi
+}
+
+# checkout_pr_branch <branch> -> fetch the PR branch from the proxy and check it
+# out so the agent works against the PR's code (review/fix), not the default.
+checkout_pr_branch() {
+	local branch="$1"
+	git fetch -q origin "$branch" || die "fetch PR branch $branch from origin failed"
+	git checkout -q "$branch" || die "checkout PR branch $branch failed"
 }
 
 # slugify: stdin -> git-ref-safe kebab token, max 40 chars.
