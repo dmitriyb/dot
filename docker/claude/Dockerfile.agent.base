@@ -1,0 +1,65 @@
+# Dockerfile.agent.base — language-agnostic harness base for the dca runner.
+#
+# Carries only the stack-independent substrate a one-shot run always needs:
+# git, jq, bash, openssh, claude, br, the pinned spex snapshot, the start-*
+# prelude scripts + execution skills (stowed from dot), and root-owned managed
+# settings. Deliberately absent: gh (GitHub only via portitor), tmux/nvim/fish,
+# nix, curl/python (builder-only), and ANY language toolchain — those are
+# project-dependent and live in thin per-stack layers (Dockerfile.agent.go, …).
+#
+# spex/br are prebuilt binaries copied from the builder, so the runtime needs no
+# Go itself. weak deps are off to keep the base lean (no mercurial/svn/systemd…).
+
+# ---- builder: build/fetch binaries that need go/curl (kept out of runtime) ----
+FROM fedora:latest AS build
+RUN dnf install -y --setopt=install_weak_deps=False golang git curl xz tar \
+    && dnf clean all
+
+ARG SPEX_REF=main
+RUN git clone --branch "$SPEX_REF" --single-branch https://github.com/dmitriyb/spexmachina.git /src/spex \
+    && cd /src/spex && go build -trimpath -o /out/spex ./cmd/spex/
+
+RUN curl -fsSL https://raw.githubusercontent.com/Dicklesworthstone/beads_rust/main/install.sh | bash \
+    && cp "$HOME/.local/bin/br" /out/br
+
+RUN curl -fsSL https://claude.ai/install.sh | bash \
+    && cp "$HOME/.local/bin/claude" /out/claude
+
+# ---- runtime: lean, stack-free ----
+FROM fedora:latest
+RUN dnf install -y --setopt=install_weak_deps=False \
+    git jq bash openssh-clients ca-certificates stow \
+    && dnf clean all
+
+COPY --from=build /out/spex /usr/local/bin/spex
+COPY --from=build /out/br /usr/local/bin/br
+COPY --from=build /out/claude /usr/local/bin/claude
+
+RUN mkdir -p /etc/claude-code
+COPY harness/managed-settings.base.json /etc/claude-code/managed-settings.json
+RUN chmod 0644 /etc/claude-code/managed-settings.json
+
+RUN printf 'export PATH="$HOME/.local/bin:$HOME/go/bin:$PATH"\n' \
+    > /etc/profile.d/10-dca-path.sh \
+    && chmod 0644 /etc/profile.d/10-dca-path.sh
+
+ARG HOST_UID=1000
+RUN useradd -m -s /bin/bash -u $HOST_UID dev
+USER dev
+WORKDIR /home/dev
+
+ENV DOT_PROFILE=headless
+ARG DOT_REF=main
+RUN git clone --branch "$DOT_REF" --single-branch https://github.com/dmitriyb/dot.git /home/dev/dot \
+    && cd /home/dev/dot && bash setup.sh
+
+RUN echo '{"hasCompletedOnboarding":true}' > /home/dev/.claude.json
+
+# Fail the build early if any harness tool is missing (no toolchain check here).
+RUN set -e; export PATH="$HOME/.local/bin:$HOME/go/bin:$PATH"; \
+    git --version; jq --version; br --version; \
+    spex --help >/dev/null; claude --version; \
+    command -v start-implement >/dev/null && command -v start-cleanup >/dev/null
+
+WORKDIR /workspace
+CMD ["/bin/bash"]
