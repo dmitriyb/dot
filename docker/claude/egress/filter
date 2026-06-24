@@ -1,0 +1,5 @@
+# Egress allow-list (extended regex, host-matched). FilterDefaultDeny=Yes, so
+# ONLY hosts matching a line here are reachable; everything else is refused.
+# The agent reaches the Anthropic API and nothing else on the internet
+# (portitor is on the internal network, not via this proxy).
+^api\.anthropic\.com$

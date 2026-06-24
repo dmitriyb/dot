@@ -72,8 +72,9 @@ STACK_IMAGE="claude-dev-agent-$STACK"
 [[ -f "$SCRIPT_DIR/Dockerfile.agent.$STACK" ]] || die "no stack image for '$STACK' (expected docker/claude/Dockerfile.agent.$STACK)"
 
 # ---- portitor + network knobs (finalized in later slices) ----
-PORTITOR_HOST="${PORTITOR_HOST:-portitor}" # ssh host for the proxy; TODO(slice 8): deploy + known_hosts
-DCA_NETWORK="${DCA_NETWORK:-bridge}"       # TODO(slice 4): lock to portitor + Anthropic only
+PORTITOR_HOST="${PORTITOR_HOST:-portitor}"      # portitor's name on the internal network
+DCA_NETWORK="${DCA_NETWORK:-dca-net}"           # --internal net: agent reaches ONLY portitor + the egress proxy
+EGRESS_PROXY="${DCA_EGRESS_PROXY:-dca-egress}"  # allow-listing forward proxy (Anthropic only)
 
 # dca -> container contract (consumed by the slice-3 `dca-run` entrypoint).
 # Common args; the Anthropic token and signing socket are added on a real run.
@@ -88,19 +89,22 @@ RUN_ARGS=(
 	-e DCA_REPO="$REPO"
 	-e DCA_EFFORT="$EFFORT"
 	-e PORTITOR_HOST="$PORTITOR_HOST"
+	-e HTTPS_PROXY="http://$EGRESS_PROXY:8888"
+	-e HTTP_PROXY="http://$EGRESS_PROXY:8888"
+	-e NO_PROXY="$PORTITOR_HOST,localhost,127.0.0.1"
 )
 
 # Side-effect-free preview: no build, no keychain, no key touch.
 if [[ "$DRY_RUN" == true ]]; then
 	echo "dca (dry-run): skill=$SKILL role=$ROLE bead=${BEAD:-–} pr=${PR:-–} repo=$REPO stack=$STACK"
 	echo "  image:   $STACK_IMAGE  (base $BASE_IMAGE, DOT_REF=$DOT_REF)"
-	echo "  network: $DCA_NETWORK   portitor: $PORTITOR_HOST"
+	echo "  network: $DCA_NETWORK (internal)   portitor: $PORTITOR_HOST   egress: $EGRESS_PROXY → api.anthropic.com only"
 	echo "  role key: $ROLE_KEY$( [[ -f "$ROLE_KEY" ]] && echo ' (file)' || echo ' (missing → resident YubiKey)')"
 	echo "  docker run ${RUN_ARGS[*]} \\"
 	echo "    -e CLAUDE_CODE_OAUTH_TOKEN=<keychain anthropic/personal> \\"
 	echo "    -v <signing-agent-sock>:/ssh-agent -e SSH_AUTH_SOCK=/ssh-agent \\"
 	echo "    $STACK_IMAGE dca-run"
-	echo "  remaining: egress lock (slice 4); portitor deployment — gh/GH_TOKEN + authorized_keys wrap (slice 8 portitor side)"
+	echo "  remaining: portitor deployment — gh/GH_TOKEN + authorized_keys wrap (slice 8 portitor side)"
 	exit 0
 fi
 
@@ -116,6 +120,21 @@ build_stack() {
 	echo "dca: building $STACK_IMAGE..."
 	docker build --build-arg AGENT_BASE="$BASE_IMAGE" \
 		-f "$SCRIPT_DIR/Dockerfile.agent.$STACK" -t "$STACK_IMAGE" "$SCRIPT_DIR"
+}
+# ensure_egress: an --internal network (agent gets no direct internet) + the
+# allow-listing egress proxy attached to both that network and a bridge, so the
+# agent's only outbound path is Anthropic. Idempotent.
+ensure_egress() {
+	docker network inspect "$DCA_NETWORK" >/dev/null 2>&1 \
+		|| docker network create --internal "$DCA_NETWORK" >/dev/null
+	if ! docker ps --format '{{.Names}}' | grep -qx "$EGRESS_PROXY"; then
+		echo "dca: starting egress proxy ($EGRESS_PROXY, Anthropic-only)..."
+		docker image inspect dca-egress-proxy >/dev/null 2>&1 \
+			|| docker build -t dca-egress-proxy "$SCRIPT_DIR/egress"
+		docker rm -f "$EGRESS_PROXY" >/dev/null 2>&1 || true
+		docker run -d --name "$EGRESS_PROXY" --restart unless-stopped dca-egress-proxy >/dev/null
+		docker network connect "$DCA_NETWORK" "$EGRESS_PROXY"
+	fi
 }
 if [[ "$REBUILD" == true ]]; then
 	build_base; build_stack
@@ -142,6 +161,7 @@ fi
 SIGN_ARGS=(-v "$SIGN_SOCK":/ssh-agent -e SSH_AUTH_SOCK=/ssh-agent)
 [[ "$(uname)" == "Darwin" ]] && SIGN_ARGS+=(--group-add 0)
 
-# NOTE: `dca-run` (the in-container flow) is created in slice 3; until then a real
-# run will fail at the entrypoint. dry-run is the testable surface for this slice.
+# Internal network + egress proxy so the agent can reach only portitor + Anthropic.
+ensure_egress
+
 docker run "${RUN_ARGS[@]}" "${SIGN_ARGS[@]}" "$STACK_IMAGE" dca-run
