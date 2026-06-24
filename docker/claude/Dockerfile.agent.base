@@ -31,6 +31,10 @@ RUN dnf install -y --setopt=install_weak_deps=False \
     git jq bash openssh-clients ca-certificates stow \
     && dnf clean all
 
+# Stowed scripts (start-*, dca-run, beads-rebuild) + go/bin on PATH for ALL
+# exec, not just login shells — so `docker run <img> dca-run` resolves directly.
+ENV PATH="/home/dev/.local/bin:/home/dev/go/bin:${PATH}"
+
 COPY --from=build /out/spex /usr/local/bin/spex
 COPY --from=build /out/br /usr/local/bin/br
 COPY --from=build /out/claude /usr/local/bin/claude

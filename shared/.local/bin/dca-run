@@ -1,0 +1,75 @@
+#!/usr/bin/env bash
+# dca-run — in-container entrypoint for one autonomous dca task (Phase 4 slice 3).
+#
+# Consumes the env contract `dca` sets, runs the full one-shot flow, then exits:
+#   1. clone the repo FROM portitor (the mirror; no upstream credential here)
+#   2. idempotent beads rebuild
+#   3. start-<skill> <bead>  → deterministic prelude + bundle on a feature branch
+#   4. headless claude with the skill (/<skill>) + the bundle as context; the
+#      agent works, commits, pushes to portitor, and self-corrects in-session
+#   5. outcome: portitor accepted the branch (+ auto-PR) → done; else save the
+#      session/state to the handoff volume and exit for manual resume
+#
+# Guardrails are managed-settings (deny bypass, un-overridable) + portitor (the
+# hard gate), so the headless agent runs without permission prompts.
+#
+# Live dependencies (portitor reachable + push key/known_hosts) land in slices
+# 4/8 + deployment; this script is the flow and is marked where it needs them.
+set -euo pipefail
+
+: "${DCA_SKILL:?dca-run: DCA_SKILL not set}"
+: "${DCA_BEAD:?dca-run: DCA_BEAD not set}"
+: "${DCA_REPO:?dca-run: DCA_REPO not set}"
+EFFORT="${DCA_EFFORT:-medium}"
+PORTITOR_HOST="${PORTITOR_HOST:-portitor}"
+export HARNESS_DIR="${HARNESS_DIR:-${XDG_RUNTIME_DIR:-/tmp}/harness}"
+WORKDIR="${DCA_WORKDIR:-/workspace/$DCA_REPO}"
+STATE_DIR="${DCA_STATE_DIR:-/workspace/.dca-state}" # TODO(slice 8): mount as a volume so handoff survives container exit
+
+log() { echo "dca-run: $*" >&2; }
+
+# fail_handoff: preserve what's needed to resume interactively, then exit non-zero.
+fail_handoff() {
+	log "FAILED: $*"
+	mkdir -p "$STATE_DIR"
+	[ -d "$HARNESS_DIR" ] && cp -a "$HARNESS_DIR" "$STATE_DIR/harness" 2>/dev/null || true
+	{ echo "skill=$DCA_SKILL"; echo "bead=$DCA_BEAD"; echo "repo=$DCA_REPO"; echo "workdir=$WORKDIR"; echo "reason=$*"; } > "$STATE_DIR/handoff.txt" 2>/dev/null || true
+	log "state saved to $STATE_DIR — resume manually in the container"
+	exit 1
+}
+
+# 1. Clone from portitor's mirror (the only git remote the agent can reach).
+ORIGIN="ssh://git@${PORTITOR_HOST}/srv/git/${DCA_REPO}.git"
+log "cloning $ORIGIN"
+git clone "$ORIGIN" "$WORKDIR" || fail_handoff "clone from portitor failed"
+cd "$WORKDIR"
+
+# 2. Idempotent beads rebuild (start-* preflight also does this; explicit on boot).
+beads-rebuild "$WORKDIR" || true
+
+# 3. Deterministic prelude → bundle on the feature branch (claim is a signed commit).
+log "prelude: start-$DCA_SKILL $DCA_BEAD"
+"start-$DCA_SKILL" "$DCA_BEAD" || fail_handoff "prelude (start-$DCA_SKILL) failed"
+
+[ -f "$HARNESS_DIR/CONTEXT.md" ] || fail_handoff "prelude produced no bundle"
+BRANCH="$(sed -n 's/^BRANCH=//p' "$HARNESS_DIR/bundle.env")"
+
+# 4. Headless agent run. /<skill> activates the skill; the bundle is the context.
+#    bypassPermissions: no prompts (managed-settings + portitor are the guardrails).
+PROMPT="/$DCA_SKILL"$'\n\n'"$(cat "$HARNESS_DIR/CONTEXT.md")"
+log "running claude (effort=$EFFORT, branch=$BRANCH)"
+claude -p "$PROMPT" \
+	--effort "$EFFORT" \
+	--permission-mode bypassPermissions \
+	${DCA_MAX_BUDGET_USD:+--max-budget-usd "$DCA_MAX_BUDGET_USD"} \
+	|| fail_handoff "agent run errored"
+
+# 5. Outcome: the agent pushed during its run; portitor gates + auto-opens the PR.
+#    Verify the branch was accepted on the proxy. TODO(slice 5/6): query portitor
+#    for the receipt (PR #) and print it; TODO(slice 8): push needs the role/push
+#    key + known_hosts for this to run live.
+if git ls-remote --exit-code origin "refs/heads/$BRANCH" >/dev/null 2>&1; then
+	log "DONE: $BRANCH accepted by portitor (PR receipt query = slice 5/6)"
+else
+	fail_handoff "branch $BRANCH not accepted by portitor (rejected or never pushed)"
+fi
