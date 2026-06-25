@@ -48,8 +48,7 @@ done
 [[ -n "$SKILL" ]] || die "--skill is required"
 case "$SKILL" in
 	implement | cleanup) [[ -n "$BEAD" ]] || die "--bead is required for $SKILL" ;;
-	fix) [[ -n "$PR" ]] || die "--pr is required for $SKILL" ;;
-	review) die "skill 'review' lands in slice 7b (needs the review prelude)" ;;
+	fix | review) [[ -n "$PR" ]] || die "--pr is required for $SKILL" ;;
 	*) die "unknown skill '$SKILL'" ;;
 esac
 

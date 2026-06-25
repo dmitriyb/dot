@@ -1,0 +1,50 @@
+#!/usr/bin/env bash
+# start-review <pr-number> [--dry-run]
+#
+# Deterministic prelude for the `review` skill, run OUTSIDE the agent: fetch the
+# PR's review state proxy-side (the agent has no gh), compute a coarse mode, and
+# check out the PR branch so the agent reviews the PR's code. Bead/spec resolution
+# stays in the skill (it depends on the PR body). Shared logic: prelude-common.sh.
+set -euo pipefail
+source "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/prelude-common.sh"
+
+prelude_parse_args review "$@" # ID = PR number
+preflight
+
+prjson=$(pr_fetch "$ID") || die "portitor pr fetch --pr $ID failed"
+branch=$(jq -r '.headRefName // empty' <<<"$prjson")
+[ -n "$branch" ] || die "PR #$ID has no headRefName in the fetch result"
+
+# Coarse mode: any prior review-body or inline feedback => FOLLOWUP, else REVIEW.
+# (The skill refines this from pr.json — incl. the STOP case when the author has
+# not responded to prior feedback.)
+prior=$(jq '[ (.reviews[]?  | select((.state=="COMMENTED" or .state=="CHANGES_REQUESTED") and ((.body//"")|length>0))),
+             (.comments[]?) ] | length' <<<"$prjson")
+mode=REVIEW
+[ "$prior" -gt 0 ] && mode=FOLLOWUP
+
+if [ "$DRY" = 1 ]; then
+	echo "prelude review (dry-run): PR #$ID on branch $branch, mode=$mode (prior feedback items: $prior)"
+	exit 0
+fi
+
+checkout_pr_branch "$branch"
+rm -rf "$HARNESS_DIR"
+mkdir -p "$HARNESS_DIR"
+printf '%s\n' "$prjson" >"$HARNESS_DIR/pr.json"
+{
+	echo "SKILL=review"
+	echo "PR=$ID"
+	echo "BRANCH=$branch"
+	echo "MODE=$mode"
+} >"$HARNESS_DIR/bundle.env"
+{
+	echo "# Prelude bundle — review"
+	echo
+	echo "Reviewing PR #$ID on branch \`$branch\`. Coarse mode: **$mode** (refine from pr.json). The PR's review state (reviews + inline comments + commits) is in \`$HARNESS_DIR/pr.json\`."
+	echo
+	echo "## Your job"
+	echo "Resolve the bead from the PR body/commits → \`br show\` + \`spex map context\` for the spec, evaluate the diff against the bead + spec, then act per (mode, result). Post the verdict via \`portitor pr review --pr $ID\` (body on stdin — you have no gh). If CLEAN, close the bead with a **reviewer-signed** commit to .beads/issues.jsonl. Do NOT push to the default branch."
+} >"$HARNESS_DIR/CONTEXT.md"
+
+echo "prelude review: PR #$ID on $branch (mode=$mode); bundle in $HARNESS_DIR"
