@@ -4,14 +4,17 @@
 # /workspace/.claude-state, and per-project trust is regenerated from /workspace each boot.
 # Set the container's default mode to auto.
 python3 -c '
-import json, os
-src = os.path.expanduser("~/dot/claude/settings.json")
+import json, os, sys
+src = os.path.expanduser("~/dot/shared/.claude/settings.json")
 dst = os.path.expanduser("~/.claude/settings.json")
-cfg = json.load(open(src))
-cfg.setdefault("permissions", {})["defaultMode"] = "auto"
-os.makedirs(os.path.dirname(dst), exist_ok=True)
-if os.path.lexists(dst): os.remove(dst)
-with open(dst, "w") as f: json.dump(cfg, f, indent=2)
+if not os.path.exists(src):
+    print(f"warning: {src} missing; skipping settings sync", file=sys.stderr)
+else:
+    cfg = json.load(open(src))
+    cfg.setdefault("permissions", {})["defaultMode"] = "auto"
+    os.makedirs(os.path.dirname(dst), exist_ok=True)
+    if os.path.lexists(dst): os.remove(dst)
+    with open(dst, "w") as f: json.dump(cfg, f, indent=2)
 '
 
 # Persist conversation transcripts + prompt history on the /workspace volume, and trust every
