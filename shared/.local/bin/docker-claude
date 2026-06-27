@@ -8,6 +8,8 @@ MODE=""
 REBUILD=false
 NO_CACHE=false
 AGENT_MODE=false
+PORTITOR_OP=false
+PORTITOR_VERB=up
 
 # Parse flags
 while [[ $# -gt 0 ]]; do
@@ -36,6 +38,12 @@ while [[ $# -gt 0 ]]; do
         -a|--agent)
             AGENT_MODE=true
             shift
+            ;;
+        --portitor)
+            # Lifecycle of the shared portitor proxy stack (declarative, compose).
+            PORTITOR_OP=true
+            shift
+            if [[ "${1:-}" =~ ^(up|down|status|restart)$ ]]; then PORTITOR_VERB="$1"; shift; fi
             ;;
         --workspace)
             WORKSPACE="$2"
@@ -69,6 +77,47 @@ SCRIPT_DIR="$(cd "$(dirname "$(resolve_path "$0")")" && cd ../../.. && pwd)/dock
 # of the same name with --no-cache.
 DOT_REF="$(git -C "$SCRIPT_DIR" rev-parse --abbrev-ref HEAD 2>/dev/null || echo main)"
 BUILD_ARGS=(--build-arg HOST_UID="$(id -u)" --build-arg DOT_REF="$DOT_REF")
+
+# portitor_lifecycle: bring the shared proxy stack up/down via docker compose.
+# Self-contained (inline keychain read) so it runs before the container helpers.
+# up: build the portitor + egress images if missing, gather GH_TOKEN (env or
+# keychain service=portitor) + the role public keys + the config dir, then
+# `docker compose up -d`. down/status/restart map to compose. The portitor-repos
+# volume persists, so up after down needs no re-mirror.
+portitor_lifecycle() {
+    local verb="$1" compose="$SCRIPT_DIR/docker-compose.yml"
+    local keys_dir="${DCA_KEYS_DIR:-$HOME/.dca-keys}"
+    # Export the env compose interpolates — for EVERY verb, so down/status parse.
+    export PORTITOR_CONFIG_DIR="${PORTITOR_CONFIG_DIR:-$keys_dir/portitor-config}"
+    local auth="" f
+    for f in "$keys_dir"/*.pub; do [[ -f "$f" ]] && auth+="$(awk '{print $1, $2}' "$f")"$'\n'; done
+    export AGENT_AUTHORIZED_KEY="$auth"
+    if [[ -z "${GH_TOKEN:-}" ]]; then
+        local acct="${PORTITOR_KEYCHAIN_ACCOUNT:-default}"
+        if [[ "$(uname)" == "Darwin" ]]; then
+            GH_TOKEN="$(security find-generic-password -s portitor -a "$acct" -w 2>/dev/null || true)"
+        else
+            GH_TOKEN="$(secret-tool lookup service portitor account "$acct" 2>/dev/null || true)"
+        fi
+    fi
+    export GH_TOKEN="${GH_TOKEN:-}"
+    case "$verb" in
+        status) docker compose -f "$compose" ps; return $? ;;
+        down)   docker compose -f "$compose" down; return $? ;;
+    esac
+    # up / restart need the token + the images.
+    [[ -n "$GH_TOKEN" ]] || { echo "docker-claude --portitor: no GH_TOKEN (set it or store keychain service=portitor account=${PORTITOR_KEYCHAIN_ACCOUNT:-default})" >&2; return 1; }
+    local portitor_repo="${PORTITOR_REPO:-$HOME/Work/portitor}"
+    docker image inspect portitor &>/dev/null || docker build -t portitor "$portitor_repo"
+    docker image inspect dca-egress-proxy &>/dev/null || docker build -t dca-egress-proxy "$SCRIPT_DIR/egress"
+    [[ "$verb" == "restart" ]] && docker compose -f "$compose" down
+    docker compose -f "$compose" up -d
+}
+
+if [[ "$PORTITOR_OP" == true ]]; then
+    portitor_lifecycle "$PORTITOR_VERB"
+    exit $?
+fi
 
 build_base() {
     echo "Building $BASE_IMAGE..."

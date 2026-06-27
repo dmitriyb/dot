@@ -118,6 +118,16 @@ if [[ "$DRY_RUN" == true ]]; then
 fi
 
 # ---- real run ----
+# Fail fast if the shared proxy isn't up + reachable, rather than dying later at
+# clone. Start it with: docker-claude --portitor up
+preflight_portitor() {
+	docker ps --format '{{.Names}}' | grep -qx "$PORTITOR_HOST" \
+		|| die "portitor ('$PORTITOR_HOST') is not running — start it: docker-claude --portitor up"
+	docker network inspect "$DCA_NETWORK" >/dev/null 2>&1 \
+		|| die "network '$DCA_NETWORK' not found — start the proxy: docker-claude --portitor up"
+}
+preflight_portitor
+
 build_base() {
 	echo "dca: building $BASE_IMAGE (DOT_REF=$DOT_REF)..."
 	local cache=(); [[ "$NO_CACHE" == true ]] && cache=(--no-cache)
