@@ -191,7 +191,7 @@ if [[ -f "$ROLE_KEY" ]]; then
 	start_file_agent "$ROLE_KEY"
 	RUN_ARGS+=(-e DCA_SIGNING_KEY="$(awk '{print $1, $2}' "$ROLE_KEY.pub")")
 else
-	start_signing_agent # resident no-touch key (PIN at launch)
+	start_signing_agent "$ROLE" # this role's resident no-touch key only (PIN at launch)
 fi
 SIGN_ARGS=(-v "$SIGN_SOCK":/ssh-agent -e SSH_AUTH_SOCK=/ssh-agent)
 [[ "$(uname)" == "Darwin" ]] && SIGN_ARGS+=(--group-add 0)

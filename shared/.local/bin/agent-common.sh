@@ -86,28 +86,38 @@ _is_signing_key() {
 # (PIN + 1 touch); its handle file is removed once loaded. The agent is killed
 # and its socket removed on script exit (trap), so nothing is left at rest.
 start_signing_agent() {
-	if [[ ! -s "$SIGNING_HASH_FILE" ]] || ! grep -qiE '^[[:space:]]*[0-9a-f]{64}[[:space:]]*$' "$SIGNING_HASH_FILE"; then
-		echo "Error: no signing-key hash configured in $SIGNING_HASH_FILE." >&2
-		echo "Add one with: printf '%s' '<app-suffix>' | sha256sum" >&2
+	# start_signing_agent <role> — bring up an ephemeral agent holding ONLY the
+	# resident no-touch key whose application suffix == <role> (i.e.
+	# id_*_sk_rk_<role>, created with `-O application=ssh:<role>`). Exactly one key
+	# per container: never load every sign-only key, which would put multiple role
+	# identities in one agent and break role isolation. (SIGNING_HASH_FILE is used
+	# by ssh-load-keys to EXCLUDE these from the interactive agent — not for
+	# selection here; selection is by the role suffix.)
+	local want="${1:-}"
+	[[ -n "$want" ]] || {
+		echo "Error: start_signing_agent needs a role (e.g. implementer)" >&2
 		exit 1
-	fi
+	}
 	SIGN_SOCK="$(mktemp -u "${TMPDIR:-/tmp}/dca-agent.XXXXXX.sock")"
 	eval "$(ssh-agent -a "$SIGN_SOCK")" >/dev/null
 	SIGN_PID="$SSH_AGENT_PID"
 	trap 'kill "$SIGN_PID" 2>/dev/null; rm -f "$SIGN_SOCK"' EXIT
-	local dir key
+	local dir key loaded=0
 	dir="$(mktemp -d)"
 	(cd "$dir" && ssh-keygen -K -N "" >/dev/null) # download resident creds (PIN + touch)
 	shopt -s nullglob
 	for key in "$dir"/id_*_sk_rk_*; do
 		[[ "$key" == *.pub ]] && continue
-		if _is_signing_key "$key"; then
-			SSH_AUTH_SOCK="$SIGN_SOCK" ssh-add "$key" >/dev/null 2>&1
-		fi
+		[[ "${key##*_sk_rk_}" == "$want" ]] || continue
+		SSH_AUTH_SOCK="$SIGN_SOCK" ssh-add "$key" >/dev/null 2>&1 && loaded=1
 	done
 	rm -rf "$dir"
+	[[ "$loaded" == 1 ]] || {
+		echo "Error: no resident key for role '$want' on the security key (expected application=ssh:$want)" >&2
+		exit 1
+	}
 	if [[ "$(SSH_AUTH_SOCK="$SIGN_SOCK" ssh-add -L 2>/dev/null | grep -c .)" != 1 ]]; then
-		echo "Warning: signing agent does not hold exactly one key." >&2
+		echo "Warning: signing agent holds more than one key." >&2
 	fi
 }
 
