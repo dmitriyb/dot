@@ -20,13 +20,15 @@ source "$(cd "$(dirname "$(readlink -f "$0" 2>/dev/null || echo "$0")")" && pwd)
 
 usage() {
 	cat >&2 <<EOF
-usage: dca --repo <name> --skill <implement|cleanup> --bead <id>
+usage: dca --repo <name> --skill <implement|cleanup|fix|review> --bead <id> | --pr <n>
+       dca --repo <name> --skill <implement-epic> --epic <id>           (whole-epic, via dce)
+       dca --repo <name> --skill <review-epic|fix-epic> --epic <id> --pr <n>
            [--stack go] [--effort low|medium|high] [-r|--rebuild] [--no-cache] [--dry-run]
 EOF
 }
 die() { echo "dca: $*" >&2; exit 1; }
 
-REPO="" SKILL="" BEAD="" PR="" STACK="go" EFFORT="medium"
+REPO="" SKILL="" BEAD="" PR="" EPIC="" STACK="go" EFFORT="medium"
 REBUILD=false NO_CACHE=false DRY_RUN=false
 while [[ $# -gt 0 ]]; do
 	case "$1" in
@@ -34,6 +36,7 @@ while [[ $# -gt 0 ]]; do
 		--skill) SKILL="$2"; shift 2 ;;
 		--bead) BEAD="$2"; shift 2 ;;
 		--pr) PR="$2"; shift 2 ;;
+		--epic) EPIC="$2"; shift 2 ;;
 		--stack) STACK="$2"; shift 2 ;;
 		--effort) EFFORT="$2"; shift 2 ;;
 		-r | --rebuild) REBUILD=true; shift ;;
@@ -49,14 +52,16 @@ done
 case "$SKILL" in
 	implement | cleanup) [[ -n "$BEAD" ]] || die "--bead is required for $SKILL" ;;
 	fix | review) [[ -n "$PR" ]] || die "--pr is required for $SKILL" ;;
+	implement-epic) [[ -n "$EPIC" ]] || die "--epic is required for $SKILL" ;;
+	review-epic | fix-epic) [[ -n "$EPIC" && -n "$PR" ]] || die "--epic and --pr are required for $SKILL" ;;
 	*) die "unknown skill '$SKILL'" ;;
 esac
 
 # ---- role identity (one no-touch key per role, forwarded as an ssh-agent) ----
 role_for_skill() {
 	case "$1" in
-		implement | cleanup | fix) echo implementer ;; # commit feature work; never close beads
-		review) echo reviewer ;;                        # review verdict + bead close
+		implement | cleanup | fix | implement-epic | fix-epic) echo implementer ;; # commit feature work; never close beads
+		review | review-epic) echo reviewer ;;                                      # review verdict + bead close
 	esac
 }
 ROLE="$(role_for_skill "$SKILL")"
@@ -83,7 +88,14 @@ PORTITOR_HOST="${PORTITOR_HOST:-portitor}"      # portitor's name on the interna
 DCA_NETWORK="${DCA_NETWORK:-dca-net}"           # --internal net: agent reaches ONLY portitor + the egress proxy
 EGRESS_PROXY="${DCA_EGRESS_PROXY:-dca-egress}"  # allow-listing forward proxy (Anthropic only)
 
-# dca -> container contract (consumed by the slice-3 `dca-run` entrypoint).
+# Host result dir, mounted into the container at /dca-result. The in-container
+# skill writes result.json here (PR number, review verdict, flagged beads); the
+# dce orchestrator reads it on the host between phases. Caller (dce) sets
+# DCA_RESULT_DIR to a known path; a standalone dca run gets a temp dir.
+RESULT_HOST="${DCA_RESULT_DIR:-$(mktemp -d "${TMPDIR:-/tmp}/dca-result.XXXXXX")}"
+mkdir -p "$RESULT_HOST"
+
+# dca -> container contract (consumed by the `dca-run` entrypoint).
 # Common args; the Anthropic token and signing socket are added on a real run.
 RUN_ARGS=(
 	--rm
@@ -93,8 +105,11 @@ RUN_ARGS=(
 	-e DCA_ROLE="$ROLE"
 	-e DCA_BEAD="$BEAD"
 	-e DCA_PR="$PR"
+	-e DCA_EPIC="$EPIC"
 	-e DCA_REPO="$REPO"
 	-e DCA_EFFORT="$EFFORT"
+	-v "$RESULT_HOST":/dca-result
+	-e DCA_RESULT_DIR=/dca-result
 	-e DCA_GIT_NAME="$GIT_NAME"
 	-e DCA_GIT_EMAIL="$GIT_EMAIL"
 	-e PORTITOR_HOST="$PORTITOR_HOST"
@@ -105,7 +120,8 @@ RUN_ARGS=(
 
 # Side-effect-free preview: no build, no keychain, no key touch.
 if [[ "$DRY_RUN" == true ]]; then
-	echo "dca (dry-run): skill=$SKILL role=$ROLE bead=${BEAD:-–} pr=${PR:-–} repo=$REPO stack=$STACK"
+	echo "dca (dry-run): skill=$SKILL role=$ROLE bead=${BEAD:-–} pr=${PR:-–} epic=${EPIC:-–} repo=$REPO stack=$STACK"
+	echo "  result dir: $RESULT_HOST (container /dca-result)"
 	echo "  image:   $STACK_IMAGE  (base $BASE_IMAGE, DOT_REF=$DOT_REF)"
 	echo "  network: $DCA_NETWORK (internal)   portitor: $PORTITOR_HOST   egress: $EGRESS_PROXY → api.anthropic.com only"
 	echo "  role key: $ROLE_KEY$( [[ -f "$ROLE_KEY" ]] && echo ' (file)' || echo ' (missing → resident YubiKey)')"
@@ -184,3 +200,4 @@ SIGN_ARGS=(-v "$SIGN_SOCK":/ssh-agent -e SSH_AUTH_SOCK=/ssh-agent)
 ensure_egress
 
 docker run "${RUN_ARGS[@]}" "${SIGN_ARGS[@]}" "$STACK_IMAGE" dca-run
+echo "dca: result dir: $RESULT_HOST"

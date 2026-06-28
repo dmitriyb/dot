@@ -19,10 +19,13 @@ set -euo pipefail
 
 : "${DCA_SKILL:?dca-run: DCA_SKILL not set}"
 : "${DCA_REPO:?dca-run: DCA_REPO not set}"
-# Input is a bead id (implement/cleanup) or a PR number (review/fix).
+# Input is a bead id (implement/cleanup), a PR number (review/fix), or an epic id
+# (+ a PR for the review/fix epic phases).
 case "$DCA_SKILL" in
 	implement | cleanup) : "${DCA_BEAD:?dca-run: DCA_BEAD not set}"; INPUT="$DCA_BEAD" ;;
 	review | fix) : "${DCA_PR:?dca-run: DCA_PR not set}"; INPUT="$DCA_PR" ;;
+	implement-epic) : "${DCA_EPIC:?dca-run: DCA_EPIC not set}"; INPUT="$DCA_EPIC" ;;
+	review-epic | fix-epic) : "${DCA_EPIC:?dca-run: DCA_EPIC not set}"; : "${DCA_PR:?dca-run: DCA_PR not set}"; INPUT="$DCA_EPIC#$DCA_PR" ;;
 	*) echo "dca-run: unknown skill $DCA_SKILL" >&2; exit 2 ;;
 esac
 EFFORT="${DCA_EFFORT:-medium}"
@@ -73,9 +76,19 @@ fi
 beads-rebuild "$WORKDIR" || true
 
 # 3. Deterministic prelude → bundle. implement/cleanup branch+claim off a bead;
-#    review/fix check out the PR branch. start-<skill> handles the difference.
-log "prelude: start-$DCA_SKILL $INPUT"
-"start-$DCA_SKILL" "$INPUT" || fail_handoff "prelude (start-$DCA_SKILL) failed"
+#    review/fix check out the PR branch; the epic phases use start-epic (one branch
+#    for the whole epic, beads stay open). start-<skill> handles the difference.
+case "$DCA_SKILL" in
+	implement-epic)
+		log "prelude: start-epic $DCA_EPIC"
+		start-epic "$DCA_EPIC" || fail_handoff "prelude (start-epic) failed" ;;
+	review-epic | fix-epic)
+		log "prelude: start-epic $DCA_EPIC --pr $DCA_PR"
+		start-epic "$DCA_EPIC" --pr "$DCA_PR" || fail_handoff "prelude (start-epic --pr) failed" ;;
+	*)
+		log "prelude: start-$DCA_SKILL $INPUT"
+		"start-$DCA_SKILL" "$INPUT" || fail_handoff "prelude (start-$DCA_SKILL) failed" ;;
+esac
 
 [ -f "$HARNESS_DIR/CONTEXT.md" ] || fail_handoff "prelude produced no bundle"
 BRANCH="$(sed -n 's/^BRANCH=//p' "$HARNESS_DIR/bundle.env")"
@@ -89,6 +102,13 @@ claude -p "$PROMPT" \
 	--permission-mode bypassPermissions \
 	${DCA_MAX_BUDGET_USD:+--max-budget-usd "$DCA_MAX_BUDGET_USD"} \
 	|| fail_handoff "agent run errored"
+
+# 4b. Ensure a result.json exists for the dce orchestrator, even if the skill
+#     didn't write one (the epic skills write the authoritative one with PR/verdict).
+if [ -n "${DCA_RESULT_DIR:-}" ] && [ ! -f "$DCA_RESULT_DIR/result.json" ]; then
+	printf '{"skill":"%s","epic":"%s","pr":"%s","branch":"%s","status":"done"}\n' \
+		"$DCA_SKILL" "${DCA_EPIC:-}" "${DCA_PR:-}" "$BRANCH" >"$DCA_RESULT_DIR/result.json" 2>/dev/null || true
+fi
 
 # 5. Outcome: the agent pushed during its run; portitor gates + auto-opens the PR.
 #    Verify the branch was accepted on the proxy. TODO(slice 5/6): query portitor
