@@ -79,6 +79,7 @@ GIT_EMAIL="${DCA_GIT_EMAIL:-$(git config user.email 2>/dev/null || true)}"
 # ---- images: lean base + per-stack layer ----
 SCRIPT_DIR="$(cd "$(dirname "$(resolve_path "$0")")" && cd ../../.. && pwd)/docker/claude"
 DOT_REF="$(git -C "$SCRIPT_DIR" rev-parse --abbrev-ref HEAD 2>/dev/null || echo main)"
+DOT_SHA="$(git -C "$SCRIPT_DIR" rev-parse HEAD 2>/dev/null || echo dev)" # cache-bust the image's dot clone
 BASE_IMAGE="claude-dev-agent-base"
 STACK_IMAGE="claude-dev-agent-$STACK"
 [[ -f "$SCRIPT_DIR/Dockerfile.agent.$STACK" ]] || die "no stack image for '$STACK' (expected docker/claude/Dockerfile.agent.$STACK)"
@@ -118,6 +119,19 @@ RUN_ARGS=(
 	-e NO_PROXY="$PORTITOR_HOST,localhost,127.0.0.1"
 )
 
+# Offline Go module cache: the egress lock stays (no module proxy — that would be
+# an exfil channel). The agent builds/tests from a pre-warmed volume with
+# GOPROXY=off; a missing dep fails the run loudly -> re-run `dca-warm --repo <name>`.
+GOMODCACHE_VOL="${DCA_GOMODCACHE_VOL:-dca-gomodcache}"
+if [[ "$STACK" == go ]]; then
+	RUN_ARGS+=(
+		-v "$GOMODCACHE_VOL":/gomodcache
+		-e GOMODCACHE=/gomodcache
+		-e GOPROXY=off
+		-e GOSUMDB=off
+	)
+fi
+
 # Side-effect-free preview: no build, no keychain, no key touch.
 if [[ "$DRY_RUN" == true ]]; then
 	echo "dca (dry-run): skill=$SKILL role=$ROLE bead=${BEAD:-–} pr=${PR:-–} epic=${EPIC:-–} repo=$REPO stack=$STACK"
@@ -148,7 +162,7 @@ build_base() {
 	echo "dca: building $BASE_IMAGE (DOT_REF=$DOT_REF)..."
 	local cache=(); [[ "$NO_CACHE" == true ]] && cache=(--no-cache)
 	docker build "${cache[@]}" \
-		--build-arg HOST_UID="$(id -u)" --build-arg DOT_REF="$DOT_REF" \
+		--build-arg HOST_UID="$(id -u)" --build-arg DOT_REF="$DOT_REF" --build-arg DOT_SHA="$DOT_SHA" \
 		-f "$SCRIPT_DIR/Dockerfile.agent.base" -t "$BASE_IMAGE" "$SCRIPT_DIR"
 }
 build_stack() {

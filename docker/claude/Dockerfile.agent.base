@@ -54,7 +54,12 @@ WORKDIR /home/dev
 
 ENV DOT_PROFILE=headless
 ARG DOT_REF=main
-RUN git clone --branch "$DOT_REF" --single-branch https://github.com/dmitriyb/dot.git /home/dev/dot \
+# DOT_SHA busts the clone layer when the branch HEAD moves — otherwise docker
+# caches `git clone --branch $DOT_REF` and silently bakes a stale commit even on
+# --rebuild. dca passes the current branch tip; changing it invalidates the clone.
+ARG DOT_SHA=dev
+RUN echo "baking dot $DOT_REF @ $DOT_SHA" \
+    && git clone --branch "$DOT_REF" --single-branch https://github.com/dmitriyb/dot.git /home/dev/dot \
     && cd /home/dev/dot && bash setup.sh
 
 RUN echo '{"hasCompletedOnboarding":true}' > /home/dev/.claude.json
