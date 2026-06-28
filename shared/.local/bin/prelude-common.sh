@@ -130,6 +130,68 @@ write_bundle() {
 	} >"$HARNESS_DIR/CONTEXT.md"
 }
 
+# ---- whole-epic helpers (start-epic) -----------------------------------------
+#
+# Epic mode batches a whole epic's beads onto ONE branch, reviewed task-by-task,
+# closed once at the end. The prelude here is deterministic + token-free: it
+# resolves the epic's member beads, dependency-orders them, and pre-bakes each
+# bead's spec context into its own dir — so the implement-epic agent dispatches
+# pre-built per-bead contexts to subagents (never the whole epic at once).
+# Beads are NOT claimed/committed here: they stay `open` until the reviewer
+# closes them in a batch at the very end (see the plan's state machine).
+
+# epic_members <epic-id> -> bead ids belonging to the epic, one per line (deduped).
+# Membership = the epic's parent-child CHILDREN (how the spex pipeline links epics:
+# `br create --parent` / `br dep add <child> <epic> --type parent-child`) UNION an
+# explicit `epic:<id>` label (operator override). Only open work is listed (br list
+# excludes closed), which is exactly the active set during the epic. The
+# parent-child scan is one `br dep list` per open issue — fine at prototype scale.
+epic_members() {
+	local epic="$1" all id
+	all=$(br list --json 2>/dev/null) || return 0
+	{
+		jq -r --arg e "epic:$epic" '(.issues // .) | .[]? | select((.labels // []) | index($e)) | .id' <<<"$all" 2>/dev/null
+		while read -r id; do
+			{ [ -n "$id" ] && [ "$id" != "$epic" ]; } || continue
+			br dep list "$id" --json 2>/dev/null \
+				| jq -e --arg e "$epic" 'any(.[]?; .depends_on_id==$e and ((.type // "") | test("parent")))' >/dev/null 2>&1 \
+				&& echo "$id"
+		done < <(jq -r '(.issues // .) | .[]?.id' <<<"$all")
+	} | sort -u
+}
+
+# epic_deps <bead-id> -> that bead's dependency bead ids, one per line (best-effort
+# across br output shapes; only edges to members are kept by the caller).
+epic_deps() {
+	local id="$1"
+	br dep list "$id" --json 2>/dev/null \
+		| jq -r '.[]? | .depends_on_id // .depends_on // empty' 2>/dev/null \
+		| { grep -v "^$id$" || true; } | sort -u
+}
+
+# toposort: stdin = "node<TAB>dep" edges (dep before node) + "node" lines for
+# nodes with no deps; stdout = a dependency-respecting order (Kahn, stable by
+# input order). Cycles: leftovers are appended in input order (never drops work).
+toposort() {
+	awk '
+		{ nodes[$1]=1; order[++n]=$1 }
+		NF==2 { dep[$1 SUBSEP $2]=1; indeg[$1]++; if(!($2 in nodes)){nodes[$2]=1; order[++n]=$2} }
+		END {
+			# dedup order preserving first-seen
+			m=0; for(i=1;i<=n;i++){ if(!(order[i] in seen)){seen[order[i]]=1; ord[++m]=order[i]} }
+			done=0
+			while(done<m){
+				progress=0
+				for(i=1;i<=m;i++){ u=ord[i]; if(u in placed) continue
+					ready=1
+					for(k in dep){ split(k,a,SUBSEP); if(a[1]==u && !(a[2] in placed)){ready=0; break} }
+					if(ready){ print u; placed[u]=1; done++; progress=1 }
+				}
+				if(!progress){ for(i=1;i<=m;i++){ u=ord[i]; if(!(u in placed)){print u; placed[u]=1; done++} } }
+			}
+		}'
+}
+
 # land: create the branch, claim the bead, write the bundle, and commit the claim
 # (signed) on the feature branch. Branch first so the claim never lands on the
 # default branch. Honors --dry-run (skips all mutations).
