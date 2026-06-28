@@ -42,7 +42,7 @@ pr_fetch() {
 	if [ -n "${PORTITOR_FETCH_CMD:-}" ]; then
 		$PORTITOR_FETCH_CMD "$pr"
 	else
-		portitor pr fetch --pr "$pr" # the `portitor` client wrapper -> proxy over SSH
+		pr fetch --pr "$pr" # backend-agnostic: portitor in dca, gh in dcp
 	fi
 }
 

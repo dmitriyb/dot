@@ -1,0 +1,61 @@
+#!/usr/bin/env bash
+# pr — backend-agnostic pull-request interface used by the skills, so the same
+# skill works in both contexts without branching:
+#   - dca (untrusted agent): routes to portitor over SSH (no gh, no GitHub creds).
+#   - dcp (you, interactive): routes to gh directly (your creds).
+# Selection: DCA_REPO is set ONLY inside a dca container -> portitor; else gh.
+#
+# Neutral interface (body read from stdin where noted):
+#   pr fetch  --pr N                                  -> PR state as JSON
+#   pr comment --pr N                       (stdin = body)
+#   pr review --pr N --event approve|request-changes|comment   (stdin = body)
+#   pr merge  --pr N
+#   pr close  --pr N
+#   pr create --head <branch> --title <t>   (stdin = body)
+#       (dca: portitor auto-opens the PR on push, so `create` is usually unneeded;
+#        dcp: maps to `gh pr create`.)
+set -euo pipefail
+
+action="${1:-}"; shift || true
+[ -n "$action" ] || {
+	echo "pr: action required (fetch|comment|review|merge|close|create)" >&2
+	exit 2
+}
+
+# --- dca: hand straight to the portitor client (it injects --repo from DCA_REPO)
+if [ -n "${DCA_REPO:-}" ]; then
+	exec portitor pr "$action" "$@"
+fi
+
+# --- dcp / interactive: translate the neutral flags to gh ---------------------
+command -v gh >/dev/null 2>&1 || {
+	echo "pr: gh not found (and DCA_REPO unset) — cannot route the PR action" >&2
+	exit 1
+}
+prnum="" event="" head="" title=""
+while [ $# -gt 0 ]; do
+	case "$1" in
+		--pr) prnum="$2"; shift 2 ;;
+		--event) event="$2"; shift 2 ;;
+		--head) head="$2"; shift 2 ;;
+		--title) title="$2"; shift 2 ;;
+		--repo) shift 2 ;; # gh uses the cwd repo; ignore the explicit repo
+		*) shift ;;
+	esac
+done
+
+case "$action" in
+	fetch) exec gh pr view "$prnum" --json number,title,body,state,headRefName,baseRefName,reviews,comments,commits ;;
+	comment) exec gh pr comment "$prnum" --body-file - ;;
+	review)
+		case "$event" in
+			approve) ev=--approve ;;
+			request-changes) ev=--request-changes ;;
+			*) ev=--comment ;;
+		esac
+		exec gh pr review "$prnum" "$ev" --body-file - ;;
+	merge) exec gh pr merge "$prnum" ;;
+	close) exec gh pr close "$prnum" ;;
+	create) exec gh pr create --head "$head" --title "$title" --body-file - ;;
+	*) echo "pr: unknown action $action" >&2; exit 2 ;;
+esac

@@ -35,7 +35,7 @@ A bead's correctness can depend on whether its **dependents** could be built on 
 
    - **Any bead has ISSUES → `verdict: "changes"`.** Post one PR review describing the blockers per bead (reference `path:line`); do **not** close anything. The fix phase will address them.
      ```bash
-     printf '%s' "<per-bead blockers>" | portitor pr review --pr <n> --event request-changes
+     printf '%s' "<per-bead blockers>" | pr review --pr <n> --event request-changes
      ```
    - **Every bead CLEAN → `verdict: "clean"`.** Now **batch-close all the epic's beads** (reviewer-signed — the gate's role rule requires it), flip the epic, and post LGTM:
      ```bash
@@ -46,7 +46,7 @@ A bead's correctness can depend on whether its **dependents** could be built on 
      git add .beads/issues.jsonl
      git commit -S -m "Close epic <id> beads: reviewed in PR #<n>"
      git push                     # portitor gates: bead-close jsonl must be reviewer-signed
-     printf '%s' "LGTM — epic reviewed, all beads closed." | portitor pr review --pr <n> --event comment
+     printf '%s' "LGTM — epic reviewed, all beads closed." | pr review --pr <n> --event comment
      ```
      Record the closed ids in `result.json.closed`.
 

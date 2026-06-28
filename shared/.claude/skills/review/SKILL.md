@@ -10,7 +10,7 @@ Review the PR in your bundle. Use @~/.claude/skills/go-expert/SKILL.md for Go-sp
 
 `start-review <pr-number>` has run before this skill — the dca entrypoint runs it automatically; in an interactive session, run it yourself first. It has:
 
-- fetched the PR's review state **proxy-side** (`portitor pr fetch`) into `$HARNESS_DIR/pr.json` (the agent has no `gh`),
+- fetched the PR's review state **proxy-side** (`pr fetch`) into `$HARNESS_DIR/pr.json` (the agent has no `gh`),
 - checked out the PR branch (`BRANCH` in `$HARNESS_DIR/bundle.env`) so you review the PR's code,
 - computed a coarse `MODE` (REVIEW / FOLLOWUP) in `bundle.env`.
 
@@ -60,13 +60,13 @@ The bundle's `MODE` is coarse. Refine it:
 GitHub actions go through portitor (you have **no gh**); bodies are read from stdin:
 
 - **CLEAN + REVIEW** → post an LGTM summary, then close the bead. PR is ready to merge.
-  `printf '%s' "LGTM — <summary>" | portitor pr review --pr <n> --event comment`
+  `printf '%s' "LGTM — <summary>" | pr review --pr <n> --event comment`
 - **CLEAN + FOLLOWUP** → close the bead; do NOT post another review.
 - **ISSUES + REVIEW** → post the review describing each blocker; do not close.
-  `printf '%s' "<blockers, referencing path:line>" | portitor pr review --pr <n> --event request-changes`
+  `printf '%s' "<blockers, referencing path:line>" | pr review --pr <n> --event request-changes`
 - **ISSUES + FOLLOWUP** → post what's still wrong for each unfixed item; do not close.
 
-> Use `--event comment` for your own-account PRs (GitHub disallows approve/request-changes on your own PR); the **closed bead is the approval signal**. Inline per-line comments aren't yet a portitor action — describe blockers in the review body referencing `path:line` until `portitor pr review` gains an inline payload.
+> Use `--event comment` for your own-account PRs (GitHub disallows approve/request-changes on your own PR); the **closed bead is the approval signal**. Inline per-line comments aren't yet a portitor action — describe blockers in the review body referencing `path:line` until `pr review` gains an inline payload.
 
 #### Closing the bead (reviewer-signed)
 

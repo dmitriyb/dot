@@ -43,7 +43,7 @@ Then open a PR whose body explains why it should be closed: delivering commit, t
 7. **Completion gate** (see below). Do NOT proceed until every item passes.
 8. Commit and push your feature branch. Commits must be signed; do NOT bypass signing with `--no-gpg-sign` or `-c commit.gpgsign=false`. Do NOT close the bead (review closes it) and do NOT push to the default branch.
 9. Create a PR using `.github/pull_request_template.md`. Fill in the bead ID (`BEAD_ID` from `bundle.env`), spec references from the bead metadata, and changes summary.
-10. Link the bead to the PR: `br update <bead-id> --external-ref "PR#<number>"`, then commit `.beads/issues.jsonl` and push so the bead state is tracked in git. Then check the box in the PR body: `gh pr edit <number> --body "$(gh pr view <number> --json body --jq '.body' | sed 's/- \[ \] Bead linked to PR/- [x] Bead linked to PR/')"`
+10. Link the bead to the PR: `br update <bead-id> --external-ref "PR#<number>"`, then commit `.beads/issues.jsonl` and push so the bead state is tracked in git. Post the PR summary/body (from the template) as a comment with the backend-agnostic wrapper: `printf '%s' "<summary>" | pr comment --pr <number>` — `pr` routes to portitor in dca (no `gh`) and to `gh` in dcp. Do **not** call `gh` directly.
 
 ## Completion Gate
 
