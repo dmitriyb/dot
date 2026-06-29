@@ -76,8 +76,11 @@ They build their own lean per-stack images (`claude-dev-agent-base` +
 `claude-dev-agent-<stack>`) on demand. Run `dca --help`, `dce --help`,
 `dca-warm --help` for full flags. Prerequisite for both: bring up the shared proxy
 with `docker-claude --portitor up` (needs a GitHub PAT — keychain service `portitor`,
-account `default`). The go stack also needs a one-time `dca-warm --repo <name>` to
-populate the offline module-cache volume.
+account `default`). First-time setup: point docker-claude at your portitor checkout
+once with `docker-claude --portitor init --repo <path-to-portitor> [--config-dir <path>]`
+— this persists the paths to `~/.config/docker-claude/portitor.env` so later `up`/`restart`
+need no `PORTITOR_REPO` env var. The go stack also needs a one-time `dca-warm --repo <name>`
+to populate the offline module-cache volume.
 
 ### Adding a stack (rust, zig)
 

@@ -10,6 +10,8 @@ NO_CACHE=false
 AGENT_MODE=false
 PORTITOR_OP=false
 PORTITOR_VERB=up
+PORTITOR_INIT_REPO=""
+PORTITOR_INIT_CONFIG=""
 
 usage() {
     cat <<'EOF'
@@ -22,6 +24,7 @@ docker-claude — interactive Claude Code cockpit (containerized).
 usage:
   docker-claude (-p | -w | --direct) [-a] [-r | --no-cache] [--workspace <path>]
   docker-claude -r | --no-cache                 rebuild images for all modes
+  docker-claude --portitor init --repo <path> [--config-dir <path>]
   docker-claude --portitor [up|down|status|restart]
 
 modes (one required, except --portitor):
@@ -39,9 +42,15 @@ flags:
                      (up | down | status | restart; default: up). `up` needs a
                      GitHub token: env GH_TOKEN, or keychain service=portitor
                      account=default (override: PORTITOR_KEYCHAIN_ACCOUNT).
+  --portitor init    persist the portitor host paths so `up` needs no env var:
+                     --repo <path> (the portitor repo built into the image) and
+                     optional --config-dir <path> (the /etc/portitor host dir).
+                     Written to ~/.config/docker-claude/portitor.env; a shell-set
+                     PORTITOR_REPO/PORTITOR_CONFIG_DIR still overrides per run.
   -h, --help         show this help
 
 examples:
+  docker-claude --portitor init --repo ~/work/portitor   # one-time: set the paths
   docker-claude --portitor up        # bring up the shared proxy (dca/dce need it)
   docker-claude -p                   # interactive personal session
   docker-claude -p --agent           # personal session with the signing agent
@@ -83,9 +92,19 @@ while [[ $# -gt 0 ]]; do
             ;;
         --portitor)
             # Lifecycle of the shared portitor proxy stack (declarative, compose).
+            # `init` persists the host paths; the rest map to docker compose.
             PORTITOR_OP=true
             shift
-            if [[ "${1:-}" =~ ^(up|down|status|restart)$ ]]; then PORTITOR_VERB="$1"; shift; fi
+            if [[ "${1:-}" =~ ^(up|down|status|restart|init)$ ]]; then PORTITOR_VERB="$1"; shift; fi
+            if [[ "$PORTITOR_VERB" == init ]]; then
+                while [[ $# -gt 0 ]]; do
+                    case "$1" in
+                        --repo)       PORTITOR_INIT_REPO="$2"; shift 2 ;;
+                        --config-dir) PORTITOR_INIT_CONFIG="$2"; shift 2 ;;
+                        *) break ;;
+                    esac
+                done
+            fi
             ;;
         --workspace)
             WORKSPACE="$2"
@@ -120,6 +139,37 @@ SCRIPT_DIR="$(cd "$(dirname "$(resolve_path "$0")")" && cd ../../.. && pwd)/dock
 DOT_REF="$(git -C "$SCRIPT_DIR" rev-parse --abbrev-ref HEAD 2>/dev/null || echo main)"
 BUILD_ARGS=(--build-arg HOST_UID="$(id -u)" --build-arg DOT_REF="$DOT_REF")
 
+# Persisted portitor host paths, written by `--portitor init`. Sourced by the
+# lifecycle so `up`/`restart` need no env var; each line self-guards with :- so a
+# shell-set PORTITOR_REPO/PORTITOR_CONFIG_DIR still wins per invocation.
+PORTITOR_CONF_FILE="${XDG_CONFIG_HOME:-$HOME/.config}/docker-claude/portitor.env"
+
+# portitor_init: persist the portitor host paths to PORTITOR_CONF_FILE. --repo is
+# required (the repo built into the `portitor` image); --config-dir is optional
+# (the /etc/portitor host dir), defaulting to the keys-dir location. Writes a
+# self-guarding env file; does not touch docker.
+portitor_init() {
+    local repo="$PORTITOR_INIT_REPO" config="$PORTITOR_INIT_CONFIG"
+    [[ -n "$repo" ]] || { echo "docker-claude --portitor init: --repo <path> is required" >&2; return 1; }
+    repo="$(cd "$repo" 2>/dev/null && pwd)" \
+        || { echo "docker-claude --portitor init: repo path not found: $PORTITOR_INIT_REPO" >&2; return 1; }
+    [[ -f "$repo/Dockerfile" ]] || echo "docker-claude --portitor init: warning: no Dockerfile in $repo (\`--portitor up\` will fail to build the image)" >&2
+    # Default + absolutize the config dir (it may not exist yet, so don't require cd).
+    local keys_dir="${DCA_KEYS_DIR:-$HOME/.dca-keys}"
+    config="${config:-$keys_dir/portitor-config}"
+    [[ "$config" = /* ]] || config="$PWD/$config"
+    mkdir -p "$(dirname "$PORTITOR_CONF_FILE")"
+    cat >"$PORTITOR_CONF_FILE" <<EOF
+# docker-claude portitor config — written by \`docker-claude --portitor init\`.
+# Each line self-guards with :- so a shell-set env still overrides per invocation.
+export PORTITOR_REPO="\${PORTITOR_REPO:-$repo}"
+export PORTITOR_CONFIG_DIR="\${PORTITOR_CONFIG_DIR:-$config}"
+EOF
+    echo "docker-claude --portitor init: wrote $PORTITOR_CONF_FILE"
+    echo "  PORTITOR_REPO=$repo"
+    echo "  PORTITOR_CONFIG_DIR=$config"
+}
+
 # portitor_lifecycle: bring the shared proxy stack up/down via docker compose.
 # Self-contained (inline keychain read) so it runs before the container helpers.
 # up: build the portitor + egress images if missing, gather GH_TOKEN (env or
@@ -129,6 +179,9 @@ BUILD_ARGS=(--build-arg HOST_UID="$(id -u)" --build-arg DOT_REF="$DOT_REF")
 portitor_lifecycle() {
     local verb="$1" compose="$SCRIPT_DIR/docker-compose.yml"
     local keys_dir="${DCA_KEYS_DIR:-$HOME/.dca-keys}"
+    # Pick up the persisted paths (repo + config dir) before defaulting below.
+    # Precedence: shell env > persisted file > built-in default (all use :-).
+    [[ -f "$PORTITOR_CONF_FILE" ]] && source "$PORTITOR_CONF_FILE"
     # Export the env compose interpolates — for EVERY verb, so down/status parse.
     export PORTITOR_CONFIG_DIR="${PORTITOR_CONFIG_DIR:-$keys_dir/portitor-config}"
     local auth="" f
@@ -157,6 +210,10 @@ portitor_lifecycle() {
 }
 
 if [[ "$PORTITOR_OP" == true ]]; then
+    if [[ "$PORTITOR_VERB" == init ]]; then
+        portitor_init
+        exit $?
+    fi
     portitor_lifecycle "$PORTITOR_VERB"
     exit $?
 fi
