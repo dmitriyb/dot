@@ -21,7 +21,34 @@ HERE="$(cd "$(dirname "$(readlink -f "$0" 2>/dev/null || echo "$0")")" && pwd)"
 DCA="$HERE/dca"
 die() { echo "dce: $*" >&2; exit 1; }
 log() { echo "dce: $*" >&2; }
-usage() { echo "usage: dce --repo <name> --epic <id> [--effort ...] [--max-rounds N] [-r] [--no-cache] [--dry-run]" >&2; }
+usage() {
+	cat >&2 <<EOF
+dce — whole-epic orchestrator (phase loop over \`dca\`).
+
+Runs each phase as a SINGLE-KEY \`dca\` container (key isolation intact):
+  implement-epic → review-epic → [fix-epic → review-epic]* → done
+  (implementer)    (reviewer)     (implementer)(reviewer)
+Reads each phase's result.json between phases. The reviewer batch-closes the
+epic's beads only on a fully-clean pass; dce reports the PR as ready (no merge).
+
+usage:
+  dce --repo <name> --epic <id>
+      [--effort low|medium|high] [--max-rounds N] [-r|--rebuild] [--no-cache] [--dry-run]
+
+flags:
+  --repo <name>     target repository (required)
+  --epic <id>       epic to implement + review (required)
+  --effort <level>  low | medium | high (default: medium)
+  --max-rounds N    max review/fix cycles before stopping for manual review (default: 3)
+  -r, --rebuild     rebuild images — passed to the FIRST (implement) phase only
+  --no-cache        rebuild with no Docker cache (first phase only; implies --rebuild)
+  --dry-run         preview the phase commands without running them
+  -h, --help        show this help
+
+prerequisite: the shared proxy must be up — \`docker-claude --portitor up\`
+(and for the go stack, a warmed cache — \`dca-warm --repo <name>\`).
+EOF
+}
 
 REPO="" EPIC="" EFFORT="medium" MAX_ROUNDS=3 DRY=false
 PASS=() # passed to the first (implement) phase only: --rebuild / --no-cache

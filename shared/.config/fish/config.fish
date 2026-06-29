@@ -128,7 +128,8 @@ alias cex 'claude --effort xhigh'
 alias cem 'claude --effort maximum'
 alias dc docker-claude
 alias dcp 'docker-claude -p'
-alias dca 'docker-claude -p --agent'
+# NB: no `dca` alias — that name belongs to the autonomous-agent runner script
+# (~/.local/bin/dca). For an interactive personal agent use `dcp --agent`.
 alias dcw 'docker-claude -w'
 alias dcwd 'docker-claude --direct'
 

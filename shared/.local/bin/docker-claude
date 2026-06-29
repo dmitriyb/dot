@@ -11,9 +11,51 @@ AGENT_MODE=false
 PORTITOR_OP=false
 PORTITOR_VERB=up
 
+usage() {
+    cat <<'EOF'
+docker-claude — interactive Claude Code cockpit (containerized).
+
+  Builds/runs the interactive images (claude-dev-{base,personal,work}) and
+  manages the shared portitor proxy stack. NOT the autonomous agent runner —
+  for one-shot agent tasks use `dca`, and `dce` for a whole epic.
+
+usage:
+  docker-claude (-p | -w | --direct) [-a] [-r | --no-cache] [--workspace <path>]
+  docker-claude -r | --no-cache                 rebuild images for all modes
+  docker-claude --portitor [up|down|status|restart]
+
+modes (one required, except --portitor):
+  -p, --personal     personal account, Anthropic OAuth token from the keychain
+  -w, --work         work account via the wire proxy (needs the `wire` CLI)
+  --direct           work account with a direct API key from the keychain
+
+flags:
+  -a, --agent        personal only: forward an ephemeral no-touch SSH signing
+                     agent (commits are signed; the key cannot auth)
+  -r, --rebuild      rebuild the image(s) before running
+  --no-cache         rebuild with no Docker cache (implies --rebuild)
+  --workspace <path> host dir to mount as the workspace (default: ~/Work, ~/work on macOS)
+  --portitor <verb>  lifecycle of the shared portitor + egress proxy stack
+                     (up | down | status | restart; default: up). `up` needs a
+                     GitHub token: env GH_TOKEN, or keychain service=portitor
+                     account=default (override: PORTITOR_KEYCHAIN_ACCOUNT).
+  -h, --help         show this help
+
+examples:
+  docker-claude --portitor up        # bring up the shared proxy (dca/dce need it)
+  docker-claude -p                   # interactive personal session
+  docker-claude -p --agent           # personal session with the signing agent
+  docker-claude --direct -r          # work session, rebuild the work image
+EOF
+}
+
 # Parse flags
 while [[ $# -gt 0 ]]; do
     case "$1" in
+        -h|--help)
+            usage
+            exit 0
+            ;;
         -p|--personal)
             MODE="personal"
             shift
@@ -50,8 +92,8 @@ while [[ $# -gt 0 ]]; do
             shift 2
             ;;
         *)
-            echo "Unknown flag: $1"
-            echo "Usage: docker-claude (-p|--personal | -w|--work | --direct) [-a|--agent] [-r] [--no-cache] [--workspace <path>]"
+            echo "Unknown flag: $1" >&2
+            usage >&2
             exit 1
             ;;
     esac
@@ -171,8 +213,8 @@ else
 fi
 
 if [[ -z "$MODE" ]]; then
-    echo "Error: specify account mode."
-    echo "Usage: docker-claude (-p|--personal | -w|--work | --direct) [-r] [--workspace <path>]"
+    echo "Error: specify an account mode (-p | -w | --direct), or --portitor." >&2
+    usage >&2
     exit 1
 fi
 

@@ -11,13 +11,41 @@ set -euo pipefail
 source "$(cd "$(dirname "$(readlink -f "$0" 2>/dev/null || echo "$0")")" && pwd)/agent-common.sh"
 die() { echo "dca-warm: $*" >&2; exit 1; }
 
+usage() {
+	cat >&2 <<EOF
+dca-warm — populate the offline Go module-cache VOLUME for a repo.
+
+The ONLINE step, run on the host OUTSIDE the egress lock. Clones the repo on the
+host (the PAT never enters a container), then runs \`go mod download all\` inside
+the claude-dev-agent-go image with the cache volume mounted. Afterwards
+\`dca --stack go\` builds/tests with GOPROXY=off against that volume.
+
+It warms the \`dca-gomodcache\` VOLUME (not an image), and requires the
+claude-dev-agent-go image to already exist (run a \`dca\` build first).
+
+usage:
+  dca-warm --repo <name> [--stack go] [--owner <gh-owner>]
+
+flags:
+  --repo <name>     repository whose go.mod to warm (required)
+  --stack <name>    stack to warm — only \`go\` has a module cache today (default: go)
+  --owner <owner>   GitHub owner (default: \$DCA_GH_OWNER or dmitriyb)
+  -h, --help        show this help
+
+env knobs:
+  DCA_GOMODCACHE_VOL        cache volume name (default: dca-gomodcache)
+  DCA_GH_OWNER              default GitHub owner
+  PORTITOR_KEYCHAIN_ACCOUNT keychain account for the portitor PAT (default: default)
+EOF
+}
+
 REPO="" STACK=go OWNER="${DCA_GH_OWNER:-dmitriyb}"
 while [[ $# -gt 0 ]]; do
 	case "$1" in
 		--repo | --repository) REPO="$2"; shift 2 ;;
 		--stack) STACK="$2"; shift 2 ;;
 		--owner) OWNER="$2"; shift 2 ;;
-		-h | --help) echo "usage: dca-warm --repo <name> [--stack go] [--owner <gh-owner>]" >&2; exit 0 ;;
+		-h | --help) usage; exit 0 ;;
 		*) die "unknown flag: $1" ;;
 	esac
 done
@@ -38,8 +66,10 @@ docker run --rm --user 0 -v "$VOL":/gomodcache "$IMAGE" \
 # download needs no GitHub auth (modules come from the public proxy); the token is
 # only to read the repo's go.mod/go.sum. So we clone on the host and hand the
 # warm container the SOURCE, not a credential.
-TOKEN=$(keychain_require portitor "${PORTITOR_KEYCHAIN_ACCOUNT:-dca-sandbox}" "GitHub PAT (host-side clone only)" \
-	"store it: secret-tool store --label=portitor service portitor account <account>")
+TOKEN=$(keychain_require portitor "${PORTITOR_KEYCHAIN_ACCOUNT:-default}" "GitHub PAT (host-side clone only)" \
+	"store it (one PAT serves portitor + dca-warm):
+  macOS: security add-generic-password -s portitor -a default -w '<PAT>'
+  Linux: secret-tool store --label='portitor' service portitor account default")
 
 SRC=$(mktemp -d); trap 'rm -rf "$SRC"' EXIT
 echo "dca-warm: cloning $OWNER/$REPO on the host (token stays on the host)…"

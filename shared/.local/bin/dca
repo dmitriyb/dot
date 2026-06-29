@@ -20,10 +20,48 @@ source "$(cd "$(dirname "$(readlink -f "$0" 2>/dev/null || echo "$0")")" && pwd)
 
 usage() {
 	cat >&2 <<EOF
-usage: dca --repo <name> --skill <implement|cleanup|fix|review> --bead <id> | --pr <n>
-       dca --repo <name> --skill <implement-epic> --epic <id>           (whole-epic, via dce)
-       dca --repo <name> --skill <review-epic|fix-epic> --epic <id> --pr <n>
-           [--stack go] [--effort low|medium|high] [-r|--rebuild] [--no-cache] [--dry-run]
+dca — autonomous one-shot Claude agent runner (headless, egress-locked).
+
+Runs ONE execution-skill task in an isolated container, then exits. Builds its
+own lean per-stack image on demand (claude-dev-agent-base + claude-dev-agent-<stack>).
+For a whole epic use \`dce\`; for the interactive cockpit use \`docker-claude\`.
+
+usage:
+  dca --repo <name> --skill <implement|cleanup> --bead <id>
+  dca --repo <name> --skill <fix|review>        --pr <n>
+  dca --repo <name> --skill <implement-epic>    --epic <id>            (via dce)
+  dca --repo <name> --skill <review-epic|fix-epic> --epic <id> --pr <n>
+      [--stack go] [--effort low|medium|high] [-r|--rebuild] [--no-cache] [--dry-run]
+
+skills (role in parentheses; determines the signing key + authority):
+  implement, cleanup   (implementer)  need --bead
+  fix                  (implementer)  needs --pr
+  review               (reviewer)     needs --pr   — closes beads on a clean pass
+  implement-epic       (implementer)  needs --epic
+  fix-epic             (implementer)  need --epic --pr
+  review-epic          (reviewer)     need --epic --pr
+
+flags:
+  --repo <name>        target repository (required)
+  --skill <skill>      one of the skills above (required)
+  --bead/--pr/--epic   the task target (per skill, above)
+  --stack <name>       toolchain layer; needs docker/claude/Dockerfile.agent.<name>
+                       (default: go — the only stack with an offline cache today)
+  --effort <level>     low | medium | high (default: medium)
+  -r, --rebuild        rebuild the base + stack images before running
+  --no-cache           rebuild with no Docker cache (implies --rebuild)
+  --dry-run            preview only — no build, no keychain, no key touch
+  -h, --help           show this help
+
+prerequisite: the shared proxy must be up — \`docker-claude --portitor up\`.
+go stack: pre-warm the offline module cache first — \`dca-warm --repo <name>\`.
+
+env knobs:
+  DCA_KEYS_DIR              dir of sandbox role keys (default: ~/.dca-keys)
+  DCA_GIT_NAME/DCA_GIT_EMAIL  committer identity (default: host git config)
+  DCA_GOMODCACHE_VOL        go module-cache volume (default: dca-gomodcache)
+  PORTITOR_KEYCHAIN_ACCOUNT keychain account for the portitor PAT (default: default)
+  DCA_NETWORK / DCA_EGRESS_PROXY  internal net + egress proxy names
 EOF
 }
 die() { echo "dca: $*" >&2; exit 1; }

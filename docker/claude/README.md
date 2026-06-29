@@ -64,7 +64,47 @@ docker-claude --no-cache      # Full fresh rebuild (re-downloads everything)
 docker-claude --workspace ~/projects -p  # Custom workspace mount (personal only)
 ```
 
-Aliases: `dc` (docker-claude), `dcp` (-p), `dca` (-p --agent), `dcw` (-w), `dcwd` (--direct).
+Aliases: `dc` (docker-claude), `dcp` (-p), `dcw` (-w), `dcwd` (--direct). For an
+interactive personal agent session use `dcp --agent`. (There is deliberately no
+`dca` alias — that name belongs to the autonomous agent runner below.)
+
+## Autonomous agent runner (dca / dce)
+
+Distinct from the interactive cockpit above: `dca` runs ONE headless, egress-locked
+agent task per container; `dce` orchestrates a whole epic as a phase loop over `dca`.
+They build their own lean per-stack images (`claude-dev-agent-base` +
+`claude-dev-agent-<stack>`) on demand. Run `dca --help`, `dce --help`,
+`dca-warm --help` for full flags. Prerequisite for both: bring up the shared proxy
+with `docker-claude --portitor up` (needs a GitHub PAT — keychain service `portitor`,
+account `default`). The go stack also needs a one-time `dca-warm --repo <name>` to
+populate the offline module-cache volume.
+
+### Adding a stack (rust, zig)
+
+The **image side is already generic**: `dca`/`dca-warm` derive the image name
+`claude-dev-agent-$STACK` and only need a `docker/claude/Dockerfile.agent.$STACK`
+to exist. A new stack file mirrors `Dockerfile.agent.go`:
+
+```dockerfile
+ARG AGENT_BASE=claude-dev-agent-base
+FROM ${AGENT_BASE}
+USER root
+RUN dnf install -y --setopt=install_weak_deps=False <toolchain> && dnf clean all
+USER dev
+RUN <smoke-test>          # rustc --version  /  zig version
+WORKDIR /workspace
+CMD ["/bin/bash"]
+```
+
+The **offline-cache side is NOT generic** — it's Go-only today: `dca-warm` rejects
+non-go stacks, and the cache mount in `dca` is gated on `STACK == go` (so the
+egress-locked run never reaches a module proxy). Each stack needs its own model:
+
+- **Rust:** a `CARGO_HOME` volume; warm with `cargo fetch`; run with `CARGO_NET_OFFLINE=true`.
+- **Zig:** a `ZIG_GLOBAL_CACHE_DIR` volume; warm with `zig build --fetch`.
+
+Implementing a stack = add the Dockerfile above, then generalize the `STACK == go`
+branches in `dca` (the cache mount + env) and `dca-warm` into a `case "$STACK"`.
 
 ## Architecture
 
