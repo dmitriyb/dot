@@ -1,4 +1,14 @@
 #!/usr/bin/env fish
+# Load mounted secrets into the env: /run/secrets/<lowercase_var> → <UPPERCASE_VAR>
+# (CLAUDE_CODE_OAUTH_TOKEN, GH_TOKEN — mounted read-only by docker-claude instead of
+# passing -e, so they never appear in `docker inspect`). Runs before GH_TOKEN is used.
+if test -d /run/secrets
+    for f in /run/secrets/*
+        test -f "$f"; or continue
+        set -gx (string upper (basename "$f")) (cat "$f")
+    end
+end
+
 # ~/.claude is ephemeral (image-baked settings.json + skills). Persistent state lives on the
 # /workspace repo volume: session transcripts + prompt history are symlinked into
 # /workspace/.claude-state, and per-project trust is regenerated from /workspace each boot.

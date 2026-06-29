@@ -30,6 +30,17 @@ case "$DCA_SKILL" in
 esac
 EFFORT="${DCA_EFFORT:-medium}"
 PORTITOR_HOST="${PORTITOR_HOST:-portitor}"
+
+# Load mounted secrets into the env: /run/secrets/<lowercase_var> → <UPPERCASE_VAR>
+# (e.g. claude_code_oauth_token → CLAUDE_CODE_OAUTH_TOKEN). Keeps tokens out of the
+# container's Config.Env; dca mounts them read-only instead of passing -e.
+if [ -d /run/secrets ]; then
+	for _sf in /run/secrets/*; do
+		[ -f "$_sf" ] || continue
+		export "$(basename "$_sf" | tr '[:lower:]' '[:upper:]')=$(cat "$_sf")"
+	done
+	unset _sf
+fi
 export HARNESS_DIR="${HARNESS_DIR:-${XDG_RUNTIME_DIR:-/tmp}/harness}"
 WORKDIR="${DCA_WORKDIR:-/workspace/$DCA_REPO}"
 STATE_DIR="${DCA_STATE_DIR:-/workspace/.dca-state}" # TODO(slice 8): mount as a volume so handoff survives container exit
@@ -46,14 +57,19 @@ fail_handoff() {
 	exit 1
 }
 
-# SSH to portitor uses the forwarded agent key; pin the host key if provided,
-# else accept-new (sandbox).
+# SSH to portitor uses the forwarded agent key. Pin the host key if provided
+# (production: fail closed). Trust-on-first-use is allowed ONLY when the sandbox
+# explicitly opts in (DCA_ALLOW_HOSTKEY_TOFU=1, set by dca for file-key runs) —
+# otherwise a missing host key aborts rather than silently accepting any server.
 mkdir -p "$HOME/.ssh"
 if [ -n "${DCA_PORTITOR_HOSTKEY:-}" ]; then
 	printf '%s\n' "$DCA_PORTITOR_HOSTKEY" >>"$HOME/.ssh/known_hosts"
 	export GIT_SSH_COMMAND="ssh -o StrictHostKeyChecking=yes -o UserKnownHostsFile=$HOME/.ssh/known_hosts"
-else
+elif [ "${DCA_ALLOW_HOSTKEY_TOFU:-0}" = 1 ]; then
+	echo "dca-run: WARNING: DCA_PORTITOR_HOSTKEY unset — using accept-new (sandbox TOFU)" >&2
 	export GIT_SSH_COMMAND="ssh -o StrictHostKeyChecking=accept-new"
+else
+	fail_handoff "no portitor host key (DCA_PORTITOR_HOSTKEY unset). Pin it, or set DCA_ALLOW_HOSTKEY_TOFU=1 for an explicit sandbox run."
 fi
 
 # 1. Clone from portitor's mirror (the only git remote the agent can reach).

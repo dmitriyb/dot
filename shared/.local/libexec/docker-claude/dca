@@ -115,7 +115,7 @@ GIT_NAME="${DCA_GIT_NAME:-$(git config user.name 2>/dev/null || true)}"
 GIT_EMAIL="${DCA_GIT_EMAIL:-$(git config user.email 2>/dev/null || true)}"
 
 # ---- images: lean base + per-stack layer ----
-SCRIPT_DIR="$(cd "$(dirname "$(resolve_path "$0")")" && cd ../../.. && pwd)/docker/claude"
+SCRIPT_DIR="$(dot_root "$(dirname "$(resolve_path "$0")")")/docker/claude"
 DOT_REF="$(git -C "$SCRIPT_DIR" rev-parse --abbrev-ref HEAD 2>/dev/null || echo main)"
 DOT_SHA="$(git -C "$SCRIPT_DIR" rev-parse HEAD 2>/dev/null || echo dev)" # cache-bust the image's dot clone
 BASE_IMAGE="claude-dev-agent-base"
@@ -178,7 +178,7 @@ if [[ "$DRY_RUN" == true ]]; then
 	echo "  network: $DCA_NETWORK (internal)   portitor: $PORTITOR_HOST   egress: $EGRESS_PROXY → api.anthropic.com only"
 	echo "  role key: $ROLE_KEY$( [[ -f "$ROLE_KEY" ]] && echo ' (file)' || echo ' (missing → resident YubiKey)')"
 	echo "  docker run ${RUN_ARGS[*]} \\"
-	echo "    -e CLAUDE_CODE_OAUTH_TOKEN=<keychain anthropic/personal> \\"
+	echo "    -v <tmpfile>:/run/secrets/claude_code_oauth_token:ro  (token; not -e) \\"
 	echo "    -v <signing-agent-sock>:/ssh-agent -e SSH_AUTH_SOCK=/ssh-agent \\"
 	echo "    $STACK_IMAGE dca-run"
 	echo "  remaining: portitor deployment — gh/GH_TOKEN + authorized_keys wrap (slice 8 portitor side)"
@@ -193,6 +193,8 @@ preflight_portitor() {
 		|| die "portitor ('$PORTITOR_HOST') is not running — start it: docker-claude --portitor up"
 	docker network inspect "$DCA_NETWORK" >/dev/null 2>&1 \
 		|| die "network '$DCA_NETWORK' not found — start the proxy: docker-claude --portitor up"
+	docker ps --format '{{.Names}}' | grep -qx "$EGRESS_PROXY" \
+		|| die "egress proxy ('$EGRESS_PROXY') is not running — start it: docker-claude --portitor up"
 }
 preflight_portitor
 
@@ -208,21 +210,6 @@ build_stack() {
 	docker build --build-arg AGENT_BASE="$BASE_IMAGE" \
 		-f "$SCRIPT_DIR/Dockerfile.agent.$STACK" -t "$STACK_IMAGE" "$SCRIPT_DIR"
 }
-# ensure_egress: an --internal network (agent gets no direct internet) + the
-# allow-listing egress proxy attached to both that network and a bridge, so the
-# agent's only outbound path is Anthropic. Idempotent.
-ensure_egress() {
-	docker network inspect "$DCA_NETWORK" >/dev/null 2>&1 \
-		|| docker network create --internal "$DCA_NETWORK" >/dev/null
-	if ! docker ps --format '{{.Names}}' | grep -qx "$EGRESS_PROXY"; then
-		echo "dca: starting egress proxy ($EGRESS_PROXY, Anthropic-only)..."
-		docker image inspect dca-egress-proxy >/dev/null 2>&1 \
-			|| docker build -t dca-egress-proxy "$SCRIPT_DIR/egress"
-		docker rm -f "$EGRESS_PROXY" >/dev/null 2>&1 || true
-		docker run -d --name "$EGRESS_PROXY" --restart unless-stopped dca-egress-proxy >/dev/null
-		docker network connect "$DCA_NETWORK" "$EGRESS_PROXY"
-	fi
-}
 if [[ "$REBUILD" == true ]]; then
 	build_base; build_stack
 else
@@ -234,7 +221,9 @@ TOKEN=$(keychain_require anthropic personal "personal Anthropic OAuth token" \
 "Generate one from an authenticated Claude Code instance: claude setup-token
   Linux: secret-tool store --label='anthropic' service anthropic account personal
   macOS: security add-generic-password -s anthropic -a personal -w '<token>'")
-RUN_ARGS+=(-e CLAUDE_CODE_OAUTH_TOKEN="$TOKEN")
+# Mount the token as a secret file (not -e): dca-run reads it from /run/secrets, so it
+# never appears in `docker inspect` Config.Env or the host `ps` command line.
+add_secret_mount claude_code_oauth_token "$TOKEN"
 
 # Forward the role's no-touch key as a single-key agent. Sandbox: a file key in
 # $DCA_KEYS_DIR; production: the resident YubiKey key. Same key signs the commits
@@ -242,14 +231,20 @@ RUN_ARGS+=(-e CLAUDE_CODE_OAUTH_TOKEN="$TOKEN")
 if [[ -f "$ROLE_KEY" ]]; then
 	start_file_agent "$ROLE_KEY"
 	RUN_ARGS+=(-e DCA_SIGNING_KEY="$(awk '{print $1, $2}' "$ROLE_KEY.pub")")
+	# Sandbox (file key): allow host-key TOFU. Production (resident key) does NOT
+	# get this, so dca-run fails closed unless DCA_PORTITOR_HOSTKEY is pinned.
+	RUN_ARGS+=(-e DCA_ALLOW_HOSTKEY_TOFU=1)
 else
 	start_signing_agent "$ROLE" # this role's resident no-touch key only (PIN at launch)
 fi
 SIGN_ARGS=(-v "$SIGN_SOCK":/ssh-agent -e SSH_AUTH_SOCK=/ssh-agent)
 [[ "$(uname)" == "Darwin" ]] && SIGN_ARGS+=(--group-add 0)
 
-# Internal network + egress proxy so the agent can reach only portitor + Anthropic.
-ensure_egress
+# The internal network + egress proxy are owned by the compose stack (preflight_portitor
+# asserted both portitor and $EGRESS_PROXY are up): docker-claude --portitor up.
 
-docker run "${RUN_ARGS[@]}" "${SIGN_ARGS[@]}" "$STACK_IMAGE" dca-run
+docker run "${RUN_ARGS[@]}" "${SIGN_ARGS[@]}" ${SECRET_ARGS[@]+"${SECRET_ARGS[@]}"} "$STACK_IMAGE" dca-run
+rc=$?
+cleanup_secrets
 echo "dca: result dir: $RESULT_HOST"
+exit $rc

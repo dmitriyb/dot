@@ -15,48 +15,77 @@ PORTITOR_INIT_CONFIG=""
 
 usage() {
     cat <<'EOF'
-docker-claude — interactive Claude Code cockpit (containerized).
+docker-claude — single entrypoint for the containerized Claude workflows.
 
-  Builds/runs the interactive images (claude-dev-{base,personal,work}) and
-  manages the shared portitor proxy stack. NOT the autonomous agent runner —
-  for one-shot agent tasks use `dca`, and `dce` for a whole epic.
+  Interactive cockpit (personal/work) + the autonomous agent runners (dca/dce) +
+  the shared portitor proxy. dca/dce/warm are payloads dispatched by this command.
 
 usage:
-  docker-claude (-p | -w | --direct) [-a] [-r | --no-cache] [--workspace <path>]
-  docker-claude -r | --no-cache                 rebuild images for all modes
-  docker-claude --portitor init --repo <path> [--config-dir <path>]
-  docker-claude --portitor [up|down|status|restart]
+  docker-claude personal [-a] [-r | --no-cache] [--workspace <path>]
+  docker-claude work | direct [-r | --no-cache]
+  docker-claude dca  <args…>          # one-shot autonomous agent task
+  docker-claude dce  <args…>          # whole-epic orchestration
+  docker-claude warm <args…>          # warm the offline Go module cache
+  docker-claude portitor init --repo <path> [--config-dir <path>]
+  docker-claude portitor [up | down | status | restart]
 
-modes (one required, except --portitor):
-  -p, --personal     personal account, Anthropic OAuth token from the keychain
-  -w, --work         work account via the wire proxy (needs the `wire` CLI)
-  --direct           work account with a direct API key from the keychain
+commands:
+  personal           personal account, Anthropic OAuth token from the keychain
+  work               work account via the wire proxy (needs the `wire` CLI)
+  direct             work account with a direct API key from the keychain
+  dca | dce | warm   run the agent payloads — see `docker-claude dca --help`, etc.
+  portitor <verb>    lifecycle of the shared portitor + egress proxy stack
+                     (init | up | down | status | restart). `up` needs a GitHub
+                     token: env GH_TOKEN or keychain service=portitor account=default
+                     (override: PORTITOR_KEYCHAIN_ACCOUNT). `init` persists the
+                     portitor host paths to ~/.config/docker-claude/portitor.env.
 
-flags:
-  -a, --agent        personal only: forward an ephemeral no-touch SSH signing
-                     agent (commits are signed; the key cannot auth)
+options (interactive commands):
+  -a, --agent        personal only: forward an ephemeral no-touch SSH signing agent
+                     (commits are signed; the key cannot auth)
   -r, --rebuild      rebuild the image(s) before running
   --no-cache         rebuild with no Docker cache (implies --rebuild)
   --workspace <path> host dir to mount as the workspace (default: ~/Work, ~/work on macOS)
-  --portitor <verb>  lifecycle of the shared portitor + egress proxy stack
-                     (up | down | status | restart; default: up). `up` needs a
-                     GitHub token: env GH_TOKEN, or keychain service=portitor
-                     account=default (override: PORTITOR_KEYCHAIN_ACCOUNT).
-  --portitor init    persist the portitor host paths so `up` needs no env var:
-                     --repo <path> (the portitor repo built into the image) and
-                     optional --config-dir <path> (the /etc/portitor host dir).
-                     Written to ~/.config/docker-claude/portitor.env; a shell-set
-                     PORTITOR_REPO/PORTITOR_CONFIG_DIR still overrides per run.
   -h, --help         show this help
 
+aliases: dc=docker-claude, dcp=personal, dcw=work, dcwd=direct, dca, dce, dcwarm.
+
 examples:
-  docker-claude --portitor init --repo ~/work/portitor   # one-time: set the paths
-  docker-claude --portitor up        # bring up the shared proxy (dca/dce need it)
-  docker-claude -p                   # interactive personal session
-  docker-claude -p --agent           # personal session with the signing agent
-  docker-claude --direct -r          # work session, rebuild the work image
+  docker-claude portitor up          # bring up the shared proxy (dca/dce need it)
+  docker-claude personal --agent     # interactive personal session w/ signing agent
+  docker-claude dca --repo my-svc --skill implement --bead @123 --dry-run
 EOF
 }
+
+# Resolve our own real path (needed before the shared lib is sourced), locate the
+# off-PATH payload dir, and load the shared lib (keychain + signing + dot_root).
+resolve_path() {
+    local p="$1" target
+    while [ -L "$p" ]; do
+        target="$(readlink "$p")"
+        case "$target" in
+            /*) p="$target" ;;
+            *)  p="$(cd "$(dirname "$p")" && pwd)/$target" ;;
+        esac
+    done
+    printf '%s\n' "$p"
+}
+LIBEXEC="$(dirname "$(resolve_path "$0")")/../libexec/docker-claude"
+source "$LIBEXEC/agent-common.sh"
+
+# Subcommand dispatch — the public interface. Agent payloads exec out to their own
+# scripts (one process, no overhead); interactive + portitor commands map onto the
+# flag parser below for back-compat.
+case "${1:-}" in
+    dca)      shift; exec "$LIBEXEC/dca" "$@" ;;
+    dce)      shift; exec "$LIBEXEC/dce" "$@" ;;
+    warm)     shift; exec "$LIBEXEC/dca-warm" "$@" ;;
+    personal) shift; set -- --personal "$@" ;;
+    work)     shift; set -- --work "$@" ;;
+    direct)   shift; set -- --direct "$@" ;;
+    portitor) shift; set -- --portitor "$@" ;;
+    help)     usage; exit 0 ;;
+esac
 
 # Parse flags
 while [[ $# -gt 0 ]]; do
@@ -118,21 +147,9 @@ while [[ $# -gt 0 ]]; do
     esac
 done
 
-# Portable `readlink -f` (BSD/macOS readlink lacks -f): walk the symlink chain.
-resolve_path() {
-    local p="$1" target
-    while [ -L "$p" ]; do
-        target="$(readlink "$p")"
-        case "$target" in
-            /*) p="$target" ;;
-            *)  p="$(cd "$(dirname "$p")" && pwd)/$target" ;;
-        esac
-    done
-    printf '%s\n' "$p"
-}
-
-# Build images if missing or rebuild requested
-SCRIPT_DIR="$(cd "$(dirname "$(resolve_path "$0")")" && cd ../../.. && pwd)/docker/claude"
+# Build images if missing or rebuild requested. (resolve_path + agent-common.sh are
+# loaded at the top, before subcommand dispatch.)
+SCRIPT_DIR="$(dot_root "$(dirname "$(resolve_path "$0")")")/docker/claude"
 # Bake the dot branch you're currently on so a rebuild tests your working branch, not main.
 # The branch must be pushed; Docker caches the clone layer, so re-test a re-pushed branch
 # of the same name with --no-cache.
@@ -285,129 +302,16 @@ if [[ -z "${WORKSPACE:-}" ]]; then
 fi
 
 
-# Platform-specific "not found" exit code from the keychain CLI.
-if [[ "$(uname)" == "Darwin" ]]; then
-    KEYCHAIN_NOTFOUND_RC=44   # errSecItemNotFound
-else
-    KEYCHAIN_NOTFOUND_RC=1    # secret-tool / libsecret
-fi
-
-# Pure passthrough: dispatch to the right OS keychain tool, return its stdout
-# and exit code verbatim. No policy.
-_keychain_read() {
-    local service="$1" account="${2:-}"
-    if [[ "$(uname)" == "Darwin" ]]; then
-        if [[ -n "$account" ]]; then
-            security find-generic-password -s "$service" -a "$account" -w 2>/dev/null
-        else
-            security find-generic-password -s "$service" -w 2>/dev/null
-        fi
-    else
-        if [[ -n "$account" ]]; then
-            secret-tool lookup service "$service" account "$account" 2>/dev/null
-        else
-            secret-tool lookup service "$service" 2>/dev/null
-        fi
-    fi
-}
-
-# Required secret: prints an Error and aborts if missing or unreadable.
-keychain_require() {
-    local service="$1" account="$2" label="$3" hint="$4" value rc=0
-    value=$(_keychain_read "$service" "$account") || rc=$?
-    if (( rc == 0 )); then
-        printf '%s' "$value"
-    elif (( rc == KEYCHAIN_NOTFOUND_RC )); then
-        echo "Error: $label not found in keychain (service=$service${account:+, account=$account})." >&2
-        if [[ -n "$hint" ]]; then
-            echo "$hint" >&2
-        fi
-        exit 1
-    else
-        echo "Error: keychain lookup failed for $label (service=$service${account:+, account=$account}, rc=$rc)." >&2
-        exit "$rc"
-    fi
-}
-
-# Optional secret: prints a Warning and returns empty if missing or unreadable.
-keychain_optional() {
-    local service="$1" account="$2" label="$3" hint="$4" value rc=0
-    value=$(_keychain_read "$service" "$account") || rc=$?
-    if (( rc == 0 )); then
-        printf '%s' "$value"
-    elif (( rc == KEYCHAIN_NOTFOUND_RC )); then
-        echo "Warning: $label not found in keychain (service=$service${account:+, account=$account}); continuing without it." >&2
-        if [[ -n "$hint" ]]; then
-            echo "$hint" >&2
-        fi
-    else
-        echo "Warning: keychain lookup failed for $label (rc=$rc); continuing without it." >&2
-    fi
-}
-
-# Fill GH_ARGS with "-e GH_TOKEN=<token>" if a token is stored for $1, else
-# leave GH_ARGS empty. GH_TOKEN makes the in-container `gh` CLI stateless —
-# no hosts.yml written, auth owned by host keychain.
+# Register the gh PAT (if stored for $1) as a /run/secrets/gh_token mount. The
+# in-container `gh` CLI reads GH_TOKEN from the env (set by the entrypoint from that
+# file) — stateless (no hosts.yml) and NOT visible in `docker inspect`/host `ps`.
 resolve_gh_args() {
     local label="$1" token
     token=$(keychain_optional gh "$label" "gh token for '$label' account" \
 "In-container 'gh' CLI will be unauthenticated.
   macOS: security add-generic-password -s gh -a $label -w '<PAT>'
   Linux: secret-tool store --label='gh $label' service gh account $label")
-    GH_ARGS=()
-    if [[ -n "$token" ]]; then
-        GH_ARGS=(-e "GH_TOKEN=$token")
-    fi
-}
-
-# Committed list of SHA-256 hashes identifying the sign-only / no-touch resident
-# key(s). Only hashes are stored, never the key name. See the file for details.
-SIGNING_HASH_FILE="$HOME/.ssh/signing-key-hashes"
-
-_sha256() {
-    if command -v sha256sum >/dev/null 2>&1; then
-        sha256sum | awk '{print $1}'
-    else
-        shasum -a 256 | awk '{print $1}'
-    fi
-}
-
-# True if the given key handle's application suffix is listed in SIGNING_HASH_FILE.
-_is_signing_key() {
-    local suffix h
-    suffix="${1##*_sk_rk_}"
-    h="$(printf '%s' "$suffix" | _sha256)"
-    grep -vE '^[[:space:]]*(#|$)' "$SIGNING_HASH_FILE" 2>/dev/null | grep -qix "$h"
-}
-
-# Ephemeral signing agent for agent-mode containers. Sets SIGN_SOCK and loads ONLY
-# the no-touch sign-only key (identified by hash). The resident key is pulled off
-# the YubiKey at launch (PIN + 1 touch); its handle file is removed as soon as it
-# is loaded. The agent is killed and its socket removed on script exit (via trap),
-# so the normal environment keeps no signing agent and no sk files at rest.
-start_signing_agent() {
-    if [[ ! -s "$SIGNING_HASH_FILE" ]] || ! grep -qiE '^[[:space:]]*[0-9a-f]{64}[[:space:]]*$' "$SIGNING_HASH_FILE"; then
-        echo "Error: no signing-key hash configured in $SIGNING_HASH_FILE." >&2
-        echo "Add one with: printf '%s' '<app-suffix>' | sha256sum" >&2
-        exit 1
-    fi
-    SIGN_SOCK="$(mktemp -u "${TMPDIR:-/tmp}/dc-agent.XXXXXX.sock")"
-    eval "$(ssh-agent -a "$SIGN_SOCK")" >/dev/null
-    SIGN_PID="$SSH_AGENT_PID"
-    trap 'kill "$SIGN_PID" 2>/dev/null; rm -f "$SIGN_SOCK"' EXIT
-    local dir key; dir="$(mktemp -d)"
-    ( cd "$dir" && ssh-keygen -K -N "" >/dev/null )   # download resident creds (PIN + touch); -N "" skips passphrase
-    shopt -s nullglob
-    for key in "$dir"/id_*_sk_rk_*; do
-        [[ "$key" == *.pub ]] && continue
-        if _is_signing_key "$key"; then
-            SSH_AUTH_SOCK="$SIGN_SOCK" ssh-add "$key" >/dev/null 2>&1
-        fi
-    done
-    rm -rf "$dir"
-    if [[ "$(SSH_AUTH_SOCK="$SIGN_SOCK" ssh-add -L 2>/dev/null | grep -c .)" != 1 ]]; then
-        echo "Warning: signing agent does not hold exactly one key." >&2
-    fi
+    add_secret_mount gh_token "$token"
 }
 
 # Persistent volumes for fish history and tmux resurrect (targeted mounts
@@ -428,38 +332,40 @@ Then store it:
   Linux: secret-tool store --label='anthropic' service anthropic account personal")
     PERSONAL_REPO_VOLUME="claude-personal-repos"
     resolve_gh_args personal
+    add_secret_mount claude_code_oauth_token "$TOKEN"
 
     if [[ "$AGENT_MODE" == true ]]; then
         # Agent mode: forward an ephemeral no-touch signing-only agent. Transport
         # uses GH_TOKEN over HTTPS (see entrypoint), so the key signs but can't auth.
-        start_signing_agent
+        start_personal_signing_agent
         PERSONAL_AGENT_ARGS=(-v "$SIGN_SOCK":/ssh-agent -e SSH_AUTH_SOCK=/ssh-agent -e AGENT_MODE=1)
         if [[ "$(uname)" == "Darwin" ]]; then
             PERSONAL_AGENT_ARGS+=(--group-add 0)
         fi
-        # NOT exec: control returns here on container exit so the trap tears down
-        # the signing agent and removes its socket.
+        # NOT exec: control returns here on container exit so the trap tears down the
+        # signing agent and cleanup_secrets shreds the mounted token files.
         docker run -it --rm \
             --memory=8g --cpus=4 \
-            -e CLAUDE_CODE_OAUTH_TOKEN="$TOKEN" \
             -v "$PERSONAL_REPO_VOLUME":/workspace \
             -v "$FISH_DATA_VOLUME":/home/dev/.local/share/fish \
             -v "$TMUX_DATA_VOLUME":/home/dev/.local/share/tmux \
             "${PERSONAL_AGENT_ARGS[@]}" \
-            ${GH_ARGS[@]+"${GH_ARGS[@]}"} \
+            ${SECRET_ARGS[@]+"${SECRET_ARGS[@]}"} \
             "$PERSONAL_IMAGE"
+        cleanup_secrets
         exit 0
     fi
 
-    exec docker run -it --rm \
+    # NOT exec (was): keep the parent alive so cleanup_secrets runs after the session.
+    docker run -it --rm \
         --memory=8g --cpus=4 \
-        -e CLAUDE_CODE_OAUTH_TOKEN="$TOKEN" \
         -v "$PERSONAL_REPO_VOLUME":/workspace \
         -v claude-fish-data-personal:/home/dev/.local/share/fish \
         -v claude-tmux-data-personal:/home/dev/.local/share/tmux \
         "${SSH_AGENT_ARGS[@]}" \
-        ${GH_ARGS[@]+"${GH_ARGS[@]}"} \
+        ${SECRET_ARGS[@]+"${SECRET_ARGS[@]}"} \
         "$PERSONAL_IMAGE"
+    rc=$?; cleanup_secrets; exit $rc
 fi
 
 # Common work args (shared between wire and direct modes)
@@ -489,13 +395,15 @@ if [[ "$MODE" == "work" ]]; then
     WIRE_PORT=$(wire config 2>&1 | awk '/Proxy port:/{print $3}')
     WIRE_BASE_URL="http://host.docker.internal:${WIRE_PORT}/wire/${WIRE_KEY}/claude-code/anthropic"
     resolve_gh_args work
+    # The base URL embeds the wire key — mount it as a secret (not -e / not logged).
+    add_secret_mount anthropic_base_url "$WIRE_BASE_URL"
 
-    exec docker run \
+    docker run \
         "${WORK_COMMON_ARGS[@]}" \
         -e ANTHROPIC_API_KEY=wire-proxy \
-        -e ANTHROPIC_BASE_URL="$WIRE_BASE_URL" \
-        ${GH_ARGS[@]+"${GH_ARGS[@]}"} \
+        ${SECRET_ARGS[@]+"${SECRET_ARGS[@]}"} \
         "$WORK_IMAGE"
+    rc=$?; cleanup_secrets; exit $rc
 fi
 
 if [[ "$MODE" == "direct" ]]; then
@@ -504,10 +412,11 @@ if [[ "$MODE" == "direct" ]]; then
 "Log into Claude Code with your work account first (claude login).
 The key is stored automatically in the OS keychain.")
     resolve_gh_args work
+    add_secret_mount anthropic_api_key "$KEY"
 
-    exec docker run \
+    docker run \
         "${WORK_COMMON_ARGS[@]}" \
-        -e ANTHROPIC_API_KEY="$KEY" \
-        ${GH_ARGS[@]+"${GH_ARGS[@]}"} \
+        ${SECRET_ARGS[@]+"${SECRET_ARGS[@]}"} \
         "$WORK_IMAGE"
+    rc=$?; cleanup_secrets; exit $rc
 fi
