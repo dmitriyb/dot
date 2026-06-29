@@ -24,22 +24,24 @@ is_headless() {
 # would dangle or make stow abort. Only links resolving into $DOTDIR are touched; real
 # files and symlinks pointing elsewhere are left untouched.
 prune_repo_links() {
-    local dir link tgt
+    local dir repo link tgt; repo="$(basename "$DOTDIR")"
+    # Drop a link iff its target text points into the repo: an absolute $DOTDIR/* target,
+    # or a relative stow link (.../<repo>/...). Resolve every link's target in O(1)
+    # processes per dir — link paths and their targets come from two batched `find`
+    # passes (targets via `find -exec readlink {} +`) zipped with `paste`. The old code
+    # forked a `cd … pwd` subshell PER link (~4 procs each); a real home has thousands of
+    # unrelated symlinks (e.g. fnm/npm man pages), so that was the dominant setup.sh cost.
+    # Same deletion set, no per-link forks. (find/readlink/paste order is stable here:
+    # setup.sh does not mutate these dirs concurrently.)
     for dir in ~/.config ~/.local ~/.claude ~/.ssh ~/Library/LaunchAgents; do
         [ -d "$dir" ] || continue
-        while IFS= read -r link; do
-            if [ -e "$link" ]; then
-                # Resolvable link: drop it only if its real target lives inside the repo.
-                tgt="$(cd "$(dirname "$link")" && cd "$(dirname "$(readlink "$link")")" 2>/dev/null && pwd)" || continue
-                case "$tgt/" in "$DOTDIR"/*) rm -f "$link" ;; esac
-            else
-                # Broken link: can't resolve it, so match the repo dir name in the link
-                # string (stow writes relative links like ../../<repo>/...). Safe to drop.
-                case "$(readlink "$link")" in
-                    "$DOTDIR"/* | */"$(basename "$DOTDIR")"/*) rm -f "$link" ;;
-                esac
-            fi
-        done < <(find "$dir" -type l 2>/dev/null)
+        while IFS=$'\t' read -r link tgt; do
+            case "$tgt" in
+                "$DOTDIR"/* | */"$repo"/*) rm -f "$link" ;;
+            esac
+        done < <(paste -d '\t' \
+            <(find "$dir" -type l 2>/dev/null) \
+            <(find "$dir" -type l -exec readlink {} + 2>/dev/null))
     done
 }
 
@@ -99,13 +101,21 @@ fi
 if ! is_headless; then
     case "$(uname)" in
         Darwin)
-            launchctl bootout "gui/$(id -u)/com.user.ssh-agent" 2>/dev/null || true
-            launchctl bootstrap "gui/$(id -u)" ~/Library/LaunchAgents/com.user.ssh-agent.plist || true
-            echo "Loaded launchd ssh-agent."
+            # Idempotent: skip the bootout+bootstrap churn if it's already loaded.
+            if launchctl print "gui/$(id -u)/com.user.ssh-agent" >/dev/null 2>&1; then
+                echo "launchd ssh-agent already loaded."
+            else
+                launchctl bootstrap "gui/$(id -u)" ~/Library/LaunchAgents/com.user.ssh-agent.plist || true
+                echo "Loaded launchd ssh-agent."
+            fi
             ;;
         Linux)
-            systemctl --user enable --now ssh-agent.service || true
-            echo "Enabled systemd user ssh-agent.service."
+            if systemctl --user is-active --quiet ssh-agent.service; then
+                echo "systemd ssh-agent.service already active."
+            else
+                systemctl --user enable --now ssh-agent.service || true
+                echo "Enabled systemd user ssh-agent.service."
+            fi
             ;;
     esac
 fi

@@ -22,9 +22,12 @@ Enforcement scaffolding baked into the Docker Claude images. Part of the larger 
 
 The deny rules are positional command-string globs — **defeatable** (git plumbing, libgit2,
 REST, shell obfuscation). They stop the *casual/accidental* bypass and give immediate value, but
-the **real, unbypassable enforcement is the `portitor` proxy** (a later phase) which inspects the
-*result* server-side, plus GitHub branch protection / `require signed commits` for hosted repos.
-Treat this layer as honest-path fast feedback, not a guarantee.
+the **real, unbypassable enforcement is the `portitor` proxy** — now implemented and audited
+(see `portitor-audit.md`): it verifies, server-side on every push, that each commit is SSH-signed
+by an **allowed signer** whose **fingerprint maps to the right role** (implementer vs reviewer),
+applies content **role-rules**, and protects the default branch — backed by GitHub branch
+protection / `require signed commits` for hosted repos. Treat this managed-settings layer as
+honest-path fast feedback, **not** a guarantee; the guarantee lives in portitor.
 
 ## Precedence note
 
