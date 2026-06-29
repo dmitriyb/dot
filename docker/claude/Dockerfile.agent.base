@@ -19,10 +19,16 @@ ARG SPEX_REF=main
 RUN git clone --branch "$SPEX_REF" --single-branch https://github.com/dmitriyb/spexmachina.git /src/spex \
     && cd /src/spex && go build -trimpath -o /out/spex ./cmd/spex/
 
-RUN curl -fsSL https://raw.githubusercontent.com/Dicklesworthstone/beads_rust/main/install.sh | bash \
+# Installer scripts pinned by sha256 (agent images favour reproducibility); the tool
+# version each fetches still floats. Bump on a legitimate upstream script change.
+RUN curl -fsSL https://raw.githubusercontent.com/Dicklesworthstone/beads_rust/main/install.sh -o /tmp/i.sh \
+    && echo "c398f2fbfbb5facaf255fd52cca22bb3ffe90f0a6e4660e4c34213a9c39863aa  /tmp/i.sh" | sha256sum -c - \
+    && bash /tmp/i.sh && rm /tmp/i.sh \
     && cp "$HOME/.local/bin/br" /out/br
 
-RUN curl -fsSL https://claude.ai/install.sh | bash \
+RUN curl -fsSL https://claude.ai/install.sh -o /tmp/i.sh \
+    && echo "005ec1a937f32dfbb74f9e810287bcb12cba2d5cae4c9277aa8c6364adbf1787  /tmp/i.sh" | sha256sum -c - \
+    && bash /tmp/i.sh && rm /tmp/i.sh \
     && cp "$HOME/.local/bin/claude" /out/claude
 
 # ---- runtime: lean, stack-free ----

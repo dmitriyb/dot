@@ -5,26 +5,37 @@ USER root
 # Install jq
 RUN dnf install -y jq && dnf clean all
 
-# Install Zig (latest stable from upstream — Fedora's package lags releases)
-RUN ZIG_VERSION=$(curl -fsSL https://ziglang.org/download/index.json \
-        | jq -r 'to_entries | map(select(.key != "master")) | .[0].key') \
+# Install Zig (latest stable from upstream — Fedora's package lags releases). Verify
+# the tarball against the upstream-published sha256 in index.json (fetched once over
+# TLS), and use the index's own tarball URL (robust to zig's archive-naming changes).
+RUN IDX=$(curl -fsSL https://ziglang.org/download/index.json) \
     && ARCH=$(uname -m) \
-    && curl -fsSL "https://ziglang.org/download/${ZIG_VERSION}/zig-${ARCH}-linux-${ZIG_VERSION}.tar.xz" \
-        | tar -xJ -C /usr/local --strip-components=1
+    && KEY=$(echo "$IDX" | jq -r 'to_entries | map(select(.key != "master")) | .[0].key') \
+    && URL=$(echo "$IDX" | jq -r ".\"${KEY}\".\"${ARCH}-linux\".tarball") \
+    && SHA=$(echo "$IDX" | jq -r ".\"${KEY}\".\"${ARCH}-linux\".shasum") \
+    && curl -fsSL "$URL" -o /tmp/zig.tar.xz \
+    && echo "$SHA  /tmp/zig.tar.xz" | sha256sum -c - \
+    && tar -xJ -C /usr/local --strip-components=1 -f /tmp/zig.tar.xz \
+    && rm /tmp/zig.tar.xz
 
 USER dev
 
-# Install beads_rust (pre-built binary)
-RUN curl -fsSL https://raw.githubusercontent.com/Dicklesworthstone/beads_rust/main/install.sh | bash
+# Install beads_rust (pre-built binary). Installer script pinned by sha256.
+RUN curl -fsSL https://raw.githubusercontent.com/Dicklesworthstone/beads_rust/main/install.sh -o /tmp/i.sh \
+    && echo "c398f2fbfbb5facaf255fd52cca22bb3ffe90f0a6e4660e4c34213a9c39863aa  /tmp/i.sh" | sha256sum -c - \
+    && bash /tmp/i.sh && rm /tmp/i.sh
 
 # Install beads_viewer (TUI for beads dependency graphs)
 RUN GOPATH=/home/dev/go go install github.com/Dicklesworthstone/beads_viewer/cmd/bv@latest
 
-# Install Rust toolchain (needed for bvr)
-RUN curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y
+# Install Rust toolchain (needed for bvr). rustup installer script pinned by sha256.
+RUN curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs -o /tmp/i.sh \
+    && echo "6c30b75a75b28a96fd913a037c8581b580080b6ee9b8169a3c0feb1af7fe8caf  /tmp/i.sh" | sha256sum -c - \
+    && sh /tmp/i.sh -y && rm /tmp/i.sh
 
-# Install beads_viewer_rust (graph-aware issue triage engine for .beads data)
-RUN . "$HOME/.cargo/env" && cargo install --git https://github.com/Dicklesworthstone/beads_viewer_rust.git beads_viewer_rust
+# Install beads_viewer_rust (graph-aware issue triage engine for .beads data).
+# --locked uses the upstream Cargo.lock for reproducible dependency versions.
+RUN . "$HOME/.cargo/env" && cargo install --locked --git https://github.com/Dicklesworthstone/beads_viewer_rust.git beads_viewer_rust
 
 # Add cargo bin to PATH
 RUN echo 'set -gx PATH ~/.cargo/bin $PATH' \

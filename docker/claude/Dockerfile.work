@@ -23,8 +23,10 @@ RUN chmod 0644 /etc/claude-code/managed-settings.json
 
 USER dev
 
-# Install bun
-RUN curl -fsSL https://bun.sh/install | bash
+# Install bun. Installer script pinned by sha256.
+RUN curl -fsSL https://bun.sh/install -o /tmp/i.sh \
+    && echo "bab8acfb046aac8c72407bdcce903957665d655d7acaa3e11c7c4616beae68dd  /tmp/i.sh" | sha256sum -c - \
+    && bash /tmp/i.sh && rm /tmp/i.sh
 
 # Add bun to PATH
 RUN echo 'set -gx PATH ~/.bun/bin $PATH' \

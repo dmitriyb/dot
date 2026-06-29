@@ -25,8 +25,12 @@ RUN set -e; \
     mkdir -p /etc/ssh; \
     echo "$SCANNED" > /etc/ssh/ssh_known_hosts
 
-# Install starship (not in Fedora repos)
-RUN curl -fsSL https://starship.rs/install.sh | sh -s -- -y
+# Install starship (not in Fedora repos). Pin the installer SCRIPT by sha256 (supply-
+# chain: a tampered installer fails the build) — the tool version it fetches still floats.
+# Bump the hash when upstream legitimately changes the script (see docker/claude/README).
+RUN curl -fsSL https://starship.rs/install.sh -o /tmp/i.sh \
+    && echo "52c64f14a558034ebeb1907ea9364e802b32474576fd3e68265f73bc33cc8fbb  /tmp/i.sh" | sha256sum -c - \
+    && sh /tmp/i.sh -y && rm /tmp/i.sh
 
 # Install lazygit (not in Fedora repos)
 RUN dnf copr enable -y atim/lazygit && dnf install -y lazygit && dnf clean all
@@ -41,8 +45,10 @@ RUN useradd -m -s /usr/bin/fish -u $HOST_UID dev
 USER dev
 WORKDIR /home/dev
 
-# Install Claude Code (native binary into ~/.local/bin)
-RUN curl -fsSL https://claude.ai/install.sh | bash
+# Install Claude Code (native binary into ~/.local/bin). Installer script pinned.
+RUN curl -fsSL https://claude.ai/install.sh -o /tmp/i.sh \
+    && echo "005ec1a937f32dfbb74f9e810287bcb12cba2d5cae4c9277aa8c6364adbf1787  /tmp/i.sh" | sha256sum -c - \
+    && bash /tmp/i.sh && rm /tmp/i.sh
 
 # Clone and stow dotfiles. DOT_PROFILE=headless → setup.sh stows shared + headless
 # and skips host-only ssh-agent activation (no init system here; the agent is
@@ -63,7 +69,9 @@ RUN git clone --branch "$DOT_REF" --single-branch https://github.com/dmitriyb/do
 USER root
 RUN mkdir -m 0755 /nix && chown dev /nix
 USER dev
-RUN curl -fsSL https://nixos.org/nix/install | sh -s -- --no-daemon \
+RUN curl -fsSL https://nixos.org/nix/install -o /tmp/i.sh \
+    && echo "e9d447ce3d2ff62d7ff9cb6ef401de6fa8acb148839dd00f7271945d7b638b14  /tmp/i.sh" | sha256sum -c - \
+    && sh /tmp/i.sh --no-daemon && rm /tmp/i.sh \
     && mkdir -p /home/dev/.config/nix \
     && echo 'experimental-features = nix-command flakes' > /home/dev/.config/nix/nix.conf
 
