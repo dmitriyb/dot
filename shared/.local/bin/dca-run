@@ -79,7 +79,15 @@ git clone "$ORIGIN" "$WORKDIR" || fail_handoff "clone from portitor failed"
 cd "$WORKDIR"
 
 # Sign commits with the role's forwarded agent key (no touch): user.signingkey is
-# the public key; the private key lives only in the forwarded agent.
+# the public key; the private key lives only in the forwarded agent. The file-key
+# path passes the pubkey in DCA_SIGNING_KEY; the resident-YubiKey path forwards the
+# agent but passes nothing, so read the pubkey straight from the agent — same as the
+# personal container's agent mode (entrypoint.personal.fish). This drives BOTH the
+# signing config AND the committer identity below, so a resident run isn't left
+# unsigned or identity-less.
+if [ -z "${DCA_SIGNING_KEY:-}" ]; then
+	DCA_SIGNING_KEY="$(ssh-add -L 2>/dev/null | head -n1 | awk '{print $1, $2}')"
+fi
 if [ -n "${DCA_SIGNING_KEY:-}" ]; then
 	git config gpg.format ssh
 	git config user.signingkey "key::$DCA_SIGNING_KEY"

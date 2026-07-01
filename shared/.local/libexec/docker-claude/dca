@@ -229,6 +229,14 @@ TOKEN=$(keychain_require anthropic personal "personal Anthropic OAuth token" \
 # never appears in `docker inspect` Config.Env or the host `ps` command line.
 add_secret_mount claude_code_oauth_token "$TOKEN"
 
+# Host-key policy passthrough (opt-in): forward a pinned portitor host key or an
+# explicit TOFU flag from the host environment into the container. The file-key
+# branch below turns TOFU on automatically for the sandbox; the resident branch
+# relies on these, so a resident run stays fail-closed unless one is set on the
+# host. Production sets neither.
+[[ -n "${DCA_PORTITOR_HOSTKEY:-}" ]]   && RUN_ARGS+=(-e DCA_PORTITOR_HOSTKEY="$DCA_PORTITOR_HOSTKEY")
+[[ -n "${DCA_ALLOW_HOSTKEY_TOFU:-}" ]] && RUN_ARGS+=(-e DCA_ALLOW_HOSTKEY_TOFU="$DCA_ALLOW_HOSTKEY_TOFU")
+
 # Forward the role's no-touch key as a single-key agent. Sandbox: a file key in
 # $DCA_KEYS_DIR; production: the resident YubiKey key. Same key signs the commits
 # AND authenticates SSH to portitor (one fingerprint -> one role).
