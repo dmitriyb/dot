@@ -112,6 +112,12 @@ BRANCH="$(sed -n 's/^BRANCH=//p' "$HARNESS_DIR/bundle.env")"
 # 4. Headless agent run. /<skill> activates the skill; the bundle is the context.
 #    bypassPermissions: no prompts (managed-settings + portitor are the guardrails).
 PROMPT="/$DCA_SKILL"$'\n\n'"$(cat "$HARNESS_DIR/CONTEXT.md")"
+# Optional adversarial/extra instruction (dca --instruction). Appended verbatim so the
+# agent attempts it; the gate still judges the result (used to demo/test rejections).
+if [ -n "${DCA_EXTRA_INSTRUCTION:-}" ]; then
+	PROMPT="$PROMPT"$'\n\n'"ADDITIONAL INSTRUCTION: $DCA_EXTRA_INSTRUCTION"
+	log "extra instruction: $DCA_EXTRA_INSTRUCTION"
+fi
 log "running claude (effort=$EFFORT, branch=$BRANCH)"
 claude -p "$PROMPT" \
 	--effort "$EFFORT" \

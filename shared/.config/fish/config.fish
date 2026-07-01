@@ -132,8 +132,8 @@ alias dc docker-claude
 alias dcp 'docker-claude personal'
 alias dcw 'docker-claude work'
 alias dcwd 'docker-claude direct'
-alias dca 'docker-claude dca'
-alias dce 'docker-claude dce'
+alias dca 'docker-claude agent'
+alias dce 'docker-claude epic'
 alias dcwarm 'docker-claude warm'
 
 # Neovim function

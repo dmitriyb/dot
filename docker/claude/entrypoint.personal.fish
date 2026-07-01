@@ -89,5 +89,15 @@ if test "$AGENT_MODE" = 1
     end
 end
 
+# Import SSH public keys from forwarded agent for IDE Remote Development access
+if test -n "$SSH_AUTH_SOCK"
+    ssh-add -L >> ~/.ssh/authorized_keys 2>/dev/null
+    sort -u -o ~/.ssh/authorized_keys ~/.ssh/authorized_keys
+    chmod 600 ~/.ssh/authorized_keys 2>/dev/null
+end
+
+# Start sshd for IDE Remote Development (port 2223; published on 127.0.0.1 by docker-claude)
+sudo /usr/sbin/sshd 2>/dev/null
+
 # Start fish interactive shell
 exec fish

@@ -48,6 +48,8 @@ flags:
   --stack <name>       toolchain layer; needs docker/claude/Dockerfile.agent.<name>
                        (default: go — the only stack with an offline cache today)
   --effort <level>     low | medium | high (default: medium)
+  --instruction <text> extra free-text appended to the agent's prompt (e.g. to make
+                       it attempt something the gate should reject — for demos/testing)
   -r, --rebuild        rebuild the base + stack images before running
   --no-cache           rebuild with no Docker cache (implies --rebuild)
   --dry-run            preview only — no build, no keychain, no key touch
@@ -67,7 +69,7 @@ EOF
 die() { echo "dca: $*" >&2; exit 1; }
 
 REPO="" SKILL="" BEAD="" PR="" EPIC="" STACK="go" EFFORT="medium"
-REBUILD=false NO_CACHE=false DRY_RUN=false
+REBUILD=false NO_CACHE=false DRY_RUN=false INSTRUCTION=""
 while [[ $# -gt 0 ]]; do
 	case "$1" in
 		--repo | --repository) REPO="$2"; shift 2 ;;
@@ -77,6 +79,7 @@ while [[ $# -gt 0 ]]; do
 		--epic) EPIC="$2"; shift 2 ;;
 		--stack) STACK="$2"; shift 2 ;;
 		--effort) EFFORT="$2"; shift 2 ;;
+		--instruction) INSTRUCTION="$2"; shift 2 ;; # extra free-text appended to the agent prompt
 		-r | --rebuild) REBUILD=true; shift ;;
 		--no-cache) NO_CACHE=true; REBUILD=true; shift ;;
 		--dry-run) DRY_RUN=true; shift ;;
@@ -151,6 +154,7 @@ RUN_ARGS=(
 	-e DCA_RESULT_DIR=/dca-result
 	-e DCA_GIT_NAME="$GIT_NAME"
 	-e DCA_GIT_EMAIL="$GIT_EMAIL"
+	-e DCA_EXTRA_INSTRUCTION="$INSTRUCTION"
 	-e PORTITOR_HOST="$PORTITOR_HOST"
 	-e HTTPS_PROXY="http://$EGRESS_PROXY:8888"
 	-e HTTP_PROXY="http://$EGRESS_PROXY:8888"

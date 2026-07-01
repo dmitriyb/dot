@@ -2,8 +2,19 @@ FROM claude-dev-base
 
 USER root
 
-# Install jq
-RUN dnf install -y jq && dnf clean all
+# Install jq, plus openssh-server + sudo (for IDE Remote Development, mirrors work)
+RUN dnf install -y jq openssh-server sudo && dnf clean all
+
+# Configure sshd: non-privileged port 2223 (work uses 2222; distinct so both can run), key-only auth
+RUN ssh-keygen -A \
+    && sed -i 's/^#Port 22/Port 2223/' /etc/ssh/sshd_config \
+    && sed -i 's/^#PasswordAuthentication yes/PasswordAuthentication no/' /etc/ssh/sshd_config \
+    && sed -i 's/^#PubkeyAuthentication yes/PubkeyAuthentication yes/' /etc/ssh/sshd_config \
+    && echo "AllowUsers dev" >> /etc/ssh/sshd_config \
+    && mkdir -p /run/sshd
+
+# Allow dev to start sshd without password
+RUN echo "dev ALL=(root) NOPASSWD: /usr/sbin/sshd" >> /etc/sudoers.d/dev-sshd
 
 # Install Zig (latest stable from upstream — Fedora's package lags releases). Verify
 # the tarball against the upstream-published sha256 in index.json (fetched once over
@@ -43,7 +54,19 @@ RUN echo 'set -gx PATH ~/.cargo/bin $PATH' \
 
 RUN /home/dev/.local/bin/theme-set catppuccin
 
+# Prepare SSH authorized_keys with host's dedicated key (same key as work; the
+# entrypoint also appends any forwarded-agent keys at runtime)
+RUN mkdir -p /home/dev/.ssh && chmod 700 /home/dev/.ssh
+ARG DOCKER_CLAUDE_PUBKEY=""
+RUN if [ -n "$DOCKER_CLAUDE_PUBKEY" ]; then \
+        echo "$DOCKER_CLAUDE_PUBKEY" > /home/dev/.ssh/authorized_keys \
+        && chmod 600 /home/dev/.ssh/authorized_keys; \
+    fi
+
 COPY --chown=dev:dev entrypoint.personal.fish /home/dev/entrypoint.fish
 
 WORKDIR /workspace
+
+EXPOSE 2223
+
 ENTRYPOINT ["fish", "/home/dev/entrypoint.fish"]

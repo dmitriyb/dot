@@ -17,15 +17,15 @@ usage() {
     cat <<'EOF'
 docker-claude — single entrypoint for the containerized Claude workflows.
 
-  Interactive cockpit (personal/work) + the autonomous agent runners (dca/dce) +
-  the shared portitor proxy. dca/dce/warm are payloads dispatched by this command.
+  Interactive cockpit (personal/work) + the autonomous agent runners (agent/epic) +
+  the shared portitor proxy. agent/epic/warm are payloads dispatched by this command.
 
 usage:
   docker-claude personal [-a] [-r | --no-cache] [--workspace <path>]
   docker-claude work | direct [-r | --no-cache]
-  docker-claude dca  <args…>          # one-shot autonomous agent task
-  docker-claude dce  <args…>          # whole-epic orchestration
-  docker-claude warm <args…>          # warm the offline Go module cache
+  docker-claude agent <args…>         # one-shot autonomous agent task (alias: dca)
+  docker-claude epic  <args…>         # whole-epic orchestration (alias: dce)
+  docker-claude warm  <args…>         # warm the offline Go module cache
   docker-claude portitor init --repo <path> [--config-dir <path>]
   docker-claude portitor [up | down | status | restart]
 
@@ -33,7 +33,8 @@ commands:
   personal           personal account, Anthropic OAuth token from the keychain
   work               work account via the wire proxy (needs the `wire` CLI)
   direct             work account with a direct API key from the keychain
-  dca | dce | warm   run the agent payloads — see `docker-claude dca --help`, etc.
+  agent | epic | warm  run the agent payloads (`dca`/`dce` are accepted synonyms) —
+                     see `docker-claude agent --help`, etc.
   portitor <verb>    lifecycle of the shared portitor + egress proxy stack
                      (init | up | down | status | restart). `up` needs a GitHub
                      token: env GH_TOKEN or keychain service=portitor account=default
@@ -48,12 +49,12 @@ options (interactive commands):
   --workspace <path> host dir to mount as the workspace (default: ~/Work, ~/work on macOS)
   -h, --help         show this help
 
-aliases: dc=docker-claude, dcp=personal, dcw=work, dcwd=direct, dca, dce, dcwarm.
+aliases: dc=docker-claude, dcp=personal, dcw=work, dcwd=direct, dca=agent, dce=epic, dcwarm=warm.
 
 examples:
-  docker-claude portitor up          # bring up the shared proxy (dca/dce need it)
+  docker-claude portitor up          # bring up the shared proxy (agent/epic need it)
   docker-claude personal --agent     # interactive personal session w/ signing agent
-  docker-claude dca --repo my-svc --skill implement --bead @123 --dry-run
+  docker-claude agent --repo my-svc --skill implement --bead @123 --dry-run
 EOF
 }
 
@@ -77,8 +78,8 @@ source "$LIBEXEC/agent-common.sh"
 # scripts (one process, no overhead); interactive + portitor commands map onto the
 # flag parser below for back-compat.
 case "${1:-}" in
-    dca)      shift; exec "$LIBEXEC/dca" "$@" ;;
-    dce)      shift; exec "$LIBEXEC/dce" "$@" ;;
+    agent|dca) shift; exec "$LIBEXEC/dca" "$@" ;;       # `dca` kept as a synonym
+    epic|dce)  shift; exec "$LIBEXEC/dce" "$@" ;;        # `dce` kept as a synonym
     warm)     shift; exec "$LIBEXEC/dca-warm" "$@" ;;
     personal) shift; set -- --personal "$@" ;;
     work)     shift; set -- --work "$@" ;;
@@ -244,20 +245,31 @@ build_base() {
     fi
 }
 
+# Echo the host's dedicated Remote-Development pubkey, generating the keypair once
+# if missing. Shared by work AND personal — one host identity opens both containers
+# (isolation is per-container/per-port, not per-key).
+docker_claude_pubkey() {
+    local key_path="$HOME/.ssh/docker_claude_id_ed25519"
+    if [[ ! -f "$key_path" ]]; then
+        echo "Generating SSH key for Docker Claude Remote Development access..." >&2
+        ssh-keygen -t ed25519 -f "$key_path" -N "" -C "docker-claude" >&2
+    fi
+    cat "$key_path.pub"
+}
+
 build_personal() {
+    local pubkey
+    pubkey=$(docker_claude_pubkey)
+
     echo "Building $PERSONAL_IMAGE..."
-    docker build -f "$SCRIPT_DIR/Dockerfile.personal" -t "$PERSONAL_IMAGE" "$SCRIPT_DIR"
+    docker build \
+        --build-arg "DOCKER_CLAUDE_PUBKEY=$pubkey" \
+        -f "$SCRIPT_DIR/Dockerfile.personal" -t "$PERSONAL_IMAGE" "$SCRIPT_DIR"
 }
 
 build_work() {
-    # Generate dedicated SSH key for IDEA Remote Development if missing
-    local key_path="$HOME/.ssh/docker_claude_id_ed25519"
-    if [[ ! -f "$key_path" ]]; then
-        echo "Generating SSH key for Docker Claude IDEA access..."
-        ssh-keygen -t ed25519 -f "$key_path" -N "" -C "docker-claude"
-    fi
     local pubkey
-    pubkey=$(cat "$key_path.pub")
+    pubkey=$(docker_claude_pubkey)
 
     echo "Building $WORK_IMAGE..."
     docker build \
@@ -357,12 +369,15 @@ Then store it:
     fi
 
     # NOT exec (was): keep the parent alive so cleanup_secrets runs after the session.
+    # -p on 127.0.0.1 only: sshd for IDE Remote Development, reachable from this host
+    # but not the LAN (work uses 2222; personal uses 2223 so both can run at once).
     docker run -it --rm \
         --memory=8g --cpus=4 \
         -v "$PERSONAL_REPO_VOLUME":/workspace \
         -v claude-fish-data-personal:/home/dev/.local/share/fish \
         -v claude-tmux-data-personal:/home/dev/.local/share/tmux \
         "${SSH_AGENT_ARGS[@]}" \
+        -p 127.0.0.1:2223:2223 \
         ${SECRET_ARGS[@]+"${SECRET_ARGS[@]}"} \
         "$PERSONAL_IMAGE"
     rc=$?; cleanup_secrets; exit $rc
