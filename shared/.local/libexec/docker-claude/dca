@@ -205,7 +205,8 @@ preflight_portitor
 build_base() {
 	echo "dca: building $BASE_IMAGE (DOT_REF=$DOT_REF)..."
 	local cache=(); [[ "$NO_CACHE" == true ]] && cache=(--no-cache)
-	docker build "${cache[@]}" \
+	# ${cache[@]+…} guards the empty-array expansion for macOS bash 3.2 (nounset).
+	docker build ${cache[@]+"${cache[@]}"} \
 		--build-arg HOST_UID="$(id -u)" --build-arg DOT_REF="$DOT_REF" --build-arg DOT_SHA="$DOT_SHA" \
 		-f "$SCRIPT_DIR/Dockerfile.agent.base" -t "$BASE_IMAGE" "$SCRIPT_DIR"
 }
