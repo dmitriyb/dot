@@ -27,7 +27,7 @@ RUN curl -fsSL https://raw.githubusercontent.com/Dicklesworthstone/beads_rust/ma
     && cp "$HOME/.local/bin/br" /out/br
 
 RUN curl -fsSL https://claude.ai/install.sh -o /tmp/i.sh \
-    && echo "005ec1a937f32dfbb74f9e810287bcb12cba2d5cae4c9277aa8c6364adbf1787  /tmp/i.sh" | sha256sum -c - \
+    && echo "b3f79015b54c751440a6488f07b1b64f9088742b9052bc1bd356d13108320d2a  /tmp/i.sh" | sha256sum -c - \
     && bash /tmp/i.sh && rm /tmp/i.sh \
     && cp "$HOME/.local/bin/claude" /out/claude
 
