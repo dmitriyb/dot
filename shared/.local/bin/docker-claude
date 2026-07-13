@@ -12,6 +12,7 @@ PORTITOR_OP=false
 PORTITOR_VERB=up
 PORTITOR_INIT_REPO=""
 PORTITOR_INIT_CONFIG=""
+PORTITOR_ADD_ARGS=()
 
 usage() {
     cat <<'EOF'
@@ -27,6 +28,7 @@ usage:
   docker-claude epic  <args…>         # whole-epic orchestration (alias: dce)
   docker-claude warm  <args…>         # warm the offline Go module cache
   docker-claude portitor init --repo <path> [--config-dir <path>]
+  docker-claude portitor add-repo <name> [--slug owner/repo] [--dry-run] [--provision]
   docker-claude portitor [up | down | status | restart]
 
 commands:
@@ -125,7 +127,7 @@ while [[ $# -gt 0 ]]; do
             # `init` persists the host paths; the rest map to docker compose.
             PORTITOR_OP=true
             shift
-            if [[ "${1:-}" =~ ^(up|down|status|restart|init)$ ]]; then PORTITOR_VERB="$1"; shift; fi
+            if [[ "${1:-}" =~ ^(up|down|status|restart|init|add-repo)$ ]]; then PORTITOR_VERB="$1"; shift; fi
             if [[ "$PORTITOR_VERB" == init ]]; then
                 while [[ $# -gt 0 ]]; do
                     case "$1" in
@@ -134,6 +136,9 @@ while [[ $# -gt 0 ]]; do
                         *) break ;;
                     esac
                 done
+            elif [[ "$PORTITOR_VERB" == add-repo ]]; then
+                # Everything after `add-repo` belongs to the helper; capture and clear.
+                PORTITOR_ADD_ARGS=("$@"); set --
             fi
             ;;
         --workspace)
@@ -231,6 +236,9 @@ if [[ "$PORTITOR_OP" == true ]]; then
     if [[ "$PORTITOR_VERB" == init ]]; then
         portitor_init
         exit $?
+    fi
+    if [[ "$PORTITOR_VERB" == add-repo ]]; then
+        exec "$LIBEXEC/portitor-add-repo" ${PORTITOR_ADD_ARGS[@]+"${PORTITOR_ADD_ARGS[@]}"}
     fi
     portitor_lifecycle "$PORTITOR_VERB"
     exit $?
