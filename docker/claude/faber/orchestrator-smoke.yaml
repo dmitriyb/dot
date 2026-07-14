@@ -1,23 +1,40 @@
 version: 1
 
-# GATELESS SMOKE — run this FIRST on the host to prove faber's untested spine
-# end to end (nix build -> docker load -> docker run -> headless agent ->
-# schema-valid result.json) with ZERO security surface. No network, no gateway,
-# no credentials, no repo clone. If this passes, image+run+agent+extract all work.
+# SMOKE — prove faber's spine end to end on the host: nix build -> docker load
+# -> docker run (non-root box, writable mounts) -> skills mount + symlink ->
+# headless agent (REAL Claude, personal account) -> schema-valid result.json.
+# Gateless: no gateway, no repo clone; the only security surface is the personal
+# Anthropic credential (file mode). If this passes, the whole box contract works.
 #
-# Run from THIS directory (overlay path is CWD-relative):
-#   faber validate --config orchestrator-smoke.yaml     # nix-eval proof; needs the overlay hashes filled
-#   faber build    --config orchestrator-smoke.yaml     # nix build + docker load
+# Prereqs (host):
+#   - overlay hashes filled (claude-code resolves under the pin),
+#   - the personal Claude Code setup-token in the keychain:
+#       claude setup-token
+#       security add-generic-password -s anthropic -a personal -w '<token>'
+#   - ./hooks/get-token executable; ./skills/summarize/SKILL.md present.
+#
+# Run from THIS directory (every ./ path is CWD-relative):
+#   faber validate --config orchestrator-smoke.yaml
+#   faber build    --config orchestrator-smoke.yaml
 #   faber run smoke --config orchestrator-smoke.yaml --param topic="hello faber"
 
+credentials:
+  resolver: ./hooks/get-token            # host-side; get_token(service) -> token on stdout
+  services:
+    claude_code_oauth_token:             # file mode -> /run/secrets/... -> env CLAUDE_CODE_OAUTH_TOKEN
+      mode: file
+
 templates:
-  smoke:
+  smokebox:                              # NOT "smoke": a template may not share a name with a workflow
     build:
-      packages: [coreutils, claude-code]     # claude-code comes from the overlay
+      packages: [coreutils, claude-code] # claude-code comes from the overlay
       overlay: ./overlay.nix
     run:
       env: {FABER_AGENT_CLI: claude}
-    skill: summarize                          # any trivial skill; the point is the round-trip
+    skill: summarize
+    skills:                              # delivered read-only at /faber/skills, symlinked to ~/.claude/skills
+      dir: ./skills
+      link: .claude/skills
     inputs:
       topic: {type: string, required: true}
     output:
@@ -29,5 +46,5 @@ workflows:
       topic: {type: string, required: true}
     steps:
       - id: smoke
-        use: smoke
+        use: smokebox
         with: {topic: "${params.topic}"}
