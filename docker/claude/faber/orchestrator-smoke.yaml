@@ -27,7 +27,7 @@ credentials:
 templates:
   smokebox:                              # NOT "smoke": a template may not share a name with a workflow
     build:
-      packages: [coreutils, claude-code] # claude-code comes from the overlay
+      packages: [coreutils, bash, claude-code] # bash: Claude's Bash tool needs a shell; claude-code from the overlay
       overlay: ./overlay.nix
     run:
       env: {FABER_AGENT_CLI: claude}
