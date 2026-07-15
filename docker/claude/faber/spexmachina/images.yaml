@@ -1,0 +1,21 @@
+# images library — pinned Nix toolsets, referenced by templates via `image: <name>`.
+# A partial config: orchestrator.yaml pulls it in through `include:`. Paths here
+# resolve relative to THIS file.
+#
+# One image serves every role. implement/fix want go+gopls; review wants go;
+# merge wants only git+openssh — but a single superset toolset means one build,
+# shared Nix-store layers, and the reuse the component-library model is for. The
+# few unused tools in the merge box are inert (root-owned, read-only store paths).
+
+images:
+  spex-box:
+    # git/openssh/go/gopls/coreutils/bash/jq resolve natively in the pin;
+    # spex/br/claude-code come from the overlay. bash: Claude's Bash tool needs a
+    # shell. jq: the hooks parse br/spex JSON with it.
+    packages: [git, openssh, go, gopls, coreutils, bash, jq, spex, br, claude-code]
+    overlay: ./overlay.nix
+    # nixos-25.11 (Go 1.25.10) — spex's go.mod requires go >= 1.25.0, newer than
+    # faber's compiled-in default pin ships. Reproducible commit-pinned snapshot.
+    pin:
+      rev: b6018f87da91d19d0ab4cf979885689b469cdd41
+      sha256: sha256:0ln4yw7z3g9lb0x081hc0pd2j1wsx2qqf6bgmwwvdbkcl4bcy1dp

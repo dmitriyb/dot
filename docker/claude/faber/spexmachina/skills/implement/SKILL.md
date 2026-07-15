@@ -1,0 +1,56 @@
+---
+name: implement
+description: Implement a beads task — write code, tests, and open a PR
+---
+
+Implement the bead described in your bundle. Use @~/.claude/skills/go-expert/SKILL.md for Go-specific guidance.
+
+## Preconditions (already done for you)
+
+The box's deterministic hooks have run before this skill — you never run them yourself:
+
+- the **context** hook resolved the bead's spec and wrote your prompt to `$FABER_BUNDLE_DIR/CONTEXT.md` and the spec file list to `$FABER_BUNDLE_DIR/spec-files.txt`,
+- the **prelude** hook created your feature branch off `origin/<default>`, guarded the bead (status `open`/`ready`, not `spex:cleanup`), and claimed it (`status in_progress`) with a **signed** commit on the branch,
+- `$FABER_BUNDLE_DIR/bundle.env` carries `BEAD_ID`, `BRANCH`, `BASE`, `RECORD_ID`; these are also in your environment.
+
+**Start by reading `$FABER_BUNDLE_DIR/CONTEXT.md`, then every file in `$FABER_BUNDLE_DIR/spec-files.txt`** (`arch_*`, `impl_*`, `test_*`, `flow_*`, `module.json`). That is your spec — do not re-derive it. Beads carry empty descriptions by design; the spec leaves are the source of truth. If `spec-files.txt` is empty, fall back to the spec references in the bead.
+
+## Already-satisfied replacement path
+
+A doc-only edit to a component's `arch_*`/`impl_*` leaf still changes its hash, so the pipeline emits a replacement bead with zero code work. If the implementation and tests already exist on `origin/main` and satisfy the current spec, take this path instead of the TDD workflow. Verify first: the spec delta is non-behavioral (`git show <spec-commit> -- <arch_file>`) and `go build/vet/test` pass unchanged. Do not fabricate a diff; do not close the bead (review closes). Open a PR whose body explains why it should be closed: the delivering commit, the non-behavioral spec delta, and the verification run.
+
+## Workflow (TDD)
+
+1. Read the bead and spec fully. Understand acceptance criteria before writing code.
+2. **Fix deferred breakage.** Search for `TODO(bead:<this-bead-id>)` markers left by other beads and fix them first — they are deferred compilation breakage from upstream changes.
+3. **Write integration tests first** from the `test_*.md` leaves. They should compile but fail for the right reasons (missing behavior, not compile errors). Run `go test ./...` to confirm.
+   - **Test-section scope guard**: the `test_files` in your bundle ARE your test-section ownership boundary. Write test cases ONLY for scenarios in those files. A shared `*_test.go` may host cases owned by several beads — write only yours. If a test would cover another `test_*.md`'s scenario, STOP: it belongs to that bead.
+4. **Write unit tests** for internal functions and edge cases from the impl spec. They also fail initially.
+5. **Write the implementation** — only the single component this bead covers, tracing to the spec. Follow existing patterns; no unrelated changes.
+   - **Scope boundary**: only modify this component's logic/tests. If your change breaks compilation in a file owned by another component, comment it out with `// TODO(bead:<other-bead-id>): fix after <your-bead-id> changed <what>` (look up the owner in `.bead-map.json`). Do NOT rewrite the other component.
+6. **Run tests.** `go test ./...` and `go vet ./...` must pass. Fix the implementation, never weaken a test.
+7. **Completion gate** (below). Do NOT proceed until every item passes.
+8. Commit and push your feature branch. Commits must be signed; do NOT bypass signing (`--no-gpg-sign`, `-c commit.gpgsign=false`). Do NOT close the bead and do NOT push to the default branch.
+9. Open a PR using `.github/pull_request_template.md`. Fill in the bead ID (`$BEAD_ID`), spec references, and a changes summary. GitHub goes through the portitor-mediated client (no `gh`); bodies are read from stdin:
+   `printf '%s' "<pr-body>" | pr create --pr-title "<title>"` (or your portitor client's create verb).
+10. Link the bead to the PR and commit it so the state is tracked in git:
+    `br update <bead-id> --external-ref "PR#<number>"` then `git add .beads/issues.jsonl && git commit -S -m "<bead>: link PR#<number>" && git push`.
+
+## Completion Gate
+
+Before committing, re-read the bead and verify **every** claim is met. Mandatory.
+
+1. **Requirements satisfied**: for each stated requirement, point to the code that implements it. No concrete code → not done.
+2. **No deferred work**: search your changes for `TODO`/`FIXME`/`HACK`/`WORKAROUND`/shims/compat wrappers that defer the bead's OWN work. Any → incomplete: finish it or stop and say you cannot complete the bead as scoped.
+3. **Verbs are true**: "replaces" → the old thing is gone; "adds" → the new thing exists and works; "removes" → it is not present. Take the bead literally.
+4. **Tests cover requirements**: each requirement has at least one test that fails if it were unimplemented. Happy-path-only assertions are insufficient when the bead specifies error/edge behavior.
+
+## Emit your result (required)
+
+Last step, after the PR exists — faber scores the step from this file:
+
+```bash
+printf '{"branch":"%s","pr":%s}\n' "$BRANCH" "<pr-number>" > "$FABER_RESULT_DIR/output.json"
+```
+
+`branch` is `$BRANCH` from your environment; `pr` is the integer PR number you just opened.

@@ -1,0 +1,15 @@
+# hooks library — named hook executables, referenced by a template's
+# hooks.<field> by bare name. Paths resolve relative to THIS file.
+#
+# Box phase order is: clone -> signing -> CONTEXT hook -> PRELUDE hook -> agent.
+# So a `context` hook runs on the freshly-cloned default branch (it only reads,
+# to build the prompt), and a `prelude` hook then mutates (branch + claim). Each
+# hook's cwd is the repo clone (/workspace/<repo>); inputs arrive as
+# FABER_INPUT_<UPPER>; context/prelude write into $FABER_BUNDLE_DIR.
+
+hooks:
+  gather-context: {path: ./hooks/gather-context}   # context (implement): bead + spex map -> CONTEXT.md
+  claim-bead:     {path: ./hooks/claim-bead}        # prelude (implement): branch + signed claim
+  fetch-pr:       {path: ./hooks/fetch-pr}          # context (review/fix): PR state -> CONTEXT.md + pr.json
+  release-bead:   {path: ./hooks/release-bead}      # on_failure (implement): host-side claim release
+  list-epic-beads: {path: ./hooks/list-epic-beads}  # source (epic workflow): epic children as {items:[...]}

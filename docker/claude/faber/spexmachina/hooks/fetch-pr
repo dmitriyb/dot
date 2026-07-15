@@ -1,0 +1,56 @@
+#!/bin/bash
+# context hook (review AND fix) — runs IN the box, cwd = the repo clone. Fetches
+# the PR's review state via the portitor-mediated `pr` client (the box has no
+# gh), checks out the PR branch so the agent works against the PR's code, and
+# writes CONTEXT.md + pr.json into $FABER_BUNDLE_DIR. Serves both the review and
+# fix templates; the coarse REVIEW/FOLLOWUP mode is advisory (the review skill
+# refines it; the fix skill ignores it).
+#
+# DEPENDENCY (portitor step): the `pr` client must be on the box PATH and remote
+# must point at portitor. Until then this hook — and the review/fix/merge
+# templates — cannot run; the implement leg and the whole config structure do
+# not depend on it.
+set -euo pipefail
+
+die() { echo "fetch-pr: $*" >&2; exit 1; }
+pr="${FABER_INPUT_PR:?FABER_INPUT_PR is required}"
+bundle="${FABER_BUNDLE_DIR:?FABER_BUNDLE_DIR is required}"
+
+command -v pr >/dev/null 2>&1 || die "the 'pr' client is not on PATH (portitor step: deliver the portitor/pr client)"
+
+prjson="$(pr fetch --pr "$pr")" || die "pr fetch --pr $pr failed"
+branch="$(jq -r '.headRefName // empty' <<<"$prjson")"
+[ -n "$branch" ] || die "PR #$pr has no headRefName in the fetch result"
+
+git fetch -q origin "$branch" || die "fetch PR branch $branch failed"
+git checkout -q "$branch" || die "checkout PR branch $branch failed"
+
+# Coarse mode: any prior review-body or inline feedback => FOLLOWUP, else REVIEW.
+prior="$(jq '[ (.reviews[]? | select((.state=="COMMENTED" or .state=="CHANGES_REQUESTED") and ((.body//"")|length>0))),
+              (.comments[]?) ] | length' <<<"$prjson")"
+mode=REVIEW
+[ "$prior" -gt 0 ] && mode=FOLLOWUP
+
+printf '%s\n' "$prjson" > "$bundle/pr.json"
+# NB: deliberately NOT declaring BRANCH here. BRANCH in bundle.env is faber's
+# implement-only side-effect convention (result phase verifies it exists on the
+# gateway). review/fix are already checked out on the PR branch below, so they
+# have no NEW branch to declare — PR + MODE are plain advisory sidecar values.
+{
+  echo "PR=$pr"
+  echo "MODE=$mode"
+} > "$bundle/bundle.env"
+{
+  echo "# PR #$pr — on branch \`$branch\`"
+  echo
+  echo "Coarse mode: **$mode** (prior feedback items: $prior). The PR's full review"
+  echo "state — reviews[], inline comments[], commits[] — is in \`pr.json\` in this"
+  echo "bundle directory. You are checked out on the PR branch."
+  echo
+  echo "## Your job"
+  echo "Follow your skill (review or fix). All GitHub actions go through the"
+  echo "portitor-mediated \`pr\`/\`portitor\` client (no gh); bodies are read from"
+  echo "stdin. Do NOT push to the default branch."
+} > "$bundle/CONTEXT.md"
+
+echo "fetch-pr: PR #$pr on $branch (mode=$mode)"

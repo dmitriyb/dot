@@ -1,0 +1,48 @@
+version: 1
+
+# spexmachina project assembly. The substrate (root-only sections) lives here;
+# the five component libraries are pulled in via include: and union-merged into
+# one flat config before validation. Every included path resolves relative to
+# the file that declares it; the substrate paths below resolve relative to THIS
+# file.
+#
+# Run from THIS directory:
+#   faber validate --config orchestrator.yaml [--emit-ir]
+#   faber build    --config orchestrator.yaml
+#   faber run bead --config orchestrator.yaml --param bead=<id>
+#
+# STATE: image + hooks + skills + templates + workflows are complete. The
+# portitor-gate wiring (marked "portitor step" below) is the remaining piece:
+# the remote host key, the per-role signing keys, and the portitor/pr client on
+# the box PATH. See keys/README.md.
+
+# --- substrate ---------------------------------------------------------------
+
+network:
+  name: dca-net                          # dot's internal docker network (docker-claude --portitor)
+  proxy: http://dca-egress:8888          # allow-list egress (api.anthropic.com); the token still
+  no_proxy: [portitor, localhost, 127.0.0.1]   # rides in the box (file mode) — proxy carries no secret
+
+remote:                                  # portitor step: the box's ONLY git remote
+  url: ssh://git@portitor/srv/git        # security module splices <repo>.git per step
+  host_key_file: ./keys/portitor_host_key.pub   # portitor step: pin portitor's SSH host key here
+
+credentials:
+  resolver: ./hooks/get-token            # host-side get_token(service); reads the macOS keychain
+  services:
+    claude_code_oauth_token:             # file mode -> /run/secrets -> env CLAUDE_CODE_OAUTH_TOKEN
+      mode: file                         # (the var Claude Code honors); shredded after the run
+
+identities:                             # portitor step: one ephemeral ssh-agent + one key per box.
+  implementer: {key: ./keys/implementer} # These fingerprints are what portitor maps to roles; the
+  reviewer:    {key: ./keys/reviewer}    # reviewer key is the only one allowed to sign bead-closes,
+  merger:      {key: ./keys/merger}      # the merger key the only one allowed to merge (policy.go).
+
+# --- component libraries -----------------------------------------------------
+
+include:
+  - images.yaml       # spex-box (pinned toolset + overlay)
+  - skills.yaml       # implement / review / fix / merge / go-expert
+  - hooks.yaml        # gather-context / claim-bead / fetch-pr / release-bead / list-epic-beads
+  - templates.yaml    # implement / review / fix / merge
+  - workflows.yaml    # bead (Gate B) / epic (Gate A)

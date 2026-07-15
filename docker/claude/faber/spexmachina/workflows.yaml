@@ -1,0 +1,78 @@
+# workflows library — project-AGNOSTIC DAGs. They reference templates by NAME
+# only (the interface), never by path or inline, so the same shape could drive a
+# different project's templates. Two landing gates:
+#   bead  (Gate B): one bead -> implement -> bounded review loop -> AUTO-merge.
+#   epic  (Gate A): fan implement over an epic's children -> NO merge (human lands).
+
+workflows:
+  # ---- Gate B: single bead, auto-merge -------------------------------------
+  # Trial this on the small Batch-B bugs before the big remediation epic. The
+  # reviewer step is the only one that closes the bead (reviewer-signed jsonl,
+  # gated by portitor's role rule); the merger step lands the PR.
+  bead:
+    params:
+      repo: {type: string, required: true, default: spexmachina}
+      bead: {type: string, required: true}
+    steps:
+      - id: implement
+        use: implement
+        with: {repo: "${params.repo}", bead: "${params.bead}"}
+
+      - id: review-cycle
+        loop:
+          max: 3                                    # bound; exhaustion = step failure
+          until: steps.review.verdict == "approved"
+          steps:
+            - id: review
+              use: review
+              with: {repo: "${params.repo}", pr: "${steps.implement.pr}"}
+            - id: fix
+              use: fix
+              when: steps.review.verdict == "changes"
+              with: {repo: "${params.repo}", pr: "${steps.implement.pr}"}
+
+      - id: merge
+        use: merge
+        when: steps.review.verdict == "approved"    # post-loop ref = final iteration
+        with: {repo: "${params.repo}", pr: "${steps.implement.pr}"}
+
+  # ---- Gate A: epic -> human-reviewed landing ------------------------------
+  # `list-epic-beads` emits {"items":[{"id":"<bead>","deps":["<bead>",...]}]} for
+  # the epic's children; faber instantiates `implement` per child, ordering from
+  # deps (independent children run in parallel, dependents wait). NO merge step:
+  # each child pushes its branch/PR and YOU review + land them by hand.
+  #
+  # NOTE — capability boundary: faber v0.1's `generate` fans a per-item box out
+  # but has no built-in "collect every child into ONE integration branch + one
+  # combined review" aggregate. This workflow therefore produces per-child PRs
+  # (deps-ordered), which is the faithfully-expressible Gate A. The single-big-PR
+  # refinement (shared integration branch + one review pass) is a follow-up once
+  # faber grows an aggregate step; wire it after Gate B is proven end to end.
+  epic:
+    params:
+      repo: {type: string, required: true, default: spexmachina}
+      epic: {type: string, required: true}
+    sources:
+      children:
+        command: ./hooks/list-epic-beads
+        args: ["${params.epic}"]
+    steps:
+      - id: implementations
+        generate:
+          source: children
+          workflow: bead-implement-only
+          with: {repo: "${params.repo}", bead: "${item.id}"}
+
+  # The per-child sub-workflow Gate A fans out: implement + review, but NO merge
+  # (the human reviews the batch and merges the PRs). Referenced only by `epic`.
+  bead-implement-only:
+    params:
+      repo: {type: string, required: true}
+      bead: {type: string, required: true}
+    steps:
+      - id: implement
+        use: implement
+        with: {repo: "${params.repo}", bead: "${params.bead}"}
+      - id: review
+        use: review
+        with: {repo: "${params.repo}", pr: "${steps.implement.pr}"}
