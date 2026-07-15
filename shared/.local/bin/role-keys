@@ -1,0 +1,195 @@
+#!/usr/bin/env bash
+# role-keys — interactively map SSH keys to roles for faber + portitor.
+#
+# It NEVER creates or moves keys and never touches private material: it only
+# reads public fingerprints (ssh-add -l, ssh-keygen -lf, optionally the
+# YubiKey's resident pubs), lets you assign a role name to each, and emits the
+# exact registration commands for both tools:
+#
+#   faber add-key   --role <role> --fingerprint <fp> [--comment <c>]   (global; this host)
+#   portitor add-role --repo <r> --role <role> --fingerprint <fp> [--pub <f>]  (per repo; the gate host)
+#
+# The fingerprint is the only thing shared between the two systems; role names
+# are free (implementer_work, reviewer_personal, …). faber and portitor stay
+# independent — this just saves you transcribing the same fingerprint twice.
+#
+# Emitted command lines are bash %q-quoted; pipe them to `bash`, not `sh`.
+#
+# Not -e: interactive reads and conditional pipelines legitimately return
+# non-zero; critical steps check their own errors.
+set -uo pipefail
+
+YUBIKEY=false APPLY=false JSON=false
+REPOS=()
+
+die() { echo "role-keys: $*" >&2; exit 1; }
+
+usage() {
+	cat >&2 <<'EOF'
+Usage: role-keys [--yubikey] [--repo <name> ...] [--apply] [--json]
+
+Enumerates your SSH keys (~/.ssh/*.pub + the running ssh-agent, and with
+--yubikey the attached YubiKey's resident keys), lets you assign a role name to
+each, and emits `faber add-key` + `portitor add-role` commands.
+
+  --yubikey   also enumerate resident keys off an attached YubiKey
+              (ssh-keygen -K into a temp dir; needs PIN + touch; handles discarded).
+  --repo R    emit portitor add-role lines for repo R (repeatable; default: a <REPO> placeholder).
+  --apply     run `faber add-key` locally for each assignment (global registry on THIS host).
+              portitor lines are always only PRINTED — portitor runs on the gate host.
+  --json      emit the assignments as JSON instead of commands (needs jq).
+EOF
+	exit "${1:-0}"
+}
+
+while [[ $# -gt 0 ]]; do
+	case "$1" in
+		--yubikey) YUBIKEY=true; shift ;;
+		--repo) [[ $# -ge 2 ]] || die "--repo needs a value"; REPOS+=("$2"); shift 2 ;;
+		--apply) APPLY=true; shift ;;
+		--json) JSON=true; shift ;;
+		-h|--help) usage 0 ;;
+		*) die "unknown argument: $1 (see --help)" ;;
+	esac
+done
+
+command -v ssh-keygen >/dev/null 2>&1 || die "ssh-keygen not found"
+$JSON && ! command -v jq >/dev/null 2>&1 && die "--json needs jq on PATH"
+$JSON && $APPLY && echo "role-keys: --json emits data only; --apply is ignored with it." >&2
+$APPLY && ! command -v faber >/dev/null 2>&1 && die "--apply needs the faber binary on PATH"
+
+# Single cleanup for every temp: named files plus the YubiKey handle dir. Covers
+# INT/TERM as well as EXIT so a Ctrl-C during the PIN/touch wait cannot leave
+# downloaded resident-key handles behind.
+ROWS_FILE="$(mktemp)"; ASSIGN_FILE=""; YK_TMP=""
+cleanup() { rm -f "$ROWS_FILE" "${ASSIGN_FILE:-}"; [[ -n "$YK_TMP" ]] && rm -rf "$YK_TMP"; }
+trap cleanup EXIT INT TERM
+
+# fp_of_line <ssh-add/ssh-keygen -l line> -> "<fp>\t<comment>" (fail if no SHA256).
+# Line shape: "256 SHA256:… some comment (ED25519)". Split WITHOUT glob expansion
+# (read -ra, not `f=($line)`, so a comment containing * ? [ is never expanded
+# against the cwd). Drop the size + leading SHA256 field; strip a trailing
+# "(KEYTYPE)" only when it's a real key type (a comment like "(work)" is kept);
+# strip control chars so the comment is terminal-safe and %q/`| bash` portable.
+fp_of_line() {
+	local line="$1" fp="" ; local -a f
+	IFS=' ' read -ra f <<<"$line"
+	local i fpi=-1
+	for i in "${!f[@]}"; do
+		[[ "${f[$i]}" == SHA256:* ]] && { fp="${f[$i]}"; fpi=$i; break; }
+	done
+	[[ $fpi -ge 0 ]] || return 1
+	local -a rest=("${f[@]:$((fpi+1))}")
+	local n=${#rest[@]}
+	if [[ $n -gt 0 ]]; then
+		local last="${rest[$((n-1))]}"
+		[[ "$last" =~ ^\((RSA|DSA|ECDSA|ECDSA-SK|ED25519|ED25519-SK)\)$ ]] && unset 'rest[$((n-1))]'
+	fi
+	local comment; comment="$(printf '%s' "${rest[*]:-}" | tr -d '[:cntrl:]')"
+	printf '%s\t%s' "$fp" "$comment"
+}
+
+# Rows: "<fp>\t<comment>\t<pubpath>\t<source>", deduped by fp (first wins). Files
+# come first so a key in ~/.ssh keeps its .pub path (needed for portitor --pub)
+# over an agent/yubikey duplicate.
+add_row() { # <fp> <comment> <pub> <source>
+	[[ -n "$1" ]] || return 0
+	grep -qF "$1"$'\t' "$ROWS_FILE" 2>/dev/null && return 0
+	printf '%s\t%s\t%s\t%s\n' "$1" "$2" "$3" "$4" >>"$ROWS_FILE"
+}
+
+# 1) ~/.ssh/*.pub (gives a --pub path). Read ssh-keygen -lf line-by-line so a
+#    multi-key file yields one row per key rather than one corrupted row.
+shopt -s nullglob
+for pub in "$HOME"/.ssh/*.pub; do
+	while IFS= read -r line; do
+		[[ -n "$line" ]] || continue
+		row="$(fp_of_line "$line")" || continue
+		add_row "${row%%$'\t'*}" "${row#*$'\t'}" "$pub" "file"
+	done < <(ssh-keygen -lf "$pub" 2>/dev/null)
+done
+shopt -u nullglob
+
+# 2) running ssh-agent (loaded keys, incl. loaded residents).
+if [[ -n "${SSH_AUTH_SOCK:-}" ]]; then
+	while IFS= read -r line; do
+		[[ -n "$line" ]] || continue
+		row="$(fp_of_line "$line")" || continue
+		add_row "${row%%$'\t'*}" "${row#*$'\t'}" "" "agent"
+	done < <(ssh-add -l 2>/dev/null || true)
+fi
+
+# 3) YubiKey resident keys (opt-in; PIN + touch; handles discarded via cleanup()).
+if $YUBIKEY; then
+	YK_TMP="$(mktemp -d)"
+	echo "role-keys: downloading resident key handles from the YubiKey (PIN + touch) ..." >&2
+	if ( cd "$YK_TMP" && ssh-keygen -K -N "" >/dev/null 2>&1 ); then
+		shopt -s nullglob
+		for pub in "$YK_TMP"/*.pub; do
+			while IFS= read -r line; do
+				[[ -n "$line" ]] || continue
+				row="$(fp_of_line "$line")" || continue
+				# No durable --pub path (temp is discarded); faber still registers by fp.
+				add_row "${row%%$'\t'*}" "${row#*$'\t'}" "" "yubikey"
+			done < <(ssh-keygen -lf "$pub" 2>/dev/null)
+		done
+		shopt -u nullglob
+	else
+		echo "role-keys: no resident keys downloaded (no key attached / cancelled)." >&2
+	fi
+fi
+
+[[ -s "$ROWS_FILE" ]] || die "no keys found (agent empty, no ~/.ssh/*.pub, no --yubikey)."
+
+# ---- interactive role assignment ----------------------------------------
+echo "Assign a role to each key (blank = skip). Role names are free, e.g. implementer_work." >&2
+echo >&2
+ASSIGN_FILE="$(mktemp)"
+while IFS=$'\t' read -r fp comment pub source; do
+	printf '%s  %s  (%s%s)\n' "$fp" "${comment:-—}" "$source" "${pub:+, $pub}" >&2
+	role=""
+	read -r -p "    role> " role </dev/tty || role=""
+	role="$(printf '%s' "$role" | tr -d '[:space:]')"
+	[[ -n "$role" ]] || { echo "    (skipped)" >&2; continue; }
+	[[ "$role" =~ ^[A-Za-z0-9._-]+$ ]] || { echo "    invalid role name (allowed: A-Za-z0-9._-); skipped" >&2; continue; }
+	printf '%s\t%s\t%s\t%s\n' "$role" "$fp" "$comment" "$pub" >>"$ASSIGN_FILE"
+done <"$ROWS_FILE"
+
+[[ -s "$ASSIGN_FILE" ]] || die "no roles assigned; nothing to do."
+
+# ---- emit ---------------------------------------------------------------
+if $JSON; then
+	jq -Rn '[inputs | split("\t") | {role:.[0], fingerprint:.[1], comment:(.[2]//""), pub:(.[3]//"")}] | {assignments: .}' <"$ASSIGN_FILE"
+	exit 0
+fi
+
+apply_fail=0
+echo >&2
+echo "# --- faber (global, run on THIS host) ---"
+while IFS=$'\t' read -r role fp comment pub; do
+	if $APPLY; then
+		if [[ -n "$comment" ]]; then faber add-key --role "$role" --fingerprint "$fp" --comment "$comment" || apply_fail=$((apply_fail+1))
+		else faber add-key --role "$role" --fingerprint "$fp" || apply_fail=$((apply_fail+1)); fi
+	else
+		if [[ -n "$comment" ]]; then printf 'faber add-key --role %q --fingerprint %q --comment %q\n' "$role" "$fp" "$comment"
+		else printf 'faber add-key --role %q --fingerprint %q\n' "$role" "$fp"; fi
+	fi
+done <"$ASSIGN_FILE"
+
+echo
+echo "# --- portitor (per repo, run on the GATE host; pipe to bash) ---"
+[[ ${#REPOS[@]} -gt 0 ]] || REPOS=("<REPO>")
+while IFS=$'\t' read -r role fp comment pub; do
+	for repo in "${REPOS[@]}"; do
+		if [[ -n "$pub" ]]; then printf 'portitor add-role --repo %q --role %q --fingerprint %q --pub %q\n' "$repo" "$role" "$fp" "$pub"
+		else printf 'portitor add-role --repo %q --role %q --fingerprint %q\n' "$repo" "$role" "$fp"
+			echo "#   ^ no --pub (key not in ~/.ssh); supply the pubkey file for a SIGNING role so it enters allowed_signers" >&2
+		fi
+	done
+done <"$ASSIGN_FILE"
+
+if $APPLY; then
+	if [[ $apply_fail -gt 0 ]]; then die "$apply_fail faber add-key call(s) failed on this host (see errors above)"; fi
+	echo "role-keys: faber add-key applied on this host; run the portitor lines on the gate host." >&2
+fi
+exit 0
