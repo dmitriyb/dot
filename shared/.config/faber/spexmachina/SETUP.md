@@ -26,15 +26,16 @@ repos. One knob — `--instance <name>` — derives every object name, so the bo
 ## Parameters (fill once; the blocks below reference them)
 
 The spexmachina values are shown as the example. `FABER`/`PORTITOR`/`DOT` are
-your checkouts; `PROJECT` is the orchestrator dir (its `keys/` receives the
-host-key pin); `PAT` is the keychain service holding this repo's scoped GitHub PAT.
+your checkouts; `PROJECT` is the installed project dir (`~/.config/faber/<name>`,
+stowed from dot — its `keys/` receives the host-key pin); `PAT` is the keychain
+service holding this repo's scoped GitHub PAT.
 
 ```fish
 set -x INSTANCE spex
 set -x SLUG     dmitriyb/spexmachina
 set -x PAT      portitor-spex
+set -x PROJECT  ~/.config/faber/spexmachina
 set -x DOT      ~/dot
-set -x PROJECT  "$DOT/docker/claude/faber/spexmachina"
 set -x FABER    ~/src/faber
 set -x PORTITOR ~/src/portitor
 ```
@@ -45,8 +46,9 @@ set -x PORTITOR ~/src/portitor
 
 docker + nix are on the host; the Anthropic setup-token is in the keychain; the
 `faber`/`faber-box` binaries are built; the `portitor` + `pr` client checkouts are
-present; `faber-stack` and `role-keys` are on `PATH` (they ship in dot's
-`shared/.local/bin`).
+present. The faber assets install from dot via **stow**: `faber-stack`/`role-keys`
+→ `~/.local/bin`, the gate compose + egress build-context → `~/.local/share/{portitor,egress}`,
+and this project → `~/.config/faber/spexmachina`. Re-stow after `git -C $DOT pull`.
 
 ```fish
 security find-generic-password -s anthropic -a personal -w >/dev/null; and echo "anthropic token OK"
@@ -73,7 +75,8 @@ go -C "$PORTITOR" build -o portitor ./cmd/portitor
 ```
 
 That `$PORTITOR/portitor` binary is what `faber-stack` runs host-side for
-`add-role` (via its `--portitor-bin` flag, default `$PORTITOR/portitor`). It is
+`add-role`; you point faber-stack at it with `--portitor-repo $PORTITOR` in step 6
+(it derives `$PORTITOR/portitor`). It is
 **distinct from** `shared/.local/bin/portitor` on your `PATH`: that one is the
 agent's SSH-forwarding client wrapper (`exec ssh git@… portitor …`), which cannot
 build config on the host. `faber-stack` refuses the wrapper and only accepts the
@@ -136,7 +139,7 @@ Confirm `orchestrator.yaml`'s three identities are empty registry entries (`{}`)
 so faber looks each up by name.
 
 ```fish
-role-keys --repo (string split / $SLUG)[2] --apply
+role-keys --apply
 ```
 
 The identities block should read:
@@ -178,15 +181,15 @@ Idempotent — re-run any time; it converges, never duplicating roles, mirrors, 
 filter lines.
 
 ```fish
-role-keys --repo (string split / $SLUG)[2] --json \
-    | faber-stack up --instance $INSTANCE --slug $SLUG --pat $PAT --project $PROJECT
+role-keys --json \
+    | faber-stack up --instance $INSTANCE --slug $SLUG --pat $PAT --project $PROJECT --portitor-repo $PORTITOR
 ```
 
-Add `--allow <host>` (repeatable) to widen the egress allow-list beyond the
-default `api.anthropic.com`; add `--map <portitor-role>=<name>` if your registry
-names a role differently (e.g. `--map implementer=implementer_work`). If your
-portitor checkout or binary is not at the default location, pass
-`--portitor-repo <dir>` / `--portitor-bin <path>`.
+`--portitor-repo $PORTITOR` points faber-stack at your portitor checkout (for the
+host-side `add-role` binary and the gate image build). Add `--allow <host>`
+(repeatable) to widen the egress allow-list beyond the default
+`api.anthropic.com`; add `--map <portitor-role>=<name>` if your registry names a
+role differently (e.g. `--map implementer=implementer_work`).
 
 Verify the printed substrate matches `orchestrator.yaml` — `network.name`,
 `network.proxy`, `remote.url`, `no_proxy`, and that
@@ -240,8 +243,8 @@ the `$INSTANCE-repos` mirror volume, so a later `up` is instant.
 ```fish
 faber-stack status --instance $INSTANCE
 faber-stack down   --instance $INSTANCE
-role-keys --repo (string split / $SLUG)[2] --json \
-    | faber-stack restart --instance $INSTANCE --slug $SLUG --pat $PAT --project $PROJECT
+role-keys --json \
+    | faber-stack restart --instance $INSTANCE --slug $SLUG --pat $PAT --project $PROJECT --portitor-repo $PORTITOR
 ```
 
 ---

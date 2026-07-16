@@ -40,15 +40,16 @@ if (( ${BASH_VERSINFO[0]:-0} < 4 )); then
 fi
 set -euo pipefail
 
-# The script lives in shared/.local/bin but its assets live under docker/claude
-# in the SAME repo — a different top-level tree, so $SCRIPT_DIR/.. does not reach
-# them. Resolve from the repo root (git toplevel, else three levels up).
-SCRIPT_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
-REPO_ROOT="$(git -C "$SCRIPT_DIR" rev-parse --show-toplevel 2>/dev/null || true)"
-[[ -n "$REPO_ROOT" && -f "$REPO_ROOT/docker/claude/faber/portitor-stack.yml" ]] \
-	|| REPO_ROOT="$(cd -- "$SCRIPT_DIR/../../.." && pwd)"
-COMPOSE_FILE="$REPO_ROOT/docker/claude/faber/portitor-stack.yml"
-EGRESS_CTX="$REPO_ROOT/docker/claude/egress"
+# Assets are installed under $XDG_DATA_HOME (stowed from the dot repo to
+# ~/.local/share): the gate compose and the egress build context. Resolve them
+# via standard XDG — no repo path, no self-location, no env to set.
+DATA_HOME="${XDG_DATA_HOME:-$HOME/.local/share}"
+COMPOSE_FILE="$DATA_HOME/portitor/portitor-stack.yml"
+EGRESS_CTX="$DATA_HOME/egress"
+if [[ ! -f "$COMPOSE_FILE" || ! -f "$EGRESS_CTX/Dockerfile" ]]; then
+	echo "faber-stack: faber assets not found under $DATA_HOME (need portitor/portitor-stack.yml + egress/Dockerfile) — install them (stow the dot repo so ~/.local/share/{portitor,egress} exist)" >&2
+	exit 1
+fi
 
 # Validation patterns (all match the tools faber-stack feeds).
 INSTANCE_RE='^[a-z0-9][a-z0-9-]{0,30}$'          # docker/DNS/path-safe, <=31 chars
@@ -197,12 +198,15 @@ if (( BASH_REMATCH[1] < 2 || (BASH_REMATCH[1] == 2 && BASH_REMATCH[2] < 20) )); 
 fi
 
 # ---- resolve the REAL portitor binary (never the PATH ssh wrapper) ---------
-PORTITOR_REPO="${PORTITOR_REPO_ARG:-${PORTITOR_REPO:-$HOME/src/portitor}}"
-PORTITOR_BIN="${PORTITOR_BIN_ARG:-${PORTITOR_BIN:-$PORTITOR_REPO/portitor}}"
+# No hardcoded default, no magic env: the portitor checkout is explicit via
+# --portitor-repo (or a prebuilt binary via --portitor-bin). Empty until given.
+PORTITOR_REPO="$PORTITOR_REPO_ARG"
+PORTITOR_BIN="${PORTITOR_BIN_ARG:-${PORTITOR_REPO:+$PORTITOR_REPO/portitor}}"
 resolve_portitor_bin() {
+	[[ -n "$PORTITOR_BIN" ]] || die "no portitor binary given — pass --portitor-repo <dir> (its checkout) or --portitor-bin <path> (a prebuilt binary)" 2
 	if [[ ! -x "$PORTITOR_BIN" ]]; then
 		# Build it once from the source checkout, if we can.
-		[[ -d "$PORTITOR_REPO" ]] || die "portitor binary not found ($PORTITOR_BIN) and no source checkout at $PORTITOR_REPO — pass --portitor-bin or --portitor-repo" 1
+		[[ -n "$PORTITOR_REPO" && -d "$PORTITOR_REPO" ]] || die "portitor binary not found at $PORTITOR_BIN and no --portitor-repo checkout to build it — pass --portitor-repo <dir> or a prebuilt --portitor-bin" 1
 		command -v go >/dev/null 2>&1 || die "portitor binary not found ($PORTITOR_BIN) and 'go' is not on PATH to build it — pass --portitor-bin" 1
 		echo "faber-stack: building portitor from $PORTITOR_REPO ..." >&2
 		( cd "$PORTITOR_REPO" && go build -o "$PORTITOR_BIN" ./cmd/portitor ) \
