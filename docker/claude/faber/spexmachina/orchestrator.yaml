@@ -33,10 +33,10 @@ credentials:
     claude_code_oauth_token:             # file mode -> /run/secrets -> env CLAUDE_CODE_OAUTH_TOKEN
       mode: file                         # (the var Claude Code honors); shredded after the run
 
-identities:                             # portitor step: one ephemeral ssh-agent + one key per box.
-  implementer: {key: ./keys/implementer} # These fingerprints are what portitor maps to roles; the
-  reviewer:    {key: ./keys/reviewer}    # reviewer key is the only one allowed to sign bead-closes,
-  merger:      {key: ./keys/merger}      # the merger key the only one allowed to merge (policy.go).
+identities:                             # resolved by role NAME via the faber registry (`faber add-key`):
+  implementer: {}                        #   name -> fingerprint (registry) -> the matching key in ~/.ssh.
+  reviewer:    {}                        # reviewer is the only role portitor lets sign bead-closes,
+  merger:      {}                        # merger the only one it lets merge (portitor policy).
 
 # --- component libraries -----------------------------------------------------
 

@@ -1,32 +1,37 @@
-# keys/ — role + gateway key material (supplied at the portitor step)
+# keys/ — gateway host-key pin only
 
-This directory is referenced by `orchestrator.yaml`'s substrate but is
-**intentionally empty of secrets** — filling it is the portitor-gate step, the
-one piece deliberately left until last. Nothing here is committed except this
-README (see `.gitignore`).
+This directory holds exactly one thing: the portitor host-key pin. **Role keys do
+not live here.** They live in `~/.ssh`, and faber resolves an identity by *name →
+fingerprint → the matching `~/.ssh` key* through its registry (`faber add-key`),
+not by a path in this dir. Nothing here is committed except this README (see
+`.gitignore`).
 
 ## What goes here
 
 | File | Kind | Used by | Notes |
 |------|------|---------|-------|
-| `implementer` | private signing key (resolver-interpreted) | `identities.implementer` | reuse dot's per-role key (`~/.dca-keys/…` / FIDO2 sk) |
-| `reviewer` | private signing key | `identities.reviewer` | the **only** key portitor lets sign bead-closes |
-| `merger` | private signing key | `identities.merger` | the **only** key portitor lets merge PRs |
-| `portitor_host_key.pub` | portitor's SSH **host** public key | `remote.host_key_file` | pins `StrictHostKeyChecking=yes`; get it from the portitor deploy |
+| `portitor_host_key.pub` | portitor's SSH **host** public key | `remote.host_key_file` | pins `StrictHostKeyChecking=yes`; capture with `ssh-keyscan -t ed25519 portitor-spex` |
 
-The `identities.*.key` values are resolver-interpreted references, not
-necessarily raw files — a FIDO2 `sk-` key reference or an agent handle is valid.
-Match whatever dot's ssh-agent identity flow already uses.
+That's it. The `identities` block in `orchestrator.yaml` carries **no** `key:`
+paths — each role (`implementer`/`reviewer`/`merger`) is an empty entry resolved
+via the registry.
 
-## The rest of the portitor step (outside this repo)
+## How role identities are wired (not here)
 
-1. Register the three role **public** keys on portitor and map each fingerprint
-   to its role (implementer / reviewer / merger), including the `role_rule` that
-   only the reviewer/owner may add `"status":"closed"` to `.beads/issues.jsonl`.
-2. Onboard the repo: `portitor add-repo --repo spexmachina --upstream https://github.com/dmitriyb/spexmachina.git` (portitor holds the GitHub PAT).
-3. Put the portitor/`pr` **client** on the box PATH (the `fetch-pr`/`review`/`fix`/`merge` legs call it) — via the overlay or a small delivery.
-4. Pin `portitor_host_key.pub` here.
+1. Keys live in `~/.ssh` (or on the YubiKey), any filename — the fingerprint is
+   the id. Register each with faber: `faber add-key --role implementer --fingerprint SHA256:…`
+   (the `role-keys` helper generates these lines). faber matches the fingerprint
+   to a key in `~/.ssh` at run time.
+2. Register the same fingerprint on the gate: `portitor add-role --repo spexmachina
+   --role implementer --fingerprint SHA256:… [--pub …]`, including the role rule
+   that only reviewer/owner may add `"status":"closed"` to `.beads/issues.jsonl`.
+3. Onboard the repo on its per-repo instance: `portitor add-repo --repo spexmachina
+   --upstream https://github.com/dmitriyb/spexmachina.git` (the `portitor-spex`
+   instance holds the GitHub PAT).
+4. Put the portitor/`pr` **client** on the box PATH (the `fetch-pr`/`review`/`fix`/
+   `merge` legs call it) — via the overlay or a small delivery.
+5. Pin `portitor_host_key.pub` here.
 
-Until then: the **implement** leg, the image, and the whole config *structure*
-are complete and independent of portitor; the review/fix/merge legs need the
-client + host key + role keys above.
+See `../SETUP.md` for the full ordered runbook. The **implement** leg and the
+config *structure* are independent of the gate; review/fix/merge need the client
++ host key + registered roles above.
