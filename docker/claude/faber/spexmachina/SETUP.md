@@ -85,6 +85,25 @@ for role in implementer reviewer merger
 end
 ```
 
+### Alternative — recover already-created resident keys
+
+If the role keys already exist as resident credentials on the YubiKey but this
+machine has no handle files for them, recover the handles straight into `~/.ssh`
+so faber can locate them by fingerprint. `ssh-keygen -K` downloads *every*
+resident credential on the attached key (PIN + touch) into the current
+directory, so run it from `~/.ssh`; the filenames don't matter — faber matches
+by fingerprint. Do this *instead of* the creation block above, then continue to
+step 4, where `role-keys` picks them up from `~/.ssh` without `--yubikey`.
+
+```fish
+cd ~/.ssh
+ssh-keygen -K -N ""
+```
+
+If the key holds other residents you don't want on this host, delete their
+downloaded handle/`.pub` pairs afterward — faber only ever uses the fingerprints
+you register in step 4.
+
 ---
 
 ## 4. Register the roles + reconcile the config
