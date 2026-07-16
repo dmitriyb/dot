@@ -27,6 +27,17 @@
 #
 # Non-interactive, so `set -e` is appropriate — with careful guards around greps
 # and `docker image inspect` that legitimately return non-zero.
+#
+# This script uses associative arrays + namerefs (bash >= 4). macOS ships bash
+# 3.2, so re-exec under a newer bash if one is installed, else fail clearly —
+# BEFORE `set -u` trips over the first associative-array assignment.
+if (( ${BASH_VERSINFO[0]:-0} < 4 )); then
+	for _b in /opt/homebrew/bin/bash /usr/local/bin/bash; do
+		[[ -x "$_b" ]] && exec "$_b" "${BASH_SOURCE[0]}" "$@"
+	done
+	echo "faber-stack: requires bash >= 4 (macOS ships 3.2); install one: brew install bash" >&2
+	exit 1
+fi
 set -euo pipefail
 
 # The script lives in shared/.local/bin but its assets live under docker/claude

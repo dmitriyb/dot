@@ -37,7 +37,9 @@ each, and emits `faber add-key` + `portitor add-role` commands.
   --repo R    emit portitor add-role lines for repo R (repeatable; default: a <REPO> placeholder).
   --apply     run `faber add-key` locally for each assignment (global registry on THIS host).
               portitor lines are always only PRINTED — portitor runs on the gate host.
-  --json      emit the assignments as JSON instead of commands (needs jq).
+  --json      NON-INTERACTIVE: emit the roles ALREADY registered in faber's
+              registry (role->fingerprint + ~/.ssh pub) as JSON, for
+              `| faber-stack up`. Assign once with --apply first. Needs jq.
 EOF
 	exit "${1:-0}"
 }
@@ -58,12 +60,14 @@ $JSON && ! command -v jq >/dev/null 2>&1 && die "--json needs jq on PATH"
 $JSON && $APPLY && echo "role-keys: --json emits data only; --apply is ignored with it." >&2
 $APPLY && ! command -v faber >/dev/null 2>&1 && die "--apply needs the faber binary on PATH"
 
-# Single cleanup for every temp: named files plus the YubiKey handle dir. Covers
-# INT/TERM as well as EXIT so a Ctrl-C during the PIN/touch wait cannot leave
-# downloaded resident-key handles behind.
+# Single cleanup for every temp: named files plus the YubiKey handle dir. cleanup
+# runs on EXIT; INT/TERM re-raise as `exit 130`, which TRIGGERS the EXIT trap — so
+# Ctrl-C actually EXITS (still cleaning up temps / YubiKey handles) instead of the
+# read loop's `|| role=""` swallowing the interrupt and just "skipping a key".
 ROWS_FILE="$(mktemp)"; ASSIGN_FILE=""; YK_TMP=""
 cleanup() { rm -f "$ROWS_FILE" "${ASSIGN_FILE:-}"; [[ -n "$YK_TMP" ]] && rm -rf "$YK_TMP"; }
-trap cleanup EXIT INT TERM
+trap cleanup EXIT
+trap 'exit 130' INT TERM
 
 # fp_of_line <ssh-add/ssh-keygen -l line> -> "<fp>\t<comment>" (fail if no SHA256).
 # Line shape: "256 SHA256:… some comment (ED25519)". Split WITHOUT glob expansion
@@ -141,7 +145,25 @@ fi
 
 [[ -s "$ROWS_FILE" ]] || die "no keys found (agent empty, no ~/.ssh/*.pub, no --yubikey)."
 
-# ---- interactive role assignment ----------------------------------------
+# ---- --json: NON-INTERACTIVE emit from faber's registry --------------------
+# You assign roles ONCE (role-keys --apply, interactive) which writes faber's
+# role->fingerprint registry; --json then just EMITS those registered roles for
+# `| faber-stack up`, joining each to its ~/.ssh pubkey path by fingerprint. No
+# prompting — the interactive picker below runs only WITHOUT --json.
+if $JSON; then
+	REGISTRY="${XDG_CONFIG_HOME:-$HOME/.config}/faber/roles.json"
+	[[ -f "$REGISTRY" ]] || die "no faber registry at $REGISTRY — register roles first: role-keys --apply"
+	# fp -> pub map from the ~/.ssh enumeration (ROWS_FILE: fp\tcomment\tpub\tsource).
+	pubmap="$(jq -Rn '[inputs | split("\t") | {(.[0]): (.[2] // "")}] | add // {}' <"$ROWS_FILE")"
+	jq -n --slurpfile reg "$REGISTRY" --argjson pub "$pubmap" '
+		($reg[0] // {}) | to_entries
+		| map({role: .key, fingerprint: .value.fingerprint,
+		       comment: (.value.comment // ""), pub: ($pub[.value.fingerprint] // "")})
+		| {assignments: .}'
+	exit 0
+fi
+
+# ---- interactive role assignment (no --json) -----------------------------
 echo "Assign a role to each key (blank = skip). Role names are free, e.g. implementer_work." >&2
 echo >&2
 ASSIGN_FILE="$(mktemp)"
@@ -157,12 +179,7 @@ done <"$ROWS_FILE"
 
 [[ -s "$ASSIGN_FILE" ]] || die "no roles assigned; nothing to do."
 
-# ---- emit ---------------------------------------------------------------
-if $JSON; then
-	jq -Rn '[inputs | split("\t") | {role:.[0], fingerprint:.[1], comment:(.[2]//""), pub:(.[3]//"")}] | {assignments: .}' <"$ASSIGN_FILE"
-	exit 0
-fi
-
+# ---- emit the registration commands (interactive path) -------------------
 apply_fail=0
 echo >&2
 echo "# --- faber (global, run on THIS host) ---"
