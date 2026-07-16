@@ -108,6 +108,10 @@ in
     };
     sourceRoot = ".";                               # tarball extracts `br` at the root
     nativeBuildInputs = [ final.autoPatchelfHook ];
+    # The prebuilt (Rust) binary needs libgcc_s.so.1 for stack unwinding;
+    # give autoPatchelfHook the gcc runtime lib to resolve it. (An rpath here is
+    # fine — br is an ordinary ELF, not the fragile claude-code Bun executable.)
+    buildInputs = [ final.stdenv.cc.cc.lib ];
     installPhase = ''install -Dm755 br "$out/bin/br"'';
     meta.description = "beads_rust issue tracker CLI";
   };
