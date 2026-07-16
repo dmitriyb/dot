@@ -14,7 +14,7 @@ templates:
     identity: implementer
     run:
       resources: {memory: 8g, cpus: 4}
-      env: {FABER_AGENT_CLI: claude}
+      env: {FABER_AGENT_CLI: claude, PORTITOR_HOST: portitor-spex}  # PORTITOR_HOST: the gate container the pr/portitor client targets
     skill: implement
     skills: [implement, go-expert]
     skills_link: .claude/skills
@@ -33,7 +33,7 @@ templates:
     image: spex-box
     identity: reviewer             # the ONLY role permitted to close beads (portitor role rule)
     run:
-      env: {FABER_AGENT_CLI: claude}
+      env: {FABER_AGENT_CLI: claude, PORTITOR_HOST: portitor-spex}  # PORTITOR_HOST: the gate container the pr/portitor client targets
     skill: review
     skills: [review, go-expert]
     skills_link: .claude/skills
@@ -49,7 +49,7 @@ templates:
     image: spex-box
     identity: implementer          # fixes are authored by the implementer identity
     run:
-      env: {FABER_AGENT_CLI: claude}
+      env: {FABER_AGENT_CLI: claude, PORTITOR_HOST: portitor-spex}  # PORTITOR_HOST: the gate container the pr/portitor client targets
     skill: fix
     skills: [fix, go-expert]
     skills_link: .claude/skills
@@ -65,7 +65,7 @@ templates:
     image: spex-box                # shares the toolset; only needs git/openssh + the portitor client
     identity: merger               # commit-less landing identity (portitor action policy gates merge)
     run:
-      env: {FABER_AGENT_CLI: claude}
+      env: {FABER_AGENT_CLI: claude, PORTITOR_HOST: portitor-spex}  # PORTITOR_HOST: the gate container the pr/portitor client targets
     skill: merge
     skills: [merge]
     skills_link: .claude/skills

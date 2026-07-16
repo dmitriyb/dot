@@ -48,13 +48,13 @@ The bundle's `MODE` is coarse. Refine it:
 
 ### Step 3: Act — one of four, no other paths
 
-GitHub actions go through the portitor-mediated `pr` client (no `gh`); bodies are read from stdin:
+GitHub actions go through `portitor pr <action>` (no `gh`); bodies are read from stdin:
 
 - **CLEAN + REVIEW** → post an LGTM summary, then close the bead. PR is ready to merge.
-  `printf '%s' "LGTM — <summary>" | pr review --pr <n> --event comment`
+  `printf '%s' "LGTM — <summary>" | portitor pr review --pr <n> --event comment`
 - **CLEAN + FOLLOWUP** → close the bead; do NOT post another review.
 - **ISSUES + REVIEW** → post the review describing each blocker (reference `path:line`); do not close.
-  `printf '%s' "<blockers>" | pr review --pr <n> --event request-changes`
+  `printf '%s' "<blockers>" | portitor pr review --pr <n> --event request-changes`
 - **ISSUES + FOLLOWUP** → post what's still wrong per unfixed item; do not close.
 
 > Use `--event comment` for own-account PRs (GitHub disallows approve/request-changes on your own PR); the **closed bead is the approval signal**.

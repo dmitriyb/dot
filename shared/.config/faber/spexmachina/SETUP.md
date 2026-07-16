@@ -45,7 +45,7 @@ set -x PORTITOR ~/src/portitor
 ## 0. Prerequisites (verify, don't redo)
 
 docker + nix are on the host; the Anthropic setup-token is in the keychain; the
-`faber`/`faber-box` binaries are built; the `portitor` + `pr` client checkouts are
+`faber`/`faber-box` binaries are built; the `faber` + `portitor` checkouts are
 present. The faber assets install from dot via **stow**: `faber-stack`/`role-keys`
 → `~/.local/bin`, the gate compose + egress build-context → `~/.local/share/{portitor,egress}`,
 and this project → `~/.config/faber/spexmachina`. Re-stow after `git -C $DOT pull`.
@@ -201,23 +201,14 @@ cat "$PROJECT/keys/portitor_host_key.pub"
 
 ---
 
-## 7. Deliver the `pr`/portitor client into the box
+## 7. Test the agent
 
-The `fetch-pr` / `review` / `fix` / `merge` legs call the `pr` / `portitor` client
-inside the box; the `implement` leg does not (it just `git push`es). Add the
-client to the box overlay so `command -v pr` succeeds in the box, then rebuild.
-
-```fish
-faber build --config orchestrator.yaml
-```
-
----
-
-## 8. Test the agent
-
-Test the **implement** leg first — it exercises image → box → clone from the gate
-→ `spex map context` → signed claim → real Claude → push → gate accepts → PR,
-needing only step 6. Pick a ready bead.
+Everything the box needs — including the `portitor` client (`portitor pr …`) the
+steps use to talk to the gate (the box holds no GitHub credential; the client
+forwards each PR action over the same pinned SSH channel git uses) — was baked
+into the image by the step-2 build, and the gate is up from step 6.
+Run one bead through the full **Gate B** chain (implement → review loop →
+auto-merge). Pick a ready bead first.
 
 ```fish
 cd "$PROJECT"
@@ -225,8 +216,7 @@ br ready
 faber run bead --config orchestrator.yaml --param bead=<bead-id>
 ```
 
-Once step 7 is done, the same command runs the full **Gate B** chain (implement →
-review loop → auto-merge). For a human-reviewed epic instead:
+For a human-reviewed epic instead (fan-out, no auto-merge):
 
 ```fish
 faber run epic --config orchestrator.yaml --param epic=<epic-id>
@@ -234,7 +224,7 @@ faber run epic --config orchestrator.yaml --param epic=<epic-id>
 
 ---
 
-## 9. Lifecycle
+## 8. Lifecycle
 
 `status`/`down` need only `--instance` (no slug/pat/project/stdin); `restart`
 takes the same inputs as `up`, roles on stdin exactly as in step 6. `down` keeps
@@ -252,9 +242,8 @@ role-keys --json \
 ## What each step unlocks
 
 ```text
-1–2  binaries + box image                → gateless image sanity (tools resolve)
+1–2  binaries + box image                → the FULL toolset, portitor client included
 3–5  role keys + registry + scoped PAT   → the inputs faber-stack consumes
 6    faber-stack up                      → gate + egress + net + mirror + host-key, one command
-7    pr-client in the box                → review / fix / merge legs
-8    implement leg testable after 6;     full Gate B testable after 7
+7    faber run                           → full Gate B (implement → review loop → merge)
 ```

@@ -11,10 +11,9 @@ version: 1
 #   faber build    --config orchestrator.yaml
 #   faber run bead --config orchestrator.yaml --param bead=<id>
 #
-# STATE: image + hooks + skills + templates + workflows are complete. The
-# portitor-gate wiring (marked "portitor step" below) is the remaining piece:
-# the remote host key, the per-role signing keys, and the portitor/pr client on
-# the box PATH. See keys/README.md.
+# STATE: complete. Image (incl. the in-box portitor client), hooks, skills,
+# templates, workflows. The gate side (roles, mirror, host-key pin) is stood up
+# by `faber-stack up` — see SETUP.md; key wiring details in keys/README.md.
 
 # --- substrate ---------------------------------------------------------------
 

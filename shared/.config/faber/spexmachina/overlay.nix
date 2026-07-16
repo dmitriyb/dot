@@ -115,4 +115,40 @@ in
     installPhase = ''install -Dm755 br "$out/bin/br"'';
     meta.description = "beads_rust issue tracker CLI";
   };
+
+  # --- portitor-client: the box's ONLY GitHub channel ---------------------------
+  # The box holds no GitHub credential; every PR action (fetch/comment/review/
+  # merge) is `portitor pr …`, forwarded over SSH to the gate, whose forced
+  # command dispatches it and calls GitHub with ITS token. Baked into the image
+  # up front like spex/br — no post-hoc delivery, one `faber build` ships it all.
+  #
+  # ONE binary, `portitor`, deliberately no `pr` alias: GNU coreutils (also in
+  # this toolset) ships a bin/pr (the paginator), and the image's link-farm is
+  # first-wins over alphabetically-sorted packages — an alias named `pr` would be
+  # silently shadowed. Hooks and skills call `portitor pr …` directly.
+  #
+  # Trust + identity reuse the exact channel git already has in the box:
+  #   * $GIT_SSH_COMMAND — set by the box's host-key phase — carries the pinned
+  #     known-hosts file + StrictHostKeyChecking=yes, so the client trusts only
+  #     the pinned gate (plain `ssh` would fail closed on an unknown host);
+  #   * the forwarded ssh-agent supplies the one role key (role = fingerprint).
+  # $PORTITOR_HOST names the gate container and comes from the template env —
+  # explicit, no baked default. --repo is injected from $FABER_INPUT_REPO (the
+  # step's bound repo input) when the caller didn't pass one.
+  portitor-client = final.symlinkJoin {
+    name = "portitor-client";
+    paths = [
+      (final.writeShellScriptBin "portitor" ''
+        set -euo pipefail
+        [ -n "''${PORTITOR_HOST:-}" ] || { echo "portitor: PORTITOR_HOST is not set — the template env must name the gate container" >&2; exit 1; }
+        args=("$@")
+        if [ "''${1:-}" = pr ] && [ -n "''${FABER_INPUT_REPO:-}" ] && [[ " $* " != *" --repo "* ]]; then
+          args=("$@" --repo "$FABER_INPUT_REPO")
+        fi
+        # GIT_SSH_COMMAND is a command LINE (ssh + -o flags); word-split it on purpose.
+        exec ''${GIT_SSH_COMMAND:-ssh} "git@$PORTITOR_HOST" portitor "''${args[@]}"
+      '')
+    ];
+    meta.description = "in-box portitor client (SSH-forwarded, credential-less)";
+  };
 }

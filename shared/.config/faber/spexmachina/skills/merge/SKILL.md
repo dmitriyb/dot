@@ -16,7 +16,7 @@ The PR number is `${FABER_INPUT_PR}` in your environment. No context hook runs f
    portitor pr merge --pr "$FABER_INPUT_PR"
    ```
    Use your portitor client's merge verb/flags (e.g. squash) as configured. If the merge is refused (not up to date, checks pending, gate rejection), do NOT force it — report the reason via the result below with `merged=false`.
-2. Confirm the merge succeeded (the client's exit status / a follow-up `pr fetch --pr "$FABER_INPUT_PR"` showing merged).
+2. Confirm the merge succeeded (the client's exit status / a follow-up `portitor pr fetch --pr "$FABER_INPUT_PR"` showing merged).
 
 ## Emit your result (required)
 

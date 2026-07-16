@@ -42,10 +42,9 @@ faber run epic --config orchestrator.yaml --param epic=<epic-id>
 
 ## Status
 
-- **Complete**: image (real hashes), hooks, skills, templates, workflows, the assembly.
-- **Portitor step (remaining, by design)**: role keys + portitor host key in `keys/`, the
-  portitor/`pr` client on the box PATH, repo onboarding + role rules. Only the review/fix/merge
-  legs depend on it; the implement leg and the config structure do not. See `keys/README.md`.
+- **Complete**: image (real hashes, incl. the in-box `pr`/`portitor` client), hooks, skills,
+  templates, workflows, the assembly. `faber-stack up` (see `SETUP.md`) stands up the gate:
+  roles, mirror, host-key pin — everything `keys/README.md` describes.
 - Gate B (`bead`) is the primary, proven shape — trial it on the Batch-B bugs first.
   Gate A (`epic`) fans implement over an epic's children with no auto-merge; its single-big-PR
   refinement waits on a faber aggregate step (noted in `workflows.yaml`).

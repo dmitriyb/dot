@@ -28,10 +28,9 @@ via the registry.
 3. Onboard the repo on its per-repo instance: `portitor add-repo --repo spexmachina
    --upstream https://github.com/dmitriyb/spexmachina.git` (the `portitor-spex`
    instance holds the GitHub PAT).
-4. Put the portitor/`pr` **client** on the box PATH (the `fetch-pr`/`review`/`fix`/
-   `merge` legs call it) — via the overlay or a small delivery.
-5. Pin `portitor_host_key.pub` here.
+4. Pin `portitor_host_key.pub` here.
 
-See `../SETUP.md` for the full ordered runbook. The **implement** leg and the
-config *structure* are independent of the gate; review/fix/merge need the client
-+ host key + registered roles above.
+Steps 2–4 are what `faber-stack up` performs (roles, mirror, host-key pin). The
+in-box portitor/`pr` **client** is already part of the image toolset
+(`portitor-client` in `overlay.nix` + `images.yaml`) — no separate delivery.
+See `../SETUP.md` for the full ordered runbook.
