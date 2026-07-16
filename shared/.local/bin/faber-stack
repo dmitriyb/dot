@@ -1,0 +1,408 @@
+#!/usr/bin/env bash
+# faber-stack — stand up (or tear down) ONE portitor gate instance per faber repo.
+#
+# `docker-claude --portitor` bakes in a single shared gate (portitor / dca-net /
+# dca-egress, one PAT) — it cannot host one gate per repo. The faber box model is
+# one gate PER repo: its own internal network, egress proxy, gate container,
+# mirror volume, and scoped PAT, so a compromised box for repo A cannot reach
+# repo B's mirror or PAT. faber-stack makes that a one-command, idempotent,
+# parameterized operation.
+#
+# ONE knob — `--instance <name>` — derives every object name, so the box side and
+# the gate side cannot drift:
+#
+#   network  ${name}-net (internal)   egress  ${name}-egress
+#   gate     portitor-${name}         volume  ${name}-repos     project ${name}
+#
+# `--instance spex` therefore produces exactly what spexmachina/orchestrator.yaml
+# already references (spex-net / spex-egress / portitor-spex / spex-repos).
+#
+#   role-keys --repo <repo> --json \
+#     | faber-stack up --instance <name> --slug <owner/repo> --pat <svc>[/acct] --project <dir> [--allow <host> ...]
+#   faber-stack status|down|restart --instance <name>
+#
+# What faber-stack does NOT do: create SSH keys (role-keys / ssh-keygen), register
+# faber identities (faber add-key), run faber, or store PATs (the operator stores
+# them once in the keychain). It consumes those artifacts.
+#
+# Non-interactive, so `set -e` is appropriate — with careful guards around greps
+# and `docker image inspect` that legitimately return non-zero.
+set -euo pipefail
+
+# The script lives in shared/.local/bin but its assets live under docker/claude
+# in the SAME repo — a different top-level tree, so $SCRIPT_DIR/.. does not reach
+# them. Resolve from the repo root (git toplevel, else three levels up).
+SCRIPT_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
+REPO_ROOT="$(git -C "$SCRIPT_DIR" rev-parse --show-toplevel 2>/dev/null || true)"
+[[ -n "$REPO_ROOT" && -f "$REPO_ROOT/docker/claude/faber/portitor-stack.yml" ]] \
+	|| REPO_ROOT="$(cd -- "$SCRIPT_DIR/../../.." && pwd)"
+COMPOSE_FILE="$REPO_ROOT/docker/claude/faber/portitor-stack.yml"
+EGRESS_CTX="$REPO_ROOT/docker/claude/egress"
+
+# Validation patterns (all match the tools faber-stack feeds).
+INSTANCE_RE='^[a-z0-9][a-z0-9-]{0,30}$'          # docker/DNS/path-safe, <=31 chars
+SLUG_RE='^[^/ ]+/[^/ ]+$'                         # owner/repo
+FP_RE='^SHA256:[A-Za-z0-9+/]{43}$'                # portitor addrole.go's own regex (no '=', exactly 43)
+HOST_RE='^[A-Za-z0-9._-]+$'                       # egress allow-list host (no metachars)
+
+CONTAINER_SIGNERS="/etc/portitor/allowed_signers" # the in-container allowed_signers path the gate reads
+BEAD_RULE='[{"name":"bead-close-reviewer-only","path_glob":".beads/issues.jsonl","added_regex":"\"status\"\\s*:\\s*\"closed\"","allowed_roles":["reviewer","owner"]}]'
+
+# Signing roles get --pub (enter allowed_signers); merger is identity-only.
+PORTITOR_ROLES=(implementer reviewer merger)
+declare -A IS_SIGNER=([implementer]=1 [reviewer]=1 [merger]=0)
+
+die() { echo "faber-stack: $1" >&2; exit "${2:-1}"; }
+
+usage() {
+	cat >&2 <<'EOF'
+Usage:
+  role-keys --repo <repo> --json | \
+    faber-stack up --instance <name> --slug <owner/repo> --pat <svc>[/acct] --project <dir> [flags]
+  faber-stack restart --instance <name> --slug <owner/repo> --pat <svc>[/acct] --project <dir> [flags]
+  faber-stack status  --instance <name>
+  faber-stack down    --instance <name>
+
+Verbs: up | down | status | restart   (verb is the first positional arg)
+
+Flags:
+  --instance <name>     identity knob; derives every object name. ^[a-z0-9][a-z0-9-]{0,30}$   (all verbs)
+  --slug <owner/repo>   GitHub slug for the mirror upstream + repo config           (up/restart, required)
+  --pat <svc>[/acct]    keychain coordinates for the scoped GitHub PAT; no default  (up/restart, required)
+  --project <dir>       faber orchestrator dir; host-key pin lands in <dir>/keys/   (up/restart, required)
+  --allow <host>        extra egress allow-list host (repeatable; default api.anthropic.com)
+  --config-dir <dir>    override config dir (default $XDG_CONFIG_HOME/portitor/<instance>)
+  --repo <name>         portitor repo id / repos.d basename (default: repo half of --slug)
+  --map <p>=<a>         map portitor role <p> to a differently-named stdin role <a> (repeatable)
+  --portitor-repo <dir> source checkout to build the portitor image from if missing
+  --portitor-bin <path> the REAL portitor binary for host-side add-role (NOT the PATH ssh wrapper)
+  -h, --help            this help
+
+Roles for up/restart are read as `role-keys --json` on stdin. Exit: 0 ok, 1 runtime, 2 usage.
+EOF
+	exit "${1:-0}"
+}
+
+# ---- argument parsing -----------------------------------------------------
+[[ $# -gt 0 ]] || usage 2
+case "$1" in -h|--help) usage 0 ;; esac
+VERB="$1"; shift
+case "$VERB" in up|down|status|restart) ;; *) die "unknown verb: $VERB (want up|down|status|restart)" 2 ;; esac
+
+INSTANCE="" SLUG="" PAT="" PROJECT="" CONFIG_DIR="" REPO=""
+ALLOW=() MAP_ARGS=()
+PORTITOR_REPO_ARG="" PORTITOR_BIN_ARG=""
+
+need_val() { [[ $# -ge 2 ]] || die "$1 needs a value" 2; }
+while [[ $# -gt 0 ]]; do
+	case "$1" in
+		--instance)     need_val "$@"; INSTANCE="$2"; shift 2 ;;
+		--slug)         need_val "$@"; SLUG="$2"; shift 2 ;;
+		--pat)          need_val "$@"; PAT="$2"; shift 2 ;;
+		--project)      need_val "$@"; PROJECT="$2"; shift 2 ;;
+		--config-dir)   need_val "$@"; CONFIG_DIR="$2"; shift 2 ;;
+		--repo)         need_val "$@"; REPO="$2"; shift 2 ;;
+		--allow)        need_val "$@"; ALLOW+=("$2"); shift 2 ;;
+		--map)          need_val "$@"; MAP_ARGS+=("$2"); shift 2 ;;
+		--portitor-repo) need_val "$@"; PORTITOR_REPO_ARG="$2"; shift 2 ;;
+		--portitor-bin)  need_val "$@"; PORTITOR_BIN_ARG="$2"; shift 2 ;;
+		-h|--help)      usage 0 ;;
+		*)              die "unknown flag: $1 (see --help)" 2 ;;
+	esac
+done
+
+# ---- instance name discipline (first line of defense; before ANY side effect) ----
+[[ -n "$INSTANCE" ]] || die "--instance is required" 2
+[[ "$INSTANCE" =~ $INSTANCE_RE ]] || die "invalid --instance '$INSTANCE' (want ^[a-z0-9][a-z0-9-]{0,30}\$: lowercase alnum + hyphen, <=31 chars)" 2
+
+# Derived names — every object keyed off INSTANCE.
+NET="${INSTANCE}-net"
+EGRESS_CT="${INSTANCE}-egress"
+GATE_CT="portitor-${INSTANCE}"
+REPOS_VOL="${INSTANCE}-repos"
+
+# Usage-error (exit 2) validation for up/restart BEFORE any filesystem/docker
+# side effect — a bad flag never leaves a half-built config dir behind.
+if [[ "$VERB" == up || "$VERB" == restart ]]; then
+	[[ -n "$SLUG" ]]    || die "--slug <owner/repo> is required for $VERB" 2
+	[[ "$SLUG" =~ $SLUG_RE ]] || die "invalid --slug '$SLUG' (want owner/repo)" 2
+	[[ -n "$PAT" ]]     || die "--pat <service>[/account] is required for $VERB" 2
+	[[ -n "$PROJECT" ]] || die "--project <dir> is required for $VERB" 2
+	[[ -d "$PROJECT" ]] || die "--project dir does not exist: $PROJECT" 2
+	# repo id defaults to the repo half of the slug.
+	[[ -n "$REPO" ]] || REPO="${SLUG#*/}"
+	# Match portitor config.ValidName exactly: [A-Za-z0-9._-]+ but never '.'/'..'
+	# (those pass the charclass yet portitor's ValidName rejects them — catch it
+	# here, before any repos.d/<repo>.json seed file is written).
+	{ [[ "$REPO" =~ ^[A-Za-z0-9._-]+$ ]] && [[ "$REPO" != . && "$REPO" != .. ]]; } \
+		|| die "invalid --repo '$REPO' (allowed: A-Za-z0-9._-; not '.' or '..')" 2
+	# egress hosts: reject any regex metacharacter now (fail-fast, before mutation).
+	for h in ${ALLOW[@]+"${ALLOW[@]}"}; do
+		[[ "$h" =~ $HOST_RE ]] || die "invalid --allow host '$h' (allowed: A-Za-z0-9._-; no regex metacharacters — a host must never widen into a wildcard)" 2
+	done
+fi
+
+# Config dir (default per-instance under XDG). Absolutize (compose bind source).
+[[ -n "$CONFIG_DIR" ]] || CONFIG_DIR="${XDG_CONFIG_HOME:-$HOME/.config}/portitor/$INSTANCE"
+mkdir -p "$CONFIG_DIR"
+CONFIG_DIR="$(cd -- "$CONFIG_DIR" && pwd)"
+REPOS_D="$CONFIG_DIR/repos.d"
+SIGNERS_HOST="$CONFIG_DIR/allowed_signers"
+EGRESS_FILTER="$CONFIG_DIR/egress-filter"
+
+compose() { docker compose -p "$INSTANCE" -f "$COMPOSE_FILE" "$@"; }
+
+# ---- down / status: thin maps over compose; no slug/pat/project/stdin ------
+# Compose still interpolates ${CONFIG_DIR}/${INSTANCE} and the secret/auth env,
+# so export harmless empties for those (never a real PAT on these paths).
+if [[ "$VERB" == status || "$VERB" == down ]]; then
+	command -v docker >/dev/null 2>&1 || die "docker not found on PATH" 1
+	docker info >/dev/null 2>&1 || die "docker is not running — start docker" 1
+	export INSTANCE CONFIG_DIR
+	export GH_TOKEN="" AGENT_AUTHORIZED_KEY=""
+	case "$VERB" in
+		status) compose ps ;;
+		down)   compose down ;;   # keeps the ${INSTANCE}-repos volume (mirrors persist)
+	esac
+	exit $?
+fi
+
+# ============================================================================
+# up / restart  (required-flag/shape validation already done above)
+# ============================================================================
+command -v docker >/dev/null 2>&1 || die "docker not found on PATH — install/start docker" 1
+command -v jq >/dev/null 2>&1     || die "jq not found on PATH — install jq" 1
+docker info >/dev/null 2>&1       || die "docker is not running — start docker" 1
+
+# The gh_token secret is environment-sourced (secrets.gh_token.environment in
+# portitor-stack.yml). That feature landed in Docker Compose 2.20; on anything
+# older `compose up` fails with a cryptic secret error. Probe + fail clearly now.
+COMPOSE_VER="$(docker compose version --short 2>/dev/null || true)"
+COMPOSE_VER="${COMPOSE_VER#v}"
+[[ "$COMPOSE_VER" =~ ^([0-9]+)\.([0-9]+) ]] \
+	|| die "could not determine 'docker compose' version ('${COMPOSE_VER:-none}') — the stack needs the Docker Compose v2 plugin (>=2.20), not docker-compose v1" 1
+if (( BASH_REMATCH[1] < 2 || (BASH_REMATCH[1] == 2 && BASH_REMATCH[2] < 20) )); then
+	die "docker compose $COMPOSE_VER is too old — the gh_token secret is environment-sourced, which requires Docker Compose >= 2.20; upgrade the compose plugin" 1
+fi
+
+# ---- resolve the REAL portitor binary (never the PATH ssh wrapper) ---------
+PORTITOR_REPO="${PORTITOR_REPO_ARG:-${PORTITOR_REPO:-$HOME/src/portitor}}"
+PORTITOR_BIN="${PORTITOR_BIN_ARG:-${PORTITOR_BIN:-$PORTITOR_REPO/portitor}}"
+resolve_portitor_bin() {
+	if [[ ! -x "$PORTITOR_BIN" ]]; then
+		# Build it once from the source checkout, if we can.
+		[[ -d "$PORTITOR_REPO" ]] || die "portitor binary not found ($PORTITOR_BIN) and no source checkout at $PORTITOR_REPO — pass --portitor-bin or --portitor-repo" 1
+		command -v go >/dev/null 2>&1 || die "portitor binary not found ($PORTITOR_BIN) and 'go' is not on PATH to build it — pass --portitor-bin" 1
+		echo "faber-stack: building portitor from $PORTITOR_REPO ..." >&2
+		( cd "$PORTITOR_REPO" && go build -o "$PORTITOR_BIN" ./cmd/portitor ) \
+			|| die "failed to build portitor from $PORTITOR_REPO — pass a prebuilt --portitor-bin" 1
+	fi
+	# Guard: reject dot's SSH-forwarding wrapper (shared/.local/bin/portitor is a
+	# `#!` script that `exec ssh`es to the gate). The real binary is an ELF/mach-o.
+	if [[ "$(head -c2 "$PORTITOR_BIN" 2>/dev/null)" == '#!' ]]; then
+		die "--portitor-bin ($PORTITOR_BIN) is a shell script, not the real portitor binary (looks like the SSH wrapper) — pass the built binary from --portitor-repo" 1
+	fi
+}
+resolve_portitor_bin
+
+# ---- read + parse role assignments from stdin (role-keys --json) -----------
+[[ ! -t 0 ]] || die "roles must be piped on stdin: role-keys --repo $REPO --json | faber-stack $VERB ..." 2
+ROLES_JSON="$(cat)"
+echo "$ROLES_JSON" | jq -e '.assignments | type == "array"' >/dev/null 2>&1 \
+	|| die "stdin is not role-keys --json ({\"assignments\":[...]})" 2
+
+# --map <portitor-role>=<assignment-role> (default identity).
+declare -A ROLE_MAP
+for r in "${PORTITOR_ROLES[@]}"; do ROLE_MAP[$r]="$r"; done
+for m in ${MAP_ARGS[@]+"${MAP_ARGS[@]}"}; do
+	[[ "$m" == *=* ]] || die "invalid --map '$m' (want <portitor-role>=<assignment-role>)" 2
+	p="${m%%=*}" a="${m#*=}"
+	[[ -n "${ROLE_MAP[$p]:-}" ]] || die "invalid --map '$m': '$p' is not a portitor role (want one of ${PORTITOR_ROLES[*]})" 2
+	[[ -n "$a" ]] || die "invalid --map '$m': empty assignment role" 2
+	ROLE_MAP[$p]="$a"
+done
+
+# Resolve each portitor role -> its fingerprint + host pub path from stdin.
+declare -A ROLE_FP ROLE_PUB
+lookup_role() { # <assignment-role> <field>
+	echo "$ROLES_JSON" | jq -r --arg r "$1" --arg f "$2" \
+		'.assignments | map(select(.role==$r)) | .[0][$f] // ""'
+}
+for pr in "${PORTITOR_ROLES[@]}"; do
+	ar="${ROLE_MAP[$pr]}"
+	fp="$(lookup_role "$ar" fingerprint)"
+	pub="$(lookup_role "$ar" pub)"
+	[[ -n "$fp" ]]  || die "stdin has no assignment for portitor role '$pr' (looked for role '$ar'; map it with --map $pr=<name>)" 2
+	[[ "$fp" =~ $FP_RE ]] || die "role '$pr' fingerprint is not the SHA256:<43 base64> form portitor requires: $fp" 2
+	[[ -n "$pub" ]] || die "role '$pr' (assignment '$ar') has no pub path — put its pubkey in ~/.ssh so role-keys emits a 'pub' field (needed for AGENT_AUTHORIZED_KEY and allowed_signers)" 2
+	[[ -f "$pub" ]] || die "role '$pr' pub file does not exist: $pub" 2
+	ROLE_FP[$pr]="$fp"
+	ROLE_PUB[$pr]="$pub"
+done
+
+# ---- resolve the GitHub PAT from the keychain (never onto argv/inspect) ----
+PAT_SVC="${PAT%%/*}"
+PAT_ACCT="default"; [[ "$PAT" == */* ]] && PAT_ACCT="${PAT#*/}"
+resolve_pat() {
+	if [[ "$(uname)" == "Darwin" ]]; then
+		security find-generic-password -s "$PAT_SVC" -a "$PAT_ACCT" -w 2>/dev/null || true
+	else
+		secret-tool lookup service "$PAT_SVC" account "$PAT_ACCT" 2>/dev/null || true
+	fi
+}
+GH_TOKEN="$(resolve_pat)"
+[[ -n "$GH_TOKEN" ]] || die "no PAT in keychain for service='$PAT_SVC' account='$PAT_ACCT' — store it: security add-generic-password -s $PAT_SVC -a $PAT_ACCT -w '<CONTENTS+PR PAT>' (Linux: secret-tool store --label=$PAT_SVC service $PAT_SVC account $PAT_ACCT)" 1
+
+# ---- AGENT_AUTHORIZED_KEY: one `type data` line per role pub ---------------
+AGENT_AUTHORIZED_KEY=""
+for pr in "${PORTITOR_ROLES[@]}"; do
+	AGENT_AUTHORIZED_KEY+="$(awk '{print $1, $2}' "${ROLE_PUB[$pr]}")"$'\n'
+done
+
+# ---- temp-file cleanup -----------------------------------------------------
+# mktmp assigns the new path into a caller-named variable AND registers it in the
+# parent's TMPS, so cleanup() actually sees it. (A `$(mktmp ...)` form would run
+# the append in a command-substitution subshell and leave the parent TMPS empty —
+# the trap would then remove nothing.) Called directly, never in `$(...)`.
+TMPS=()
+cleanup() { local t; for t in ${TMPS[@]+"${TMPS[@]}"}; do rm -f "$t"; done; }
+trap cleanup EXIT INT TERM
+mktmp() { # <dest-varname> <path-prefix>   -> sets $<dest-varname>, appends to TMPS
+	local -n _dest="$1"
+	_dest="$(mktemp "$2.XXXXXX")" || die "failed to create a temp file under $2" 1
+	TMPS+=("$_dest")
+}
+
+# ---- (3) seed repos.d/<repo>.json host-side, atomic, only if absent --------
+# allowed_signers field is seeded to the HOST path so host-side add-role can
+# write+os.Stat-validate the real file; it is swapped to the in-container path
+# just before compose up (§4.3). Never clobber a roles map a prior run filled.
+mkdir -p "$REPOS_D"
+CFG="$REPOS_D/$REPO.json"
+if [[ ! -f "$CFG" ]]; then
+	mktmp tmp "$REPOS_D/.$REPO.json"
+	jq -n --arg db main --arg as "$SIGNERS_HOST" --arg ur upstream --arg us "$SLUG" \
+	      --argjson up true --argjson roles '{}' --argjson rules "$BEAD_RULE" \
+		'{default_branch:$db, allowed_signers:$as, upstream_remote:$ur, upstream_slug:$us,
+		  require_up_to_date_with_default:$up, roles:$roles, role_rules:$rules}' >"$tmp" \
+		|| die "failed to render seed config for $REPO" 1
+	mv "$tmp" "$CFG"
+else
+	# Re-run: reconcile the flag-derived upstream fields to the CURRENT flags (a
+	# changed --slug otherwise leaves a stale upstream_slug while the in-container
+	# add-repo mirrors from the new slug — silent divergence). Preserve the roles
+	# map, role_rules, and everything else a prior run filled.
+	mktmp rtmp "$REPOS_D/.$REPO.json"
+	jq --arg db main --arg us "$SLUG" '.default_branch=$db | .upstream_slug=$us' "$CFG" >"$rtmp" \
+		|| die "failed to reconcile upstream fields for $REPO" 1
+	mv "$rtmp" "$CFG"
+fi
+touch "$SIGNERS_HOST"
+
+# ---- swap allowed_signers field to the HOST path around the add-role loop ---
+swap_signers_field() { # <target-path>
+	local tmp; mktmp tmp "$REPOS_D/.$REPO.json"
+	jq --arg as "$1" '.allowed_signers=$as' "$CFG" >"$tmp" || die "failed to swap allowed_signers field" 1
+	mv "$tmp" "$CFG"
+}
+swap_signers_field "$SIGNERS_HOST"
+
+# ---- (4) build roles HOST-side via the real portitor binary ----------------
+# add-role resolves its repos dir from PORTITOR_REPOS_DIR (no --config-dir flag),
+# writes to the WRITABLE host config, and post-validates allowed_signers (os.Stat
+# of the host path, which is why the field points host-side here). Idempotent.
+export PORTITOR_REPOS_DIR="$REPOS_D"
+# add-role UPSERTS but never removes, so a rotated/removed key would linger in the
+# roles map + allowed_signers on re-run (a widening authorization gap). Reset both
+# to empty first so the loop below rebuilds EXACTLY the current fingerprints —
+# the stack converges to the roles on stdin rather than accumulating stale ones.
+mktmp rtmp "$REPOS_D/.$REPO.json"
+jq '.roles={}' "$CFG" >"$rtmp" || die "failed to reset roles map for $REPO" 1
+mv "$rtmp" "$CFG"
+: >"$SIGNERS_HOST"
+for pr in "${PORTITOR_ROLES[@]}"; do
+	args=(add-role --repo "$REPO" --role "$pr" --fingerprint "${ROLE_FP[$pr]}")
+	[[ "${IS_SIGNER[$pr]}" == 1 ]] && args+=(--pub "${ROLE_PUB[$pr]}")
+	"$PORTITOR_BIN" "${args[@]}" >&2 || die "portitor add-role failed for role '$pr'" 1
+done
+
+# ---- swap allowed_signers field to the IN-CONTAINER path (at rest) ----------
+swap_signers_field "$CONTAINER_SIGNERS"
+
+# ---- (5) write the per-instance egress filter (atomic) ---------------------
+# Each --allow host becomes one anchored ^host$ line with '.' escaped; hosts are
+# validated first so a value can never widen into a wildcard / open proxy.
+[[ ${#ALLOW[@]} -gt 0 ]] || ALLOW=(api.anthropic.com)
+mktmp etmp "$CONFIG_DIR/.egress-filter"
+{
+	echo "# Per-instance egress allow-list for '$INSTANCE' (extended regex, FilterDefaultDeny=Yes)."
+	echo "# Generated by faber-stack from --allow; each line is an anchored ^host\$. Do not edit."
+	for h in "${ALLOW[@]}"; do
+		[[ "$h" =~ $HOST_RE ]] || die "invalid --allow host '$h' (allowed: A-Za-z0-9._-; no regex metacharacters)" 2
+		printf '^%s$\n' "${h//./\\.}"
+	done
+} >"$etmp"
+mv "$etmp" "$EGRESS_FILTER"
+
+# ---- (6) export the interpolation env for compose --------------------------
+export INSTANCE CONFIG_DIR GH_TOKEN AGENT_AUTHORIZED_KEY
+
+# ---- (7) build images if missing -------------------------------------------
+docker image inspect portitor        >/dev/null 2>&1 || docker build -t portitor "$PORTITOR_REPO" \
+	|| die "failed to build the portitor image from $PORTITOR_REPO" 1
+docker image inspect egress-proxy >/dev/null 2>&1 || docker build -t egress-proxy "$EGRESS_CTX" \
+	|| die "failed to build the egress-proxy image from $EGRESS_CTX" 1
+
+# ---- (8) bring the stack up -------------------------------------------------
+# restart tears the containers down first (mirror volume persists).
+[[ "$VERB" == restart ]] && compose down >/dev/null 2>&1 || true
+compose up -d || die "docker compose up failed" 1
+
+# ---- (9) mirror the repo IN the container (needs GitHub + rw /srv/git) ------
+# Idempotent: skip if the bare mirror already exists. A mirror failure (e.g. bad
+# PAT scope) does NOT tear the stack down — the gate is up; report + name the retry.
+if docker exec -u git "$GATE_CT" test -d "/srv/git/$REPO.git" 2>/dev/null; then
+	echo "faber-stack: mirror /srv/git/$REPO.git already present — skipping add-repo." >&2
+else
+	if ! docker exec -u git "$GATE_CT" portitor add-repo --repo "$REPO" \
+			--upstream "https://github.com/$SLUG.git" >&2; then
+		echo "faber-stack: WARNING — the stack is UP but 'add-repo' (mirror) failed." >&2
+		echo "  Check the PAT scope (Contents+PR on $SLUG), then retry just the mirror:" >&2
+		echo "  docker exec -u git $GATE_CT portitor add-repo --repo $REPO --upstream https://github.com/$SLUG.git" >&2
+	fi
+fi
+
+# ---- (10) pin the gate host key from inside the internal net ---------------
+# ssh-keyscan must run where portitor-<instance> resolves — attached to the
+# internal net. Use the egress image (already built, present locally, ships
+# ssh-keyscan via openssh-client) so this never triggers a network pull.
+mkdir -p "$PROJECT/keys"
+PIN="$PROJECT/keys/portitor_host_key.pub"
+mktmp ptmp "$PROJECT/keys/.portitor_host_key.pub"
+if docker run --rm --network "$NET" egress-proxy \
+		ssh-keyscan -t ed25519 "$GATE_CT" >"$ptmp" 2>/dev/null && [[ -s "$ptmp" ]]; then
+	mv "$ptmp" "$PIN"
+	echo "faber-stack: pinned $GATE_CT host key -> $PIN" >&2
+else
+	echo "faber-stack: WARNING — could not pin the host key (stack is up; re-pin any time):" >&2
+	echo "  docker run --rm --network $NET egress-proxy ssh-keyscan -t ed25519 $GATE_CT > $PIN" >&2
+fi
+
+# ---- (11) print the faber substrate this instance now satisfies ------------
+cat >&2 <<EOF
+
+faber-stack: instance '$INSTANCE' is up. Orchestrator substrate it satisfies:
+
+  network:
+    name: $NET
+    proxy: http://$EGRESS_CT:8888
+    no_proxy: [$GATE_CT, localhost, 127.0.0.1]
+  remote:
+    url: ssh://git@$GATE_CT/srv/git
+    host_key_file: ./keys/portitor_host_key.pub   # pinned at $PIN
+
+  config dir: $CONFIG_DIR   (mounted :ro at /etc/portitor)
+  mirror:     /srv/git/$REPO.git   (volume $REPOS_VOL)
+  egress:     $(grep -v '^#' "$EGRESS_FILTER" | tr '\n' ' ')
+EOF
+exit 0

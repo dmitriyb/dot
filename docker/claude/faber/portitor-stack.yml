@@ -1,0 +1,75 @@
+# portitor-stack.yml — generic, ONE compose per faber project. `docker-claude
+# --portitor` bakes in a single shared instance (portitor / dca-net / dca-egress,
+# one PAT); this file is the per-repo model instead: `--instance <name>` derives
+# every object name, so a box's orchestrator.yaml and its gate stack agree by
+# construction. It is never brought up by hand — `faber-stack` exports the env
+# below and runs `docker compose -p ${INSTANCE} -f portitor-stack.yml up -d`.
+#
+# gate + egress each sit on the internal ${INSTANCE}-net (box-facing) AND the
+# default bridge (internet). Boxes join ${INSTANCE}-net ONLY, so their sole
+# outbound paths are the gate (git over SSH) and the egress proxy (allow-listed
+# HTTPS). The ${INSTANCE}-repos volume (bare mirrors) persists across `down`, so
+# an `up` after a `down` is instant — no re-mirror.
+#
+# The compose PROJECT name is supplied on the CLI (`-p ${INSTANCE}`), which
+# overrides any top-level `name:`; none is set here so the file stays generic.
+
+services:
+  gate:
+    image: portitor                       # built by faber-stack from --portitor-repo if missing
+    container_name: portitor-${INSTANCE}   # box reaches it as ssh://git@portitor-${INSTANCE} on the internal net
+    restart: unless-stopped
+    environment:
+      # PUBLIC role keys only (one `type data` line per role); the entrypoint
+      # installs each as a forced-command `portitor shell <fp>`. Left optional so
+      # down/status don't fail interpolation when unset.
+      AGENT_AUTHORIZED_KEY: ${AGENT_AUTHORIZED_KEY:-}
+    # The GitHub PAT arrives as a SECRET (mounted at /run/secrets/gh_token), NOT
+    # an env var, so it never appears in `docker inspect portitor-${INSTANCE}`.
+    secrets:
+      - gh_token
+    volumes:
+      # Config is host-built and mounted read-only: repos.d/<repo>.json,
+      # allowed_signers, egress-filter. Because it is :ro the config MUST be
+      # complete on the host before boot (faber-stack seeds + add-roles it).
+      - ${CONFIG_DIR:?faber-stack must export CONFIG_DIR (host portitor config dir)}:/etc/portitor:ro
+      # Reference the top-level volume by its KEY (instance-repos), NOT its
+      # interpolated name — Compose resolves named mounts against the volumes: map
+      # by key, exactly like the network mount resolves the `instance` key below.
+      - instance-repos:/srv/git            # -> name: ${INSTANCE}-repos; bare mirrors + hooks (persist across down/up)
+    networks:
+      default: {}
+      instance:
+        aliases:
+          - portitor-${INSTANCE}           # deterministic net alias the box's remote.url targets
+
+  egress:
+    image: egress-proxy                # generic allow-listing forward proxy; only the filter is per-instance
+    container_name: ${INSTANCE}-egress
+    restart: unless-stopped
+    volumes:
+      # Per-instance egress seam: faber-stack writes ${CONFIG_DIR}/egress-filter
+      # from --allow hosts and mounts it over the image's baked default, so this
+      # instance allow-lists exactly the hosts the operator named (default: only
+      # api.anthropic.com).
+      - ${CONFIG_DIR:?faber-stack must export CONFIG_DIR (host portitor config dir)}/egress-filter:/etc/tinyproxy/filter:ro
+    networks:
+      default: {}
+      instance: {}
+
+networks:
+  instance:
+    name: ${INSTANCE}-net
+    internal: true                         # boxes on this net reach ONLY the gate + egress, no direct internet
+
+volumes:
+  instance-repos:
+    name: ${INSTANCE}-repos
+
+secrets:
+  # Sourced from the GH_TOKEN env faber-stack exports (from the keychain PAT);
+  # Compose exposes it as a file at /run/secrets/gh_token, never an env var.
+  # Requires Docker Compose >= 2.20 (environment-sourced secrets); faber-stack
+  # probes the version up front and fails clearly on anything older.
+  gh_token:
+    environment: GH_TOKEN

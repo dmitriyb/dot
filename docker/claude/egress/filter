@@ -2,4 +2,9 @@
 # ONLY hosts matching a line here are reachable; everything else is refused.
 # The agent reaches the Anthropic API and nothing else on the internet
 # (portitor is on the internal network, not via this proxy).
+#
+# This is the image's baked DEFAULT (a bare `docker run egress-proxy` uses
+# it). Per-instance stacks REPLACE it wholesale by bind-mounting
+# $CONFIG_DIR/egress-filter over this path; faber-stack generates that file from
+# its --allow hosts, one anchored `^host$` line each. Keep this default minimal.
 ^api\.anthropic\.com$
