@@ -134,14 +134,18 @@ identities:
 
 ## 5. Bring up portitor + onboard spexmachina
 
-One portitor instance per repo, holding this repo's own scoped PAT (never share
-a PAT across repos). Store the PAT, bring up the instance on `dca-net`, create
-the bare mirror, bind the roles (the lines from step 4), and pin the host key.
+This repo runs on its **own** faber stack, separate from the legacy dca
+docker-compose (which you are not using): the `portitor-spex` instance (container
++ `spex-net` alias) with its scoped PAT under the `portitor-spex` keychain entry,
+alongside the `spex-egress` allow-list proxy, all on the `spex-net` network. One
+instance per repo — never share a PAT across repos. Substitute your per-repo
+names for `portitor-spex` / `spex-net` / `spex-egress` throughout. Bring that
+stack up first, then store the PAT, create the bare mirror, bind the roles
+(step 4), and pin the host key.
 
 ```fish
-security add-generic-password -s portitor -a default -w '<CONTENTS+PR PAT>'
-docker-claude --portitor up
-docker exec -u git portitor portitor add-repo --repo spexmachina \
+security add-generic-password -s portitor-spex -a default -w '<CONTENTS+PR PAT>'
+docker exec -u git portitor-spex portitor add-repo --repo spexmachina \
     --upstream https://github.com/dmitriyb/spexmachina.git
 ```
 
@@ -150,19 +154,19 @@ running instance. The reviewer/implementer get `--pub` (signing → allowed_sign
 merger is identity-only.
 
 ```fish
-docker exec portitor portitor add-role --repo spexmachina --role implementer --fingerprint <SHA256:…> --pub /etc/portitor/keys/implementer.pub
-docker exec portitor portitor add-role --repo spexmachina --role reviewer    --fingerprint <SHA256:…> --pub /etc/portitor/keys/reviewer.pub
-docker exec portitor portitor add-role --repo spexmachina --role merger      --fingerprint <SHA256:…>
+docker exec portitor-spex portitor add-role --repo spexmachina --role implementer --fingerprint <SHA256:…> --pub /etc/portitor/keys/implementer.pub
+docker exec portitor-spex portitor add-role --repo spexmachina --role reviewer    --fingerprint <SHA256:…> --pub /etc/portitor/keys/reviewer.pub
+docker exec portitor-spex portitor add-role --repo spexmachina --role merger      --fingerprint <SHA256:…>
 ```
 
 Add the bead-close role rule (only reviewer/owner may add `"status":"closed"` to
 `.beads/issues.jsonl`), then pin portitor's SSH host key for faber's
-`remote.host_key_file` (run where the `portitor` hostname resolves — inside
-`dca-net`).
+`remote.host_key_file` (run where the `portitor-spex` alias resolves — inside
+`spex-net`).
 
 ```fish
-ssh-keyscan -t ed25519 portitor > "$SPEX_PROJ/keys/portitor_host_key.pub"
-docker exec portitor portitor validate-config --config /etc/portitor/repos.d/spexmachina.json
+ssh-keyscan -t ed25519 portitor-spex > "$SPEX_PROJ/keys/portitor_host_key.pub"
+docker exec portitor-spex portitor validate-config --config /etc/portitor/repos.d/spexmachina.json
 ```
 
 ---

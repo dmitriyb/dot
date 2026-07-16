@@ -19,12 +19,12 @@ version: 1
 # --- substrate ---------------------------------------------------------------
 
 network:
-  name: dca-net                          # dot's internal docker network (docker-claude --portitor)
-  proxy: http://dca-egress:8888          # allow-list egress (api.anthropic.com); the token still
-  no_proxy: [portitor, localhost, 127.0.0.1]   # rides in the box (file mode) — proxy carries no secret
+  name: spex-net                         # this repo's own faber internal network (NOT dot's dca-net)
+  proxy: http://spex-egress:8888         # this repo's allow-list egress (api.anthropic.com only)
+  no_proxy: [portitor-spex, localhost, 127.0.0.1]   # token rides in the box (file mode); proxy carries no secret
 
-remote:                                  # portitor step: the box's ONLY git remote
-  url: ssh://git@portitor/srv/git        # security module splices <repo>.git per step
+remote:                                  # portitor step: the box's ONLY git remote (per-repo instance)
+  url: ssh://git@portitor-spex/srv/git   # security module splices <repo>.git per step
   host_key_file: ./keys/portitor_host_key.pub   # portitor step: pin portitor's SSH host key here
 
 credentials:
