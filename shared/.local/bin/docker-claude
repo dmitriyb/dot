@@ -8,42 +8,24 @@ MODE=""
 REBUILD=false
 NO_CACHE=false
 AGENT_MODE=false
-PORTITOR_OP=false
-PORTITOR_VERB=up
-PORTITOR_INIT_REPO=""
-PORTITOR_INIT_CONFIG=""
-PORTITOR_ADD_ARGS=()
 
 usage() {
     cat <<'EOF'
-docker-claude — single entrypoint for the containerized Claude workflows.
+docker-claude — single entrypoint for the containerized Claude cockpit.
 
-  Interactive cockpit (personal/work) + the autonomous agent runners (agent/epic) +
-  the shared portitor proxy. agent/epic/warm are payloads dispatched by this command.
+  Isolated personal/work Claude Code containers with your dotfiles, SSH agent
+  forwarding, and separate personal/work images.
 
 usage:
   docker-claude personal [-a] [-r | --no-cache] [--workspace <path>]
   docker-claude work | direct [-r | --no-cache]
-  docker-claude agent <args…>         # one-shot autonomous agent task (alias: dca)
-  docker-claude epic  <args…>         # whole-epic orchestration (alias: dce)
-  docker-claude warm  <args…>         # warm the offline Go module cache
-  docker-claude portitor init --repo <path> [--config-dir <path>]
-  docker-claude portitor add-repo <name> [--slug owner/repo] [--dry-run] [--provision]
-  docker-claude portitor [up | down | status | restart]
 
 commands:
   personal           personal account, Anthropic OAuth token from the keychain
   work               work account via the wire proxy (needs the `wire` CLI)
   direct             work account with a direct API key from the keychain
-  agent | epic | warm  run the agent payloads (`dca`/`dce` are accepted synonyms) —
-                     see `docker-claude agent --help`, etc.
-  portitor <verb>    lifecycle of the shared portitor + egress proxy stack
-                     (init | up | down | status | restart). `up` needs a GitHub
-                     token: env GH_TOKEN or keychain service=portitor account=default
-                     (override: PORTITOR_KEYCHAIN_ACCOUNT). `init` persists the
-                     portitor host paths to ~/.config/docker-claude/portitor.env.
 
-options (interactive commands):
+options:
   -a, --agent        personal only: forward an ephemeral no-touch SSH signing agent
                      (commits are signed; the key cannot auth)
   -r, --rebuild      rebuild the image(s) before running
@@ -51,17 +33,16 @@ options (interactive commands):
   --workspace <path> host dir to mount as the workspace (default: ~/Work, ~/work on macOS)
   -h, --help         show this help
 
-aliases: dc=docker-claude, dcp=personal, dcw=work, dcwd=direct, dca=agent, dce=epic, dcwarm=warm.
+aliases: dc=docker-claude, dcp=personal, dcw=work, dcwd=direct.
 
 examples:
-  docker-claude portitor up          # bring up the shared proxy (agent/epic need it)
   docker-claude personal --agent     # interactive personal session w/ signing agent
-  docker-claude agent --repo my-svc --skill implement --bead @123 --dry-run
+  docker-claude work                 # work account via the wire proxy
 EOF
 }
 
-# Resolve our own real path (needed before the shared lib is sourced), locate the
-# off-PATH payload dir, and load the shared lib (keychain + signing + dot_root).
+# Resolve our own real path (needed before the shared lib is sourced), then load
+# the shared lib (keychain + signing + dot_root) from the sibling libexec dir.
 resolve_path() {
     local p="$1" target
     while [ -L "$p" ]; do
@@ -76,17 +57,12 @@ resolve_path() {
 LIBEXEC="$(dirname "$(resolve_path "$0")")/../libexec/docker-claude"
 source "$LIBEXEC/agent-common.sh"
 
-# Subcommand dispatch — the public interface. Agent payloads exec out to their own
-# scripts (one process, no overhead); interactive + portitor commands map onto the
+# Subcommand dispatch — the public interface. The account subcommands map onto the
 # flag parser below for back-compat.
 case "${1:-}" in
-    agent|dca) shift; exec "$LIBEXEC/dca" "$@" ;;       # `dca` kept as a synonym
-    epic|dce)  shift; exec "$LIBEXEC/dce" "$@" ;;        # `dce` kept as a synonym
-    warm)     shift; exec "$LIBEXEC/dca-warm" "$@" ;;
     personal) shift; set -- --personal "$@" ;;
     work)     shift; set -- --work "$@" ;;
     direct)   shift; set -- --direct "$@" ;;
-    portitor) shift; set -- --portitor "$@" ;;
     help)     usage; exit 0 ;;
 esac
 
@@ -122,25 +98,6 @@ while [[ $# -gt 0 ]]; do
             AGENT_MODE=true
             shift
             ;;
-        --portitor)
-            # Lifecycle of the shared portitor proxy stack (declarative, compose).
-            # `init` persists the host paths; the rest map to docker compose.
-            PORTITOR_OP=true
-            shift
-            if [[ "${1:-}" =~ ^(up|down|status|restart|init|add-repo)$ ]]; then PORTITOR_VERB="$1"; shift; fi
-            if [[ "$PORTITOR_VERB" == init ]]; then
-                while [[ $# -gt 0 ]]; do
-                    case "$1" in
-                        --repo)       PORTITOR_INIT_REPO="$2"; shift 2 ;;
-                        --config-dir) PORTITOR_INIT_CONFIG="$2"; shift 2 ;;
-                        *) break ;;
-                    esac
-                done
-            elif [[ "$PORTITOR_VERB" == add-repo ]]; then
-                # Everything after `add-repo` belongs to the helper; capture and clear.
-                PORTITOR_ADD_ARGS=("$@"); set --
-            fi
-            ;;
         --workspace)
             WORKSPACE="$2"
             shift 2
@@ -161,88 +118,6 @@ SCRIPT_DIR="$(dot_root "$(dirname "$(resolve_path "$0")")")/docker/claude"
 # of the same name with --no-cache.
 DOT_REF="$(git -C "$SCRIPT_DIR" rev-parse --abbrev-ref HEAD 2>/dev/null || echo main)"
 BUILD_ARGS=(--build-arg HOST_UID="$(id -u)" --build-arg DOT_REF="$DOT_REF")
-
-# Persisted portitor host paths, written by `--portitor init`. Sourced by the
-# lifecycle so `up`/`restart` need no env var; each line self-guards with :- so a
-# shell-set PORTITOR_REPO/PORTITOR_CONFIG_DIR still wins per invocation.
-PORTITOR_CONF_FILE="${XDG_CONFIG_HOME:-$HOME/.config}/docker-claude/portitor.env"
-
-# portitor_init: persist the portitor host paths to PORTITOR_CONF_FILE. --repo is
-# required (the repo built into the `portitor` image); --config-dir is optional
-# (the /etc/portitor host dir), defaulting to the keys-dir location. Writes a
-# self-guarding env file; does not touch docker.
-portitor_init() {
-    local repo="$PORTITOR_INIT_REPO" config="$PORTITOR_INIT_CONFIG"
-    [[ -n "$repo" ]] || { echo "docker-claude --portitor init: --repo <path> is required" >&2; return 1; }
-    repo="$(cd "$repo" 2>/dev/null && pwd)" \
-        || { echo "docker-claude --portitor init: repo path not found: $PORTITOR_INIT_REPO" >&2; return 1; }
-    [[ -f "$repo/Dockerfile" ]] || echo "docker-claude --portitor init: warning: no Dockerfile in $repo (\`--portitor up\` will fail to build the image)" >&2
-    # Default + absolutize the config dir (it may not exist yet, so don't require cd).
-    local keys_dir="${DCA_KEYS_DIR:-$HOME/.dca-keys}"
-    config="${config:-$keys_dir/portitor-config}"
-    [[ "$config" = /* ]] || config="$PWD/$config"
-    mkdir -p "$(dirname "$PORTITOR_CONF_FILE")"
-    cat >"$PORTITOR_CONF_FILE" <<EOF
-# docker-claude portitor config — written by \`docker-claude --portitor init\`.
-# Each line self-guards with :- so a shell-set env still overrides per invocation.
-export PORTITOR_REPO="\${PORTITOR_REPO:-$repo}"
-export PORTITOR_CONFIG_DIR="\${PORTITOR_CONFIG_DIR:-$config}"
-EOF
-    echo "docker-claude --portitor init: wrote $PORTITOR_CONF_FILE"
-    echo "  PORTITOR_REPO=$repo"
-    echo "  PORTITOR_CONFIG_DIR=$config"
-}
-
-# portitor_lifecycle: bring the shared proxy stack up/down via docker compose.
-# Self-contained (inline keychain read) so it runs before the container helpers.
-# up: build the portitor + egress images if missing, gather GH_TOKEN (env or
-# keychain service=portitor) + the role public keys + the config dir, then
-# `docker compose up -d`. down/status/restart map to compose. The portitor-repos
-# volume persists, so up after down needs no re-mirror.
-portitor_lifecycle() {
-    local verb="$1" compose="$SCRIPT_DIR/docker-compose.yml"
-    local keys_dir="${DCA_KEYS_DIR:-$HOME/.dca-keys}"
-    # Pick up the persisted paths (repo + config dir) before defaulting below.
-    # Precedence: shell env > persisted file > built-in default (all use :-).
-    [[ -f "$PORTITOR_CONF_FILE" ]] && source "$PORTITOR_CONF_FILE"
-    # Export the env compose interpolates — for EVERY verb, so down/status parse.
-    export PORTITOR_CONFIG_DIR="${PORTITOR_CONFIG_DIR:-$keys_dir/portitor-config}"
-    local auth="" f
-    for f in "$keys_dir"/*.pub; do [[ -f "$f" ]] && auth+="$(awk '{print $1, $2}' "$f")"$'\n'; done
-    export AGENT_AUTHORIZED_KEY="$auth"
-    if [[ -z "${GH_TOKEN:-}" ]]; then
-        local acct="${PORTITOR_KEYCHAIN_ACCOUNT:-default}"
-        if [[ "$(uname)" == "Darwin" ]]; then
-            GH_TOKEN="$(security find-generic-password -s portitor -a "$acct" -w 2>/dev/null || true)"
-        else
-            GH_TOKEN="$(secret-tool lookup service portitor account "$acct" 2>/dev/null || true)"
-        fi
-    fi
-    export GH_TOKEN="${GH_TOKEN:-}"
-    case "$verb" in
-        status) docker compose -f "$compose" ps; return $? ;;
-        down)   docker compose -f "$compose" down; return $? ;;
-    esac
-    # up / restart need the token + the images.
-    [[ -n "$GH_TOKEN" ]] || { echo "docker-claude --portitor: no GH_TOKEN (set it or store keychain service=portitor account=${PORTITOR_KEYCHAIN_ACCOUNT:-default})" >&2; return 1; }
-    local portitor_repo="${PORTITOR_REPO:-$HOME/Work/portitor}"
-    docker image inspect portitor &>/dev/null || docker build -t portitor "$portitor_repo"
-    docker image inspect dca-egress-proxy &>/dev/null || docker build -t dca-egress-proxy "$SCRIPT_DIR/egress"
-    [[ "$verb" == "restart" ]] && docker compose -f "$compose" down
-    docker compose -f "$compose" up -d
-}
-
-if [[ "$PORTITOR_OP" == true ]]; then
-    if [[ "$PORTITOR_VERB" == init ]]; then
-        portitor_init
-        exit $?
-    fi
-    if [[ "$PORTITOR_VERB" == add-repo ]]; then
-        exec "$LIBEXEC/portitor-add-repo" ${PORTITOR_ADD_ARGS[@]+"${PORTITOR_ADD_ARGS[@]}"}
-    fi
-    portitor_lifecycle "$PORTITOR_VERB"
-    exit $?
-fi
 
 build_base() {
     echo "Building $BASE_IMAGE..."
@@ -307,7 +182,7 @@ else
 fi
 
 if [[ -z "$MODE" ]]; then
-    echo "Error: specify an account mode (-p | -w | --direct), or --portitor." >&2
+    echo "Error: specify an account mode (-p | -w | --direct)." >&2
     usage >&2
     exit 1
 fi

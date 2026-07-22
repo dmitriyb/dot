@@ -1,9 +1,8 @@
-# portitor-stack.yml — generic, ONE compose per faber project. `docker-claude
-# --portitor` bakes in a single shared instance (portitor / dca-net / dca-egress,
-# one PAT); this file is the per-repo model instead: `--instance <name>` derives
-# every object name, so a box's orchestrator.yaml and its gate stack agree by
-# construction. It is never brought up by hand — `faber-stack` exports the env
-# below and runs `docker compose -p ${INSTANCE} -f portitor-stack.yml up -d`.
+# portitor-stack.yml — generic, ONE compose per faber project (the per-repo gate
+# model): `--instance <name>` derives every object name, so a box's
+# orchestrator.yaml and its gate stack agree by construction. It is never brought
+# up by hand — `faber-stack` exports the env below and runs
+# `docker compose -p ${INSTANCE} -f portitor-stack.yml up -d`.
 #
 # gate + egress each sit on the internal ${INSTANCE}-net (box-facing) AND the
 # default bridge (internet). Boxes join ${INSTANCE}-net ONLY, so their sole
@@ -16,7 +15,7 @@
 
 services:
   gate:
-    image: portitor                       # built by faber-stack from --portitor-repo if missing
+    image: portitor                       # self-built by faber-stack from ../portitor/Dockerfile if missing
     container_name: portitor-${INSTANCE}   # box reaches it as ssh://git@portitor-${INSTANCE} on the internal net
     restart: unless-stopped
     environment:

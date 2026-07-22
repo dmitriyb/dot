@@ -18,7 +18,7 @@ version: 1
 # --- substrate ---------------------------------------------------------------
 
 network:
-  name: spex-net                         # this repo's own faber internal network (NOT dot's dca-net)
+  name: spex-net                         # this repo's own faber internal network
   proxy: http://spex-egress:8888         # this repo's allow-list egress (api.anthropic.com only)
   no_proxy: [portitor-spex, localhost, 127.0.0.1]   # token rides in the box (file mode); proxy carries no secret
 

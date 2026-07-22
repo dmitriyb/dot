@@ -9,7 +9,7 @@ Enforcement scaffolding baked into the Docker Claude images. Part of the larger 
   at `/etc/claude-code/managed-settings.json` in `Dockerfile.base`. Managed settings are the
   **highest precedence** layer — the agent (running as `dev`) cannot override or edit them.
   Baseline = **honest-path anti-bypass** deny rules (block the obvious `--no-gpg-sign`,
-  `--no-verify`, `core.hooksPath` overrides). Inherited by the personal and (future) agent images.
+  `--no-verify`, `core.hooksPath` overrides). Inherited by the personal image.
 
 - **`managed-settings.work.json`** — **overlay** copied over the base file in `Dockerfile.work`
   (managed settings are a single file, so this is a **superset**, not a merge). The **dcw
@@ -22,12 +22,10 @@ Enforcement scaffolding baked into the Docker Claude images. Part of the larger 
 
 The deny rules are positional command-string globs — **defeatable** (git plumbing, libgit2,
 REST, shell obfuscation). They stop the *casual/accidental* bypass and give immediate value, but
-the **real, unbypassable enforcement is the `portitor` proxy** — now implemented and audited
-(see `portitor-audit.md`): it verifies, server-side on every push, that each commit is SSH-signed
-by an **allowed signer** whose **fingerprint maps to the right role** (implementer vs reviewer),
-applies content **role-rules**, and protects the default branch — backed by GitHub branch
-protection / `require signed commits` for hosted repos. Treat this managed-settings layer as
-honest-path fast feedback, **not** a guarantee; the guarantee lives in portitor.
+they are **not** a hard boundary. In the work container the real backstop for the commit/push
+lockdown is the **touch key**: anything that slips a deny rule still needs a physical YubiKey
+touch to produce a valid signature. Treat this managed-settings layer as honest-path fast
+feedback, **not** a guarantee.
 
 ## Precedence note
 

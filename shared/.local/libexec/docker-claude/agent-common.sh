@@ -1,9 +1,8 @@
-# agent-common.sh — shared host-side helpers for the container launchers.
+# agent-common.sh — shared host-side helpers for docker-claude.
 #
 # Sourced, not executed. Single source of truth for the cross-platform keychain
-# reads, the signing-agent bring-up, and path resolution. Sourced by docker-claude
-# (the entrypoint) and the host payloads (dca, dca-warm); lives next to them in
-# .local/libexec/docker-claude.
+# reads, the personal signing-agent bring-up, and path resolution. Sourced by
+# docker-claude (the entrypoint); lives next to it in .local/libexec/docker-claude.
 
 # Portable `readlink -f` (BSD/macOS readlink lacks -f): walk the symlink chain.
 resolve_path() {
@@ -130,67 +129,11 @@ _is_signing_key() {
 	grep -vE '^[[:space:]]*(#|$)' "$SIGNING_HASH_FILE" 2>/dev/null | grep -qix "$h"
 }
 
-# Ephemeral signing agent: sets SIGN_SOCK and loads ONLY the no-touch sign-only
-# key (identified by hash). The resident key is pulled off the YubiKey at launch
-# (PIN + 1 touch); its handle file is removed once loaded. The agent is killed
-# and its socket removed on script exit (trap), so nothing is left at rest.
-start_signing_agent() {
-	# start_signing_agent <role> — bring up an ephemeral agent holding ONLY the
-	# resident no-touch key whose application suffix == <role> (i.e.
-	# id_*_sk_rk_<role>, created with `-O application=ssh:<role>`). Exactly one key
-	# per container: never load every sign-only key, which would put multiple role
-	# identities in one agent and break role isolation. (SIGNING_HASH_FILE is used
-	# by ssh-load-keys to EXCLUDE these from the interactive agent — not for
-	# selection here; selection is by the role suffix.)
-	local want="${1:-}"
-	[[ -n "$want" ]] || {
-		echo "Error: start_signing_agent needs a role (e.g. implementer)" >&2
-		exit 1
-	}
-	SIGN_SOCK="$(mktemp -u "${TMPDIR:-/tmp}/dca-agent.XXXXXX.sock")"
-	eval "$(ssh-agent -a "$SIGN_SOCK")" >/dev/null
-	SIGN_PID="$SSH_AGENT_PID"
-	trap 'kill "$SIGN_PID" 2>/dev/null; rm -f "$SIGN_SOCK"' EXIT
-	local dir key loaded=0
-	dir="$(mktemp -d)"
-	(cd "$dir" && ssh-keygen -K -N "" >/dev/null) # download resident creds (PIN + touch)
-	shopt -s nullglob
-	for key in "$dir"/id_*_sk_rk_*; do
-		[[ "$key" == *.pub ]] && continue
-		[[ "${key##*_sk_rk_}" == "$want" ]] || continue
-		SSH_AUTH_SOCK="$SIGN_SOCK" ssh-add "$key" >/dev/null 2>&1 && loaded=1
-	done
-	rm -rf "$dir"
-	[[ "$loaded" == 1 ]] || {
-		echo "Error: no resident key for role '$want' on the security key (expected application=ssh:$want)" >&2
-		exit 1
-	}
-	if [[ "$(SSH_AUTH_SOCK="$SIGN_SOCK" ssh-add -L 2>/dev/null | grep -c .)" != 1 ]]; then
-		echo "Warning: signing agent holds more than one key." >&2
-	fi
-}
-
-# start_file_agent <keyfile> — ephemeral ssh-agent holding ONLY <keyfile> (a
-# plain no-touch file key, for the disposable sandbox). Sets SIGN_SOCK; torn down
-# on exit. Same forwarded-agent contract as start_signing_agent — the container
-# can't tell whether the key came from a file or the YubiKey; only the fingerprint
-# matters. The production path uses start_signing_agent (resident YubiKey key).
-start_file_agent() {
-	local keyfile="$1"
-	[[ -f "$keyfile" ]] || { echo "Error: role key not found: $keyfile" >&2; exit 1; }
-	SIGN_SOCK="$(mktemp -u "${TMPDIR:-/tmp}/dca-agent.XXXXXX.sock")"
-	eval "$(ssh-agent -a "$SIGN_SOCK")" >/dev/null
-	SIGN_PID="$SSH_AGENT_PID"
-	trap 'kill "$SIGN_PID" 2>/dev/null; rm -f "$SIGN_SOCK"' EXIT
-	SSH_AUTH_SOCK="$SIGN_SOCK" ssh-add "$keyfile" >/dev/null 2>&1 \
-		|| { echo "Error: failed to load role key $keyfile into agent" >&2; exit 1; }
-}
-
 # start_personal_signing_agent — interactive `docker-claude --agent` (personal) mode.
-# Loads ONLY the personal no-touch sign-only key, identified by HASH (SIGNING_HASH_FILE),
-# not by role suffix (that's start_signing_agent <role>, for dca). The resident key is
-# pulled off the YubiKey at launch (PIN + 1 touch); the handle file is removed once
-# loaded; the agent + socket are torn down on exit (trap), so nothing is left at rest.
+# Loads ONLY the personal no-touch sign-only key, identified by HASH (SIGNING_HASH_FILE).
+# The resident key is pulled off the YubiKey at launch (PIN + 1 touch); the handle file
+# is removed once loaded; the agent + socket are torn down on exit (trap), so nothing is
+# left at rest.
 start_personal_signing_agent() {
 	if [[ ! -s "$SIGNING_HASH_FILE" ]] || ! grep -qiE '^[[:space:]]*[0-9a-f]{64}[[:space:]]*$' "$SIGNING_HASH_FILE"; then
 		echo "Error: no signing-key hash configured in $SIGNING_HASH_FILE." >&2

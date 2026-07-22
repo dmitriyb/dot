@@ -15,7 +15,7 @@ hooks.yaml          gather-context / claim-bead / fetch-pr / release-bead / list
 templates.yaml      implement / review / fix / merge  (named refs into the libraries)
 workflows.yaml      bead (Gate B, auto-merge) / epic (Gate A, human-landed)
 overlay.nix         claude-code + spex + br derivations (real hashes; br x86_64 hash TODO)
-skills/             the SKILL.md trees (ported from dot's dca pipeline)
+skills/             the SKILL.md trees (implement / review / fix / merge / go-expert)
 hooks/              the hook executables (context runs before prelude; cwd = the clone)
 keys/               role + gateway keys — filled at the portitor step (see keys/README.md)
 ```

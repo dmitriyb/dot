@@ -63,78 +63,18 @@ docker-claude direct               # Work account (direct API key from keychain)
 docker-claude personal -r          # Rebuild images, then launch personal
 docker-claude personal --no-cache  # Full fresh rebuild (re-downloads everything)
 docker-claude personal --workspace ~/projects  # Custom workspace mount (personal only)
-docker-claude dca  …               # one-shot autonomous agent task (payload)
-docker-claude dce  …               # whole-epic orchestration (payload)
-docker-claude warm …               # warm the offline Go module cache (payload)
-docker-claude portitor up          # bring up the shared portitor + egress proxy
 ```
 
-Aliases: `dc` (docker-claude), `dcp` (personal), `dcw` (work), `dcwd` (direct),
-`dca` (dca), `dce` (dce), `dcwarm` (warm). The agent payloads (`dca`/`dce`/`dca-warm`)
-live off PATH in `~/.local/libexec/docker-claude/` and are reached only through
-`docker-claude` (or these aliases).
+Aliases: `dc` (docker-claude), `dcp` (personal), `dcw` (work), `dcwd` (direct).
 
-## Autonomous agent runner (dca / dce)
+## Trust model
 
-Distinct from the interactive cockpit above: `docker-claude dca` runs ONE headless,
-egress-locked agent task per container; `docker-claude dce` orchestrates a whole epic
-as a phase loop over `dca`. They build their own lean per-stack images
-(`claude-dev-agent-base` + `claude-dev-agent-<stack>`) on demand. Run
-`docker-claude dca --help`, `… dce --help`, `… warm --help` for full flags.
-Prerequisite for both: bring up the shared proxy with `docker-claude portitor up`
-(needs a GitHub PAT — keychain service `portitor`, account `default`). First-time
-setup: point docker-claude at your portitor checkout once with
-`docker-claude portitor init --repo <path-to-portitor> [--config-dir <path>]`
-— this persists the paths to `~/.config/docker-claude/portitor.env` so later `up`/`restart`
-need no `PORTITOR_REPO` env var. The go stack also needs a one-time
-`docker-claude warm --repo <name>` to populate the offline module-cache volume.
-
-### Adding a stack (rust, zig)
-
-The **image side is already generic**: `dca`/`dca-warm` derive the image name
-`claude-dev-agent-$STACK` and only need a `docker/claude/Dockerfile.agent.$STACK`
-to exist. A new stack file mirrors `Dockerfile.agent.go`:
-
-```dockerfile
-ARG AGENT_BASE=claude-dev-agent-base
-FROM ${AGENT_BASE}
-USER root
-RUN dnf install -y --setopt=install_weak_deps=False <toolchain> && dnf clean all
-USER dev
-RUN <smoke-test>          # rustc --version  /  zig version
-WORKDIR /workspace
-CMD ["/bin/bash"]
-```
-
-The **offline-cache side is NOT generic** — it's Go-only today: `dca-warm` rejects
-non-go stacks, and the cache mount in `dca` is gated on `STACK == go` (so the
-egress-locked run never reaches a module proxy). Each stack needs its own model:
-
-- **Rust:** a `CARGO_HOME` volume; warm with `cargo fetch`; run with `CARGO_NET_OFFLINE=true`.
-- **Zig:** a `ZIG_GLOBAL_CACHE_DIR` volume; warm with `zig build --fetch`.
-
-Implementing a stack = add the Dockerfile above, then generalize the `STACK == go`
-branches in `dca` (the cache mount + env) and `dca-warm` into a `case "$STACK"`.
-
-## Trust model (where the boundary actually is)
-
-Two layers, and only one of them is a security boundary:
-
-- **Managed-settings (in-container guardrails)** — `harness/managed-settings.*.json`, root-owned at
-  `/etc/claude-code/managed-settings.json`. They block the *honest-path* bypass (`--no-gpg-sign`,
-  `--no-verify`, `core.hooksPath`, and the dcw commit/push lockdown). They are **defeatable** by
-  design (git plumbing, libgit2, shell obfuscation) — fast feedback, **not** a wall. See
-  `harness/README.md`.
-- **portitor (server-side enforcement)** — the **real boundary**. The agent can only reach GitHub
-  through portitor over SSH (egress-locked to Anthropic + portitor). On every push portitor verifies,
-  server-side, that each commit is **SSH-signed by an allowed signer**, that the signer's
-  **fingerprint maps to the role** the action requires (implementer vs reviewer), that content
-  **role-rules** hold (e.g. only a reviewer may close beads), and that the **default branch** is
-  protected — then forwards the branch and opens the PR with its own GitHub token (never exposed to
-  the agent). This is audited in `portitor-audit.md`.
-
-Rule of thumb: if a control must hold against a fully-compromised agent, it has to live in portitor
-(or GitHub branch protection), not in managed-settings.
+The in-container guardrails are `harness/managed-settings.*.json`, root-owned at
+`/etc/claude-code/managed-settings.json`. They block the *honest-path* bypass (`--no-gpg-sign`,
+`--no-verify`, `core.hooksPath`, and the dcw commit/push lockdown). They are **defeatable** by
+design (git plumbing, libgit2, shell obfuscation) — fast feedback, **not** a wall — so they are
+backstopped by the touch key (anything that slips still needs a physical touch). See
+`harness/README.md`.
 
 ## Installer pinning (supply chain)
 
@@ -142,8 +82,7 @@ Every `curl … | sh` installer in the Dockerfiles is **pinned by the sha256 of 
 *script*** (not the tool version): the image downloads the script, `sha256sum -c` it against a
 committed hash, then runs it. This catches a tampered/MITM'd installer (the build fails loudly)
 **without** freezing the tool — the script still fetches the latest version. Pinned: `starship`,
-`claude`, `nix` (base); `beads_rust`, `rustup` (personal); `bun` (work); `beads_rust`, `claude`
-(agent base).
+`claude`, `nix` (base); `beads_rust`, `rustup` (personal); `bun` (work).
 
 - **Bumping a hash** (when a build fails on a legitimate upstream script change):
   `curl -fsSL <url> | sha256sum` → paste the new hash into the matching `RUN` line.

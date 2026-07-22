@@ -126,15 +126,11 @@ alias c claude
 alias ceh 'claude --effort high'
 alias cex 'claude --effort xhigh'
 alias cem 'claude --effort maximum'
-# docker-claude is the single entrypoint; dca/dce/warm are its subcommands
-# (the payload scripts live off PATH in .local/libexec/docker-claude).
+# docker-claude is the single entrypoint for the containerized Claude cockpit.
 alias dc docker-claude
 alias dcp 'docker-claude personal'
 alias dcw 'docker-claude work'
 alias dcwd 'docker-claude direct'
-alias dca 'docker-claude agent'
-alias dce 'docker-claude epic'
-alias dcwarm 'docker-claude warm'
 
 # Neovim function
 function n
