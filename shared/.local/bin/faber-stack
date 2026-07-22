@@ -1,12 +1,10 @@
 #!/usr/bin/env bash
 # faber-stack — stand up (or tear down) ONE portitor gate instance per faber repo.
 #
-# `docker-claude --portitor` bakes in a single shared gate (portitor / dca-net /
-# dca-egress, one PAT) — it cannot host one gate per repo. The faber box model is
-# one gate PER repo: its own internal network, egress proxy, gate container,
-# mirror volume, and scoped PAT, so a compromised box for repo A cannot reach
-# repo B's mirror or PAT. faber-stack makes that a one-command, idempotent,
-# parameterized operation.
+# The faber box model is one gate PER repo: its own internal network, egress
+# proxy, gate container, mirror volume, and scoped PAT, so a compromised box for
+# repo A cannot reach repo B's mirror or PAT. faber-stack makes that a
+# one-command, idempotent, parameterized operation.
 #
 # ONE knob — `--instance <name>` — derives every object name, so the box side and
 # the gate side cannot drift:
@@ -45,9 +43,10 @@ set -euo pipefail
 # via standard XDG — no repo path, no self-location, no env to set.
 DATA_HOME="${XDG_DATA_HOME:-$HOME/.local/share}"
 COMPOSE_FILE="$DATA_HOME/portitor/portitor-stack.yml"
+GATE_CTX="$DATA_HOME/portitor"      # self-contained gate image build context (Dockerfile + gate-entrypoint.sh)
 EGRESS_CTX="$DATA_HOME/egress"
-if [[ ! -f "$COMPOSE_FILE" || ! -f "$EGRESS_CTX/Dockerfile" ]]; then
-	echo "faber-stack: faber assets not found under $DATA_HOME (need portitor/portitor-stack.yml + egress/Dockerfile) — install them (stow the dot repo so ~/.local/share/{portitor,egress} exist)" >&2
+if [[ ! -f "$COMPOSE_FILE" || ! -f "$GATE_CTX/Dockerfile" || ! -f "$EGRESS_CTX/Dockerfile" ]]; then
+	echo "faber-stack: faber assets not found under $DATA_HOME (need portitor/{portitor-stack.yml,Dockerfile} + egress/Dockerfile) — install them (stow the dot repo so ~/.local/share/{portitor,egress} exist)" >&2
 	exit 1
 fi
 
@@ -58,7 +57,26 @@ FP_RE='^SHA256:[A-Za-z0-9+/]{43}$'                # portitor addrole.go's own re
 HOST_RE='^[A-Za-z0-9._-]+$'                       # egress allow-list host (no metachars)
 
 CONTAINER_SIGNERS="/etc/portitor/allowed_signers" # the in-container allowed_signers path the gate reads
-BEAD_RULE='[{"name":"bead-close-reviewer-only","path_glob":".beads/issues.jsonl","added_regex":"\"status\"\\s*:\\s*\"closed\"","allowed_roles":["reviewer","owner"]}]'
+
+# portitor v0.1.0 per-repo policy (repos.d/<repo>.json). Two policy blocks, both
+# seeded here and re-asserted on every run so a config written by an older dot
+# converges instead of tripping the gate's fail-closed guards:
+#
+#   * action_roles — DEFAULT-DENY authority for the pr verbs. An absent map denies
+#     every verb for everyone, so the workflow (implementer/reviewer fetch,
+#     reviewer review, merger merge) MUST be enumerated. Roles are the identity
+#     names portitor resolves each caller fingerprint to.
+#   * content_rules — replaces the retired role_rules key (a config still carrying
+#     role_rules refuses to gate). Reproduces the old "only the reviewer may close
+#     a bead" intent as a semantic rule over .beads/issues.jsonl (a status->closed
+#     transition), plus a structural rule denying delete/rename of .beads/** to
+#     non-reviewers. The semantic check shells the beads CLI in the GATE container
+#     (`br --no-db list --json --all --limit 0`; --all is load-bearing — br hides
+#     closed records by default, so without it a close reads as a record removal),
+#     so the portitor gate image must carry `br` on PATH.
+ACTION_ROLES='{"fetch":["implementer","reviewer","merger"],"comment":["implementer","reviewer","merger"],"review":["reviewer"],"merge":["merger"],"close":["merger"]}'
+CONTENT_RULES='{"version":1,"structural":{"rules":[{"name":"beads-file-reviewer-only","paths":[".beads/**"],"operations":["delete","rename"],"roles":{"not_in":["reviewer"]},"effect":"deny"}]},"semantic":{"files":[{"path":".beads/issues.jsonl","check":{"command":["br","--no-db","list","--json","--all","--limit","0"],"input_file":".beads/issues.jsonl","records_path":"issues","id_field":"id"},"rules":[{"name":"bead-close-reviewer-only","match":{"type":"field","field":"status","to":"closed"},"roles":{"not_in":["reviewer"]},"effect":"deny"}],"default":"allow"}]}}'
+IDENTITY_ONLY='["merger"]'   # landing-only role: add-role refuses --pub; never enters allowed_signers
 
 # Signing roles get --pub (enter allowed_signers); merger is identity-only.
 PORTITOR_ROLES=(implementer reviewer merger)
@@ -86,8 +104,8 @@ Flags:
   --config-dir <dir>    override config dir (default $XDG_CONFIG_HOME/portitor/<instance>)
   --repo <name>         portitor repo id / repos.d basename (default: repo half of --slug)
   --map <p>=<a>         map portitor role <p> to a differently-named stdin role <a> (repeatable)
-  --portitor-repo <dir> source checkout to build the portitor image from if missing
-  --portitor-bin <path> the REAL portitor binary for host-side add-role (NOT the PATH ssh wrapper)
+  --portitor-bin <path> the verified-release portitor binary for host-side add-role; default:
+                        the first real `portitor` on PATH (install the signed v0.1.0 release)
   -h, --help            this help
 
 Roles for up/restart are read as `role-keys --json` on stdin. Exit: 0 ok, 1 runtime, 2 usage.
@@ -103,7 +121,7 @@ case "$VERB" in up|down|status|restart) ;; *) die "unknown verb: $VERB (want up|
 
 INSTANCE="" SLUG="" PAT="" PROJECT="" CONFIG_DIR="" REPO=""
 ALLOW=() MAP_ARGS=()
-PORTITOR_REPO_ARG="" PORTITOR_BIN_ARG=""
+PORTITOR_BIN_ARG=""
 
 need_val() { [[ $# -ge 2 ]] || die "$1 needs a value" 2; }
 while [[ $# -gt 0 ]]; do
@@ -116,7 +134,6 @@ while [[ $# -gt 0 ]]; do
 		--repo)         need_val "$@"; REPO="$2"; shift 2 ;;
 		--allow)        need_val "$@"; ALLOW+=("$2"); shift 2 ;;
 		--map)          need_val "$@"; MAP_ARGS+=("$2"); shift 2 ;;
-		--portitor-repo) need_val "$@"; PORTITOR_REPO_ARG="$2"; shift 2 ;;
 		--portitor-bin)  need_val "$@"; PORTITOR_BIN_ARG="$2"; shift 2 ;;
 		-h|--help)      usage 0 ;;
 		*)              die "unknown flag: $1 (see --help)" 2 ;;
@@ -197,25 +214,29 @@ if (( BASH_REMATCH[1] < 2 || (BASH_REMATCH[1] == 2 && BASH_REMATCH[2] < 20) )); 
 	die "docker compose $COMPOSE_VER is too old — the gh_token secret is environment-sourced, which requires Docker Compose >= 2.20; upgrade the compose plugin" 1
 fi
 
-# ---- resolve the REAL portitor binary (never the PATH ssh wrapper) ---------
-# No hardcoded default, no magic env: the portitor checkout is explicit via
-# --portitor-repo (or a prebuilt binary via --portitor-bin). Empty until given.
-PORTITOR_REPO="$PORTITOR_REPO_ARG"
-PORTITOR_BIN="${PORTITOR_BIN_ARG:-${PORTITOR_REPO:+$PORTITOR_REPO/portitor}}"
+# ---- resolve the REAL portitor binary (the VERIFIED RELEASE, never a build) --
+# Host-side add-role needs the real portitor binary. We CONSUME the signed v0.1.0
+# release — install it once with portitor's own signed install.sh (it verifies the
+# archive with `ssh-keygen -Y verify` against the shared release key) so `portitor`
+# lands on PATH at $INSTALL_DIR (default /usr/local/bin). faber-stack does NOT
+# build portitor from source. Resolution: --portitor-bin <path> > the first REAL
+# `portitor` on PATH (dot's `#!` SSH wrapper is skipped) > error.
+PORTITOR_BIN="$PORTITOR_BIN_ARG"
 resolve_portitor_bin() {
-	[[ -n "$PORTITOR_BIN" ]] || die "no portitor binary given — pass --portitor-repo <dir> (its checkout) or --portitor-bin <path> (a prebuilt binary)" 2
-	if [[ ! -x "$PORTITOR_BIN" ]]; then
-		# Build it once from the source checkout, if we can.
-		[[ -n "$PORTITOR_REPO" && -d "$PORTITOR_REPO" ]] || die "portitor binary not found at $PORTITOR_BIN and no --portitor-repo checkout to build it — pass --portitor-repo <dir> or a prebuilt --portitor-bin" 1
-		command -v go >/dev/null 2>&1 || die "portitor binary not found ($PORTITOR_BIN) and 'go' is not on PATH to build it — pass --portitor-bin" 1
-		echo "faber-stack: building portitor from $PORTITOR_REPO ..." >&2
-		( cd "$PORTITOR_REPO" && go build -o "$PORTITOR_BIN" ./cmd/portitor ) \
-			|| die "failed to build portitor from $PORTITOR_REPO — pass a prebuilt --portitor-bin" 1
+	if [[ -z "$PORTITOR_BIN" ]]; then
+		local c
+		while IFS= read -r c; do
+			[[ -x "$c" ]] || continue
+			# Skip dot's SSH-forwarding wrapper (a `#!` script that `exec ssh`es to
+			# the gate); the real binary is an ELF/mach-o.
+			[[ "$(head -c2 "$c" 2>/dev/null)" == '#!' ]] && continue
+			PORTITOR_BIN="$c"; break
+		done < <(type -aP portitor 2>/dev/null)
 	fi
-	# Guard: reject dot's SSH-forwarding wrapper (shared/.local/bin/portitor is a
-	# `#!` script that `exec ssh`es to the gate). The real binary is an ELF/mach-o.
+	[[ -n "$PORTITOR_BIN" ]] || die "no real portitor binary found — install the verified v0.1.0 release (run portitor's signed install.sh, which does the ssh-keygen -Y verify) so 'portitor' is on PATH, or pass --portitor-bin <path>. faber-stack does not build portitor from source." 1
+	[[ -x "$PORTITOR_BIN" ]] || die "portitor binary not executable: $PORTITOR_BIN" 1
 	if [[ "$(head -c2 "$PORTITOR_BIN" 2>/dev/null)" == '#!' ]]; then
-		die "--portitor-bin ($PORTITOR_BIN) is a shell script, not the real portitor binary (looks like the SSH wrapper) — pass the built binary from --portitor-repo" 1
+		die "--portitor-bin ($PORTITOR_BIN) is a shell script, not the real portitor binary (looks like the SSH wrapper) — point it at the installed release binary" 1
 	fi
 }
 resolve_portitor_bin
@@ -296,22 +317,34 @@ mkdir -p "$REPOS_D"
 CFG="$REPOS_D/$REPO.json"
 if [[ ! -f "$CFG" ]]; then
 	mktmp tmp "$REPOS_D/.$REPO.json"
-	jq -n --arg db main --arg as "$SIGNERS_HOST" --arg ur upstream --arg us "$SLUG" \
-	      --argjson up true --argjson roles '{}' --argjson rules "$BEAD_RULE" \
-		'{default_branch:$db, allowed_signers:$as, upstream_remote:$ur, upstream_slug:$us,
-		  require_up_to_date_with_default:$up, roles:$roles, role_rules:$rules}' >"$tmp" \
+	jq -n --argjson fv 1 --arg db main --arg as "$SIGNERS_HOST" --arg ur upstream --arg us "$SLUG" \
+	      --argjson up true --argjson roles '{}' \
+		'{format_version:$fv, default_branch:$db, allowed_signers:$as, upstream_remote:$ur,
+		  upstream_slug:$us, require_up_to_date_with_default:$up, roles:$roles}' >"$tmp" \
 		|| die "failed to render seed config for $REPO" 1
 	mv "$tmp" "$CFG"
 else
 	# Re-run: reconcile the flag-derived upstream fields to the CURRENT flags (a
 	# changed --slug otherwise leaves a stale upstream_slug while the in-container
 	# add-repo mirrors from the new slug — silent divergence). Preserve the roles
-	# map, role_rules, and everything else a prior run filled.
+	# map and everything else a prior run filled.
 	mktmp rtmp "$REPOS_D/.$REPO.json"
 	jq --arg db main --arg us "$SLUG" '.default_branch=$db | .upstream_slug=$us' "$CFG" >"$rtmp" \
 		|| die "failed to reconcile upstream fields for $REPO" 1
 	mv "$rtmp" "$CFG"
 fi
+
+# Always (re)assert the v0.1.0 policy fields and DROP any retired role_rules — so
+# a repos.d config left by an older dot converges here instead of failing the
+# gate's format_version guard or its "config carries the retired role_rules key"
+# refusal. Preserves the roles map + allowed_signers that add-role fills below.
+mktmp ptmp "$REPOS_D/.$REPO.json"
+jq --argjson fv 1 --argjson ident "$IDENTITY_ONLY" --argjson actions "$ACTION_ROLES" \
+   --argjson rules "$CONTENT_RULES" \
+	'del(.role_rules) | .format_version=$fv | .identity_only_roles=$ident
+	 | .action_roles=$actions | .content_rules=$rules' "$CFG" >"$ptmp" \
+	|| die "failed to assert v0.1.0 policy fields for $REPO" 1
+mv "$ptmp" "$CFG"
 touch "$SIGNERS_HOST"
 
 # ---- swap allowed_signers field to the HOST path around the add-role loop ---
@@ -363,8 +396,15 @@ mv "$etmp" "$EGRESS_FILTER"
 export INSTANCE CONFIG_DIR GH_TOKEN AGENT_AUTHORIZED_KEY
 
 # ---- (7) build images if missing -------------------------------------------
-docker image inspect portitor        >/dev/null 2>&1 || docker build -t portitor "$PORTITOR_REPO" \
-	|| die "failed to build the portitor image from $PORTITOR_REPO" 1
+# The gate image is SELF-CONTAINED (built from the dot context $GATE_CTX): its
+# Dockerfile fetches + SSHSIG-verifies the portitor v0.1.0 release binary and adds
+# `br` — no portitor checkout. portitor publishes no container image, but this is
+# the only piece we assemble locally, and it still runs the verified release
+# binary. Cached after the first build, so it is built ONLY when missing.
+PORTITOR_RELEASE_TAG="v0.1.0"
+docker image inspect portitor >/dev/null 2>&1 \
+	|| docker build -t portitor --build-arg "PORTITOR_VERSION=$PORTITOR_RELEASE_TAG" "$GATE_CTX" \
+	|| die "failed to build the portitor gate image from $GATE_CTX (needs network to fetch + verify the $PORTITOR_RELEASE_TAG release)" 1
 docker image inspect egress-proxy >/dev/null 2>&1 || docker build -t egress-proxy "$EGRESS_CTX" \
 	|| die "failed to build the egress-proxy image from $EGRESS_CTX" 1
 

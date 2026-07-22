@@ -7,9 +7,10 @@ throughout. Each step is an explanation block followed by a separate command
 block (**fish** syntax). Run on your host (faber-on-host). `< … >` marks a value
 you supply.
 
-The whole gate stack is one command — `faber-stack up` — which supersedes the old
-manual path (`run.sh` / `dca-sandbox` / `docker-claude --portitor` / hand
-`docker network create` / `docker exec … add-repo`/`add-role` / `ssh-keyscan`).
+The whole gate stack is one command — `faber-stack up` — which folds the
+otherwise-manual bring-up (create the internal network, run the gate + egress,
+`docker exec … add-repo`/`add-role`, `ssh-keyscan` the host key) into a single
+idempotent step.
 
 ## Per-instance isolation
 
@@ -25,10 +26,12 @@ repos. One knob — `--instance <name>` — derives every object name, so the bo
 
 ## Parameters (fill once; the blocks below reference them)
 
-The spexmachina values are shown as the example. `FABER`/`PORTITOR`/`DOT` are
-your checkouts; `PROJECT` is the installed project dir (`~/.config/faber/<name>`,
-stowed from dot — its `keys/` receives the host-key pin); `PAT` is the keychain
-service holding this repo's scoped GitHub PAT.
+The spexmachina values are shown as the example. `faber`/`faber-box`/`portitor`
+are installed as **verified release binaries** (§1) and the gate image is built
+by faber-stack from dot's own context — so **no source checkout is needed at
+all**. `DOT` is your dot checkout; `PROJECT` is the installed project dir
+(`~/.config/faber/<name>`, stowed from dot — its `keys/` receives the host-key
+pin); `PAT` is the keychain service holding this repo's scoped GitHub PAT.
 
 ```fish
 set -x INSTANCE spex
@@ -36,51 +39,58 @@ set -x SLUG     dmitriyb/spexmachina
 set -x PAT      portitor-spex
 set -x PROJECT  ~/.config/faber/spexmachina
 set -x DOT      ~/dot
-set -x FABER    ~/src/faber
-set -x PORTITOR ~/src/portitor
 ```
 
 ---
 
 ## 0. Prerequisites (verify, don't redo)
 
-docker + nix are on the host; the Anthropic setup-token is in the keychain; the
-`faber`/`faber-box` binaries are built; the `faber` + `portitor` checkouts are
-present. The faber assets install from dot via **stow**: `faber-stack`/`role-keys`
+docker + nix are on the host; the Anthropic setup-token is in the keychain;
+`faber`/`faber-box`/`portitor` are installed from their verified v0.1.0 releases
+(§1). The faber assets install from dot via **stow**: `faber-stack`/`role-keys`
 → `~/.local/bin`, the gate compose + egress build-context → `~/.local/share/{portitor,egress}`,
 and this project → `~/.config/faber/spexmachina`. Re-stow after `git -C $DOT pull`.
 
 ```fish
 security find-generic-password -s anthropic -a personal -w >/dev/null; and echo "anthropic token OK"
 docker info >/dev/null; and nix --version
-command -v faber-stack; and command -v role-keys
+command -v faber-stack; and command -v role-keys; and command -v faber; and command -v portitor
 ```
 
 ---
 
-## 1. Build the binaries
+## 1. Install the release binaries (verified)
 
-Pull the three repos, then build the two faber binaries: `faber` runs on the
-host, `faber-box` runs inside the linux container (cross-compiled). Check out the
-portitor branch that has `add-role`, then build the **real portitor host binary**.
+Install `faber`, `faber-box`, and `portitor` from their **v0.1.0 releases** —
+signed archives, each verified with `ssh-keygen -Y verify` against the shared
+release-signing key before anything runs. Do **not** build them from source. Each
+tool's own `install.sh` performs the archive verification; you first verify
+`install.sh` *itself* with the same key (its `install.sh.sig`), exactly as each
+tool's README documents. faber's installer places **both** `faber` and
+`faber-box` side by side in `INSTALL_DIR` (default `/usr/local/bin`) so faber's
+"`faber-box` next to me" resolution works; portitor's installs `portitor`.
 
 ```fish
-git -C "$FABER" pull
-git -C "$DOT" pull
-git -C "$PORTITOR" fetch origin; and git -C "$PORTITOR" checkout feat/add-role; and git -C "$PORTITOR" pull
-cd "$FABER"
-go build -o bin/faber ./cmd/faber
-env CGO_ENABLED=0 GOOS=linux go build -o bin/faber-box ./cmd/faber-box
-go -C "$PORTITOR" build -o portitor ./cmd/portitor
+# The shared release-signing key (identical across portitor / faber / spex).
+echo 'dvbozhko@gmail.com ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIIhmCWVDP/Tcm3CqXNjTQTChbKxr223xMob9zc56Uuny' >/tmp/release-signers
+
+for tool in portitor faber
+    set -l base https://github.com/dmitriyb/$tool/releases/download/v0.1.0
+    curl -fsSLO $base/install.sh; and curl -fsSLO $base/install.sh.sig
+    ssh-keygen -Y verify -f /tmp/release-signers -I dvbozhko@gmail.com -n file \
+        -s install.sh.sig <install.sh
+    and env VERSION=v0.1.0 sh install.sh   # install.sh then verifies the archive(s) itself
+    rm -f install.sh install.sh.sig
+end
+git -C "$DOT" pull   # re-stow if it advanced (see §0)
 ```
 
-That `$PORTITOR/portitor` binary is what `faber-stack` runs host-side for
-`add-role`; you point faber-stack at it with `--portitor-repo $PORTITOR` in step 6
-(it derives `$PORTITOR/portitor`). It is
-**distinct from** `shared/.local/bin/portitor` on your `PATH`: that one is the
-agent's SSH-forwarding client wrapper (`exec ssh git@… portitor …`), which cannot
-build config on the host. `faber-stack` refuses the wrapper and only accepts the
-real binary.
+`faber-stack` runs the **installed** `portitor` binary host-side for `add-role`
+(it picks the first real `portitor` on `PATH`); no `--portitor-bin` is needed
+once the release is installed. The gate container image is built by faber-stack
+from dot's own context (`~/.local/share/portitor/Dockerfile`), which fetches +
+verifies the same release binary and bakes in `br` (the beads-close check runs it
+inside the gate) — so no portitor checkout is needed at all.
 
 ---
 
@@ -92,7 +102,6 @@ resolves inside the built image (replace the tag with the one `faber build`
 printed).
 
 ```fish
-set -x PATH "$FABER/bin" $PATH
 cd "$PROJECT"
 faber validate --config orchestrator.yaml
 faber build    --config orchestrator.yaml
@@ -182,14 +191,16 @@ filter lines.
 
 ```fish
 role-keys --json \
-    | faber-stack up --instance $INSTANCE --slug $SLUG --pat $PAT --project $PROJECT --portitor-repo $PORTITOR
+    | faber-stack up --instance $INSTANCE --slug $SLUG --pat $PAT --project $PROJECT
 ```
 
-`--portitor-repo $PORTITOR` points faber-stack at your portitor checkout (for the
-host-side `add-role` binary and the gate image build). Add `--allow <host>`
-(repeatable) to widen the egress allow-list beyond the default
-`api.anthropic.com`; add `--map <portitor-role>=<name>` if your registry names a
-role differently (e.g. `--map implementer=implementer_work`).
+On the first `up`, faber-stack builds the gate image from dot's context
+(`~/.local/share/portitor/`): it fetches + SSHSIG-verifies the portitor v0.1.0
+release binary and bakes in `br` for the beads-close check (needs network for
+that one build; cached afterwards). Host-side `add-role` uses the **installed**
+release `portitor` binary. Add `--allow <host>` (repeatable) to widen the egress
+allow-list beyond the default `api.anthropic.com`; add `--map <portitor-role>=<name>`
+if your registry names a role differently (e.g. `--map implementer=implementer_work`).
 
 Verify the printed substrate matches `orchestrator.yaml` — `network.name`,
 `network.proxy`, `remote.url`, `no_proxy`, and that
@@ -234,7 +245,7 @@ the `$INSTANCE-repos` mirror volume, so a later `up` is instant.
 faber-stack status --instance $INSTANCE
 faber-stack down   --instance $INSTANCE
 role-keys --json \
-    | faber-stack restart --instance $INSTANCE --slug $SLUG --pat $PAT --project $PROJECT --portitor-repo $PORTITOR
+    | faber-stack restart --instance $INSTANCE --slug $SLUG --pat $PAT --project $PROJECT
 ```
 
 ---
@@ -242,7 +253,7 @@ role-keys --json \
 ## What each step unlocks
 
 ```text
-1–2  binaries + box image                → the FULL toolset, portitor client included
+1–2  release binaries + box image         → the FULL toolset, portitor client included
 3–5  role keys + registry + scoped PAT   → the inputs faber-stack consumes
 6    faber-stack up                      → gate + egress + net + mirror + host-key, one command
 7    faber run                           → full Gate B (implement → review loop → merge)
