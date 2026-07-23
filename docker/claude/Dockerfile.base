@@ -25,12 +25,10 @@ RUN set -e; \
     mkdir -p /etc/ssh; \
     echo "$SCANNED" > /etc/ssh/ssh_known_hosts
 
-# Install starship (not in Fedora repos). Pin the installer SCRIPT by sha256 (supply-
-# chain: a tampered installer fails the build) — the tool version it fetches still floats.
-# Bump the hash when upstream legitimately changes the script (see docker/claude/README).
-RUN curl -fsSL https://starship.rs/install.sh -o /tmp/i.sh \
-    && echo "52c64f14a558034ebeb1907ea9364e802b32474576fd3e68265f73bc33cc8fbb  /tmp/i.sh" | sha256sum -c - \
-    && sh /tmp/i.sh -y && rm /tmp/i.sh
+# Install starship (not in Fedora repos). Not script-pinned — TLS is the trust
+# boundary; a committed script-hash pin is TOFU theater with re-hash churn (see
+# README "Installer trust"). The tool version it fetches floats to latest.
+RUN curl -fsSL https://starship.rs/install.sh | sh -s -- -y
 
 # Install lazygit (not in Fedora repos)
 RUN dnf copr enable -y atim/lazygit && dnf install -y lazygit && dnf clean all
@@ -45,10 +43,11 @@ RUN useradd -m -s /usr/bin/fish -u $HOST_UID dev
 USER dev
 WORKDIR /home/dev
 
-# Install Claude Code (native binary into ~/.local/bin). Installer script pinned.
-RUN curl -fsSL https://claude.ai/install.sh -o /tmp/i.sh \
-    && echo "cde4f1702d3b1695f92b73d26888364e17bca476e17f0fd676484c951d36c125  /tmp/i.sh" | sha256sum -c - \
-    && bash /tmp/i.sh && rm /tmp/i.sh
+# Install Claude Code (native binary into ~/.local/bin), always latest. Not
+# script-pinned — TLS is the trust boundary, and the installer additionally verifies
+# the downloaded binary against Anthropic's manifest checksum (see README
+# "Installer trust").
+RUN curl -fsSL https://claude.ai/install.sh | bash
 
 # Clone and stow dotfiles. DOT_PROFILE=headless → setup.sh stows shared + headless
 # and skips host-only ssh-agent activation (no init system here; the agent is
@@ -69,9 +68,7 @@ RUN git clone --branch "$DOT_REF" --single-branch https://github.com/dmitriyb/do
 USER root
 RUN mkdir -m 0755 /nix && chown dev /nix
 USER dev
-RUN curl -fsSL https://nixos.org/nix/install -o /tmp/i.sh \
-    && echo "e9d447ce3d2ff62d7ff9cb6ef401de6fa8acb148839dd00f7271945d7b638b14  /tmp/i.sh" | sha256sum -c - \
-    && sh /tmp/i.sh --no-daemon && rm /tmp/i.sh \
+RUN curl -fsSL https://nixos.org/nix/install | sh -s -- --no-daemon \
     && mkdir -p /home/dev/.config/nix \
     && echo 'experimental-features = nix-command flakes' > /home/dev/.config/nix/nix.conf
 

@@ -76,22 +76,54 @@ design (git plumbing, libgit2, shell obfuscation) — fast feedback, **not** a w
 backstopped by the touch key (anything that slips still needs a physical touch). See
 `harness/README.md`.
 
-## Installer pinning (supply chain)
+## Installer trust (supply chain)
 
-Every `curl … | sh` installer in the Dockerfiles is **pinned by the sha256 of the installer
-*script*** (not the tool version): the image downloads the script, `sha256sum -c` it against a
-committed hash, then runs it. This catches a tampered/MITM'd installer (the build fails loudly)
-**without** freezing the tool — the script still fetches the latest version. Pinned: `starship`,
-`claude`, `nix` (base); `beads_rust`, `rustup` (personal); `bun` (work).
+The `curl … | sh` installers in these Dockerfiles (`starship`, `nix`, `claude` in base;
+`beads_rust`, `rustup` in personal; `bun` in work) are **not script-pinned**. TLS is the trust
+boundary, and that is stated honestly rather than dressed up.
 
-- **Bumping a hash** (when a build fails on a legitimate upstream script change):
-  `curl -fsSL <url> | sha256sum` → paste the new hash into the matching `RUN` line.
-- **Automating it:** a scheduled CI/renovate job can re-hash each installer URL and open a PR with
-  the new values — so pinning never rots (the optional 4th P4 measure).
-- **Artifact integrity:** the `zig` tarball is verified against the upstream `.shasum` from
-  `ziglang.org/download/index.json`; `cargo install --git` uses `--locked` (upstream `Cargo.lock`)
-  for reproducible deps. `go install …@latest` floats but is covered by the Go module checksum DB
-  (sumdb) — interactive-only, low risk.
+**Why not pin the installer script?** A committed `sha256sum -c` of the installer script is
+*trust-on-first-use (TOFU)*, and its entire root of trust is a single unverified `curl`: you fetch
+the script, hash whatever you received, and commit that. There is no independent, out-of-band
+source to check the pin against — if you were compromised at pin time, you pin the attacker's hash
+and verify against it forever. So the pin proves "same bytes as when I first fetched," **not**
+"genuine bytes from upstream." The real in-transit protection is TLS (a network MITM can't
+substitute the script without a valid cert for the host); the pin only adds *change-detection*,
+and only has value when the artifact is **stable** — a surprise hash change is then investigable.
+For these installers (`claude` changes ~weekly; the others float too) legitimate churn is constant,
+so the only response to a changed hash is "re-hash and move on" — which collapses the detection
+value to zero while imposing ongoing maintenance. That is theater, and it is removed.
+
+**What genuine integrity would require** (none of which a script-hash pin provides): a detached
+**signature verified against a pre-distributed public key**, a **signed OS-package repo** (rpm/apt
+gpg — the distro key is the out-of-band root, which is why `dnf install …` is categorically
+stronger), or **transparency-log attestation** (Sigstore/cosign, SLSA).
+
+**Per-tool audit (2026)** — of the installers here, only one clears that bar cheaply:
+- **`zig` — signature-verified (implemented).** The tarball is checked with `minisign` against the
+  Zig Software Foundation's long-lived public key, baked into `Dockerfile.personal` (reviewed once
+  in git). This survives an origin/CDN compromise, unlike a same-origin checksum; the build also
+  asserts the signed trusted-comment names the exact tarball (downgrade guard). This replaced the
+  earlier `index.json` shasum, which was same-origin (weak).
+- **`bun` — PGP signature available, not wired in.** Oven signs `SHASUMS256.txt.asc` with a key
+  published on keyservers and pinned in Bun's own repo. Genuinely verifiable, but manual (needs
+  `gpg` + keyserver/baked key in the work image) and low-value for an MCP-only tool. Left on TLS.
+- **`claude`, `nix`, `rustup`, `starship` — TLS is the ceiling.** No independently-anchored
+  signature exists: Claude Code ships only a same-origin manifest checksum (and no npm provenance);
+  Nix *dropped* GPG signing in ~2.12 (2022); rustup removed signature verification in 1.26.0 (TUF
+  replacement unshipped); starship publishes only same-origin `.sha256`. Nothing to add today.
+
+If any of the four start publishing a verifiable signature against a stable key, that is the lever
+to add — not more hashing.
+
+**What is kept** (different category — no re-hash churn, not TOFU theater):
+- **`claude`** additionally verifies its downloaded *binary* against Anthropic's manifest checksum
+  inside `install.sh`. (Same TLS trust domain, so it catches a corrupted download, not an origin
+  compromise — but it is free and automatic.)
+- **`zig`** tarball is checked against the `.shasum` fetched *dynamically* from
+  `ziglang.org/download/index.json` at build time — no committed hash to maintain.
+- **`cargo install --git`** uses `--locked` (upstream `Cargo.lock`) for dependency reproducibility;
+  `go install …@latest` floats but is covered by the Go module checksum DB (sumdb).
 
 ## Architecture
 
