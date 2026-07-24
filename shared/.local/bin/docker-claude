@@ -10,7 +10,7 @@ NO_CACHE=false
 AGENT_MODE=false
 
 usage() {
-    cat <<'EOF'
+  cat <<'EOF'
 docker-claude — single entrypoint for the containerized Claude cockpit.
 
   Isolated personal/work Claude Code containers with your dotfiles, SSH agent
@@ -44,15 +44,15 @@ EOF
 # Resolve our own real path (needed before the shared lib is sourced), then load
 # the shared lib (keychain + signing + dot_root) from the sibling libexec dir.
 resolve_path() {
-    local p="$1" target
-    while [ -L "$p" ]; do
-        target="$(readlink "$p")"
-        case "$target" in
-            /*) p="$target" ;;
-            *)  p="$(cd "$(dirname "$p")" && pwd)/$target" ;;
-        esac
-    done
-    printf '%s\n' "$p"
+  local p="$1" target
+  while [ -L "$p" ]; do
+    target="$(readlink "$p")"
+    case "$target" in
+    /*) p="$target" ;;
+    *) p="$(cd "$(dirname "$p")" && pwd)/$target" ;;
+    esac
+  done
+  printf '%s\n' "$p"
 }
 LIBEXEC="$(dirname "$(resolve_path "$0")")/../libexec/docker-claude"
 source "$LIBEXEC/agent-common.sh"
@@ -60,54 +60,66 @@ source "$LIBEXEC/agent-common.sh"
 # Subcommand dispatch — the public interface. The account subcommands map onto the
 # flag parser below for back-compat.
 case "${1:-}" in
-    personal) shift; set -- --personal "$@" ;;
-    work)     shift; set -- --work "$@" ;;
-    direct)   shift; set -- --direct "$@" ;;
-    help)     usage; exit 0 ;;
+personal)
+  shift
+  set -- --personal "$@"
+  ;;
+work)
+  shift
+  set -- --work "$@"
+  ;;
+direct)
+  shift
+  set -- --direct "$@"
+  ;;
+help)
+  usage
+  exit 0
+  ;;
 esac
 
 # Parse flags
 while [[ $# -gt 0 ]]; do
-    case "$1" in
-        -h|--help)
-            usage
-            exit 0
-            ;;
-        -p|--personal)
-            MODE="personal"
-            shift
-            ;;
-        -w|--work)
-            MODE="work"
-            shift
-            ;;
-        --direct)
-            MODE="direct"
-            shift
-            ;;
-        -r|--rebuild)
-            REBUILD=true
-            shift
-            ;;
-        --no-cache)
-            NO_CACHE=true
-            REBUILD=true
-            shift
-            ;;
-        -a|--agent)
-            AGENT_MODE=true
-            shift
-            ;;
-        --workspace)
-            WORKSPACE="$2"
-            shift 2
-            ;;
-        *)
-            echo "Unknown flag: $1" >&2
-            usage >&2
-            exit 1
-            ;;
-    esac
+  case "$1" in
+  -h | --help)
+    usage
+    exit 0
+    ;;
+  -p | --personal)
+    MODE="personal"
+    shift
+    ;;
+  -w | --work)
+    MODE="work"
+    shift
+    ;;
+  --direct)
+    MODE="direct"
+    shift
+    ;;
+  -r | --rebuild)
+    REBUILD=true
+    shift
+    ;;
+  --no-cache)
+    NO_CACHE=true
+    REBUILD=true
+    shift
+    ;;
+  -a | --agent)
+    AGENT_MODE=true
+    shift
+    ;;
+  --workspace)
+    WORKSPACE="$2"
+    shift 2
+    ;;
+  *)
+    echo "Unknown flag: $1" >&2
+    usage >&2
+    exit 1
+    ;;
+  esac
 done
 
 # Build images if missing or rebuild requested. (resolve_path + agent-common.sh are
@@ -120,93 +132,92 @@ DOT_REF="$(git -C "$SCRIPT_DIR" rev-parse --abbrev-ref HEAD 2>/dev/null || echo 
 BUILD_ARGS=(--build-arg HOST_UID="$(id -u)" --build-arg DOT_REF="$DOT_REF")
 
 build_base() {
-    echo "Building $BASE_IMAGE..."
-    if [[ "$NO_CACHE" == true ]]; then
-        docker build --no-cache "${BUILD_ARGS[@]}" -f "$SCRIPT_DIR/Dockerfile.base" -t "$BASE_IMAGE" "$SCRIPT_DIR"
-    else
-        docker build "${BUILD_ARGS[@]}" -f "$SCRIPT_DIR/Dockerfile.base" -t "$BASE_IMAGE" "$SCRIPT_DIR"
-    fi
+  echo "Building $BASE_IMAGE..."
+  if [[ "$NO_CACHE" == true ]]; then
+    docker build --no-cache "${BUILD_ARGS[@]}" -f "$SCRIPT_DIR/Dockerfile.base" -t "$BASE_IMAGE" "$SCRIPT_DIR"
+  else
+    docker build "${BUILD_ARGS[@]}" -f "$SCRIPT_DIR/Dockerfile.base" -t "$BASE_IMAGE" "$SCRIPT_DIR"
+  fi
 }
 
 # Echo the host's dedicated Remote-Development pubkey, generating the keypair once
 # if missing. Shared by work AND personal — one host identity opens both containers
 # (isolation is per-container/per-port, not per-key).
 docker_claude_pubkey() {
-    local key_path="$HOME/.ssh/docker_claude_id_ed25519"
-    if [[ ! -f "$key_path" ]]; then
-        echo "Generating SSH key for Docker Claude Remote Development access..." >&2
-        ssh-keygen -t ed25519 -f "$key_path" -N "" -C "docker-claude" >&2
-    fi
-    cat "$key_path.pub"
+  local key_path="$HOME/.ssh/docker_claude_id_ed25519"
+  if [[ ! -f "$key_path" ]]; then
+    echo "Generating SSH key for Docker Claude Remote Development access..." >&2
+    ssh-keygen -t ed25519 -f "$key_path" -N "" -C "docker-claude" >&2
+  fi
+  cat "$key_path.pub"
 }
 
 build_personal() {
-    local pubkey
-    pubkey=$(docker_claude_pubkey)
+  local pubkey
+  pubkey=$(docker_claude_pubkey)
 
-    echo "Building $PERSONAL_IMAGE..."
-    docker build \
-        --build-arg "DOCKER_CLAUDE_PUBKEY=$pubkey" \
-        -f "$SCRIPT_DIR/Dockerfile.personal" -t "$PERSONAL_IMAGE" "$SCRIPT_DIR"
+  echo "Building $PERSONAL_IMAGE..."
+  docker build \
+    --build-arg "DOCKER_CLAUDE_PUBKEY=$pubkey" \
+    -f "$SCRIPT_DIR/Dockerfile.personal" -t "$PERSONAL_IMAGE" "$SCRIPT_DIR"
 }
 
 build_work() {
-    local pubkey
-    pubkey=$(docker_claude_pubkey)
+  local pubkey
+  pubkey=$(docker_claude_pubkey)
 
-    echo "Building $WORK_IMAGE..."
-    docker build \
-        --build-arg "DOCKER_CLAUDE_PUBKEY=$pubkey" \
-        -f "$SCRIPT_DIR/Dockerfile.work" -t "$WORK_IMAGE" "$SCRIPT_DIR"
+  echo "Building $WORK_IMAGE..."
+  docker build \
+    --build-arg "DOCKER_CLAUDE_PUBKEY=$pubkey" \
+    -f "$SCRIPT_DIR/Dockerfile.work" -t "$WORK_IMAGE" "$SCRIPT_DIR"
 }
 
 if [[ "$REBUILD" == true ]]; then
-    build_base
-    if [[ -z "$MODE" ]]; then
-        build_personal
-        build_work
-        exit 0
-    fi
-    [[ "$MODE" == "personal" ]] && build_personal
-    [[ "$MODE" == "work" || "$MODE" == "direct" ]] && build_work
+  build_base
+  if [[ -z "$MODE" ]]; then
+    build_personal
+    build_work
+    exit 0
+  fi
+  [[ "$MODE" == "personal" ]] && build_personal
+  [[ "$MODE" == "work" || "$MODE" == "direct" ]] && build_work
 else
-    if ! docker image inspect "$BASE_IMAGE" &>/dev/null; then
-        build_base
-    fi
-    if [[ "$MODE" == "personal" ]] && ! docker image inspect "$PERSONAL_IMAGE" &>/dev/null; then
-        build_personal
-    fi
-    if [[ "$MODE" == "work" || "$MODE" == "direct" ]] && ! docker image inspect "$WORK_IMAGE" &>/dev/null; then
-        build_work
-    fi
+  if ! docker image inspect "$BASE_IMAGE" &>/dev/null; then
+    build_base
+  fi
+  if [[ "$MODE" == "personal" ]] && ! docker image inspect "$PERSONAL_IMAGE" &>/dev/null; then
+    build_personal
+  fi
+  if [[ "$MODE" == "work" || "$MODE" == "direct" ]] && ! docker image inspect "$WORK_IMAGE" &>/dev/null; then
+    build_work
+  fi
 fi
 
 if [[ -z "$MODE" ]]; then
-    echo "Error: specify an account mode (-p | -w | --direct)." >&2
-    usage >&2
-    exit 1
+  echo "Error: specify an account mode (-p | -w | --direct)." >&2
+  usage >&2
+  exit 1
 fi
 
 # Platform-specific default workspace
 if [[ -z "${WORKSPACE:-}" ]]; then
-    if [[ "$(uname)" == "Darwin" ]]; then
-        WORKSPACE="$HOME/work"
-    else
-        WORKSPACE="$HOME/Work"
-    fi
+  if [[ "$(uname)" == "Darwin" ]]; then
+    WORKSPACE="$HOME/work"
+  else
+    WORKSPACE="$HOME/Work"
+  fi
 fi
-
 
 # Register the gh PAT (if stored for $1) as a /run/secrets/gh_token mount. The
 # in-container `gh` CLI reads GH_TOKEN from the env (set by the entrypoint from that
 # file) — stateless (no hosts.yml) and NOT visible in `docker inspect`/host `ps`.
 resolve_gh_args() {
-    local label="$1" token
-    token=$(keychain_optional gh "$label" "gh token for '$label' account" \
-"In-container 'gh' CLI will be unauthenticated.
+  local label="$1" token
+  token=$(keychain_optional gh "$label" "gh token for '$label' account" \
+    "In-container 'gh' CLI will be unauthenticated.
   macOS: security add-generic-password -s gh -a $label -w '<PAT>'
   Linux: secret-tool store --label='gh $label' service gh account $label")
-    add_secret_mount gh_token "$token"
+  add_secret_mount gh_token "$token"
 }
 
 # Persistent volumes for fish history and tmux resurrect (targeted mounts
@@ -215,106 +226,112 @@ resolve_gh_args() {
 SSH_AGENT_ARGS=(-v "$SSH_AUTH_SOCK":/ssh-agent -e SSH_AUTH_SOCK=/ssh-agent)
 # Docker Desktop (macOS) mounts sockets as root:root — need group access
 if [[ "$(uname)" == "Darwin" ]]; then
-    SSH_AGENT_ARGS+=(--group-add 0)
+  SSH_AGENT_ARGS+=(--group-add 0)
 fi
 
 if [[ "$MODE" == "personal" ]]; then
-    TOKEN=$(keychain_require anthropic personal "personal Anthropic OAuth token" \
-"Generate a setup token from an authenticated Claude Code instance:
+  TOKEN=$(keychain_require anthropic personal "personal Anthropic OAuth token" \
+    "Generate a setup token from an authenticated Claude Code instance:
   claude setup-token
 Then store it:
   macOS: security add-generic-password -s anthropic -a personal -w '<token>'
   Linux: secret-tool store --label='anthropic' service anthropic account personal")
-    PERSONAL_REPO_VOLUME="claude-personal-repos"
-    resolve_gh_args personal
-    add_secret_mount claude_code_oauth_token "$TOKEN"
+  PERSONAL_REPO_VOLUME="claude-personal-repos"
+  resolve_gh_args personal
+  add_secret_mount claude_code_oauth_token "$TOKEN"
 
-    if [[ "$AGENT_MODE" == true ]]; then
-        # Agent mode: forward an ephemeral no-touch signing-only agent. Transport
-        # uses GH_TOKEN over HTTPS (see entrypoint), so the key signs but can't auth.
-        start_personal_signing_agent
-        PERSONAL_AGENT_ARGS=(-v "$SIGN_SOCK":/ssh-agent -e SSH_AUTH_SOCK=/ssh-agent -e AGENT_MODE=1)
-        if [[ "$(uname)" == "Darwin" ]]; then
-            PERSONAL_AGENT_ARGS+=(--group-add 0)
-        fi
-        # NOT exec: control returns here on container exit so the trap tears down the
-        # signing agent and cleanup_secrets shreds the mounted token files.
-        docker run -it --rm \
-            --memory=8g --cpus=4 \
-            -v "$PERSONAL_REPO_VOLUME":/workspace \
-            -v "$FISH_DATA_VOLUME":/home/dev/.local/share/fish \
-            -v "$TMUX_DATA_VOLUME":/home/dev/.local/share/tmux \
-            "${PERSONAL_AGENT_ARGS[@]}" \
-            ${SECRET_ARGS[@]+"${SECRET_ARGS[@]}"} \
-            "$PERSONAL_IMAGE"
-        cleanup_secrets
-        exit 0
+  if [[ "$AGENT_MODE" == true ]]; then
+    # Agent mode: forward an ephemeral no-touch signing-only agent. Transport
+    # uses GH_TOKEN over HTTPS (see entrypoint), so the key signs but can't auth.
+    start_personal_signing_agent
+    PERSONAL_AGENT_ARGS=(-v "$SIGN_SOCK":/ssh-agent -e SSH_AUTH_SOCK=/ssh-agent -e AGENT_MODE=1)
+    if [[ "$(uname)" == "Darwin" ]]; then
+      PERSONAL_AGENT_ARGS+=(--group-add 0)
     fi
-
-    # NOT exec (was): keep the parent alive so cleanup_secrets runs after the session.
-    # -p on 127.0.0.1 only: sshd for IDE Remote Development, reachable from this host
-    # but not the LAN (work uses 2222; personal uses 2223 so both can run at once).
+    # NOT exec: control returns here on container exit so the trap tears down the
+    # signing agent and cleanup_secrets shreds the mounted token files.
     docker run -it --rm \
-        --memory=8g --cpus=4 \
-        -v "$PERSONAL_REPO_VOLUME":/workspace \
-        -v claude-fish-data-personal:/home/dev/.local/share/fish \
-        -v claude-tmux-data-personal:/home/dev/.local/share/tmux \
-        "${SSH_AGENT_ARGS[@]}" \
-        -p 127.0.0.1:2223:2223 \
-        ${SECRET_ARGS[@]+"${SECRET_ARGS[@]}"} \
-        "$PERSONAL_IMAGE"
-    rc=$?; cleanup_secrets; exit $rc
+      --memory=8g --cpus=4 \
+      -v "$PERSONAL_REPO_VOLUME":/workspace \
+      -v "$FISH_DATA_VOLUME":/home/dev/.local/share/fish \
+      -v "$TMUX_DATA_VOLUME":/home/dev/.local/share/tmux \
+      "${PERSONAL_AGENT_ARGS[@]}" \
+      ${SECRET_ARGS[@]+"${SECRET_ARGS[@]}"} \
+      "$PERSONAL_IMAGE"
+    cleanup_secrets
+    exit 0
+  fi
+
+  # NOT exec (was): keep the parent alive so cleanup_secrets runs after the session.
+  # -p on 127.0.0.1 only: sshd for IDE Remote Development, reachable from this host
+  # but not the LAN (work uses 2222; personal uses 2223 so both can run at once).
+  docker run -it --rm \
+    --memory=8g --cpus=4 \
+    -v "$PERSONAL_REPO_VOLUME":/workspace \
+    -v claude-fish-data-personal:/home/dev/.local/share/fish \
+    -v claude-tmux-data-personal:/home/dev/.local/share/tmux \
+    "${SSH_AGENT_ARGS[@]}" \
+    -p 127.0.0.1:2223:2223 \
+    ${SECRET_ARGS[@]+"${SECRET_ARGS[@]}"} \
+    "$PERSONAL_IMAGE"
+  rc=$?
+  cleanup_secrets
+  exit $rc
 fi
 
 # Common work args (shared between wire and direct modes)
 WORK_REPO_VOLUME="claude-work-repos"
 WORK_COMMON_ARGS=(
-    -it --rm
-    --memory=8g --cpus=4
-    -e JETBRAINS_MCP_STREAM_URL=http://host.docker.internal:64342/stream
-    -v "$WORK_REPO_VOLUME":/workspace
-    -v claude-fish-data-work:/home/dev/.local/share/fish
-    -v claude-tmux-data-work:/home/dev/.local/share/tmux
-    "${SSH_AGENT_ARGS[@]}"
-    -p 2222:2222
+  -it --rm
+  --memory=8g --cpus=4
+  -e JETBRAINS_MCP_STREAM_URL=http://host.docker.internal:64342/stream
+  -v "$WORK_REPO_VOLUME":/workspace
+  -v claude-fish-data-work:/home/dev/.local/share/fish
+  -v claude-tmux-data-work:/home/dev/.local/share/tmux
+  "${SSH_AGENT_ARGS[@]}"
+  -p 2222:2222
 )
 
 if [[ "$MODE" == "work" ]]; then
-    # Wire proxy mode (default work mode)
-    if ! command -v wire &>/dev/null; then
-        echo "Error: wire CLI not found. Install it first."
-        exit 1
-    fi
-    WIRE_KEY=$(wire proxy start --ensure-updated --return-key)
-    if [[ -z "$WIRE_KEY" ]]; then
-        echo "Error: failed to start wire proxy or get key."
-        exit 1
-    fi
-    WIRE_PORT=$(wire config 2>&1 | awk '/Proxy port:/{print $3}')
-    WIRE_BASE_URL="http://host.docker.internal:${WIRE_PORT}/wire/${WIRE_KEY}/claude-code/anthropic"
-    resolve_gh_args work
-    # The base URL embeds the wire key — mount it as a secret (not -e / not logged).
-    add_secret_mount anthropic_base_url "$WIRE_BASE_URL"
+  # jbcentral proxy mode (default work mode)
+  if ! command -v jbcentral &>/dev/null; then
+    echo "Error: jbcentral CLI not found. Install it first."
+    exit 1
+  fi
+  JBCENTRAL_KEY=$(central proxy start --ensure-updated --return-key)
+  if [[ -z "$JBCENTRAL_KEY" ]]; then
+    echo "Error: failed to start wire proxy or get key."
+    exit 1
+  fi
+  JBCENTRAL_PORT=$(central config 2>&1 | awk '/Proxy port:/{print $3}')
+  JBCENTRAL_BASE_URL="http://host.docker.internal:${JBCENTRAL_PORT}/wire/${JBCENTRAL_KEY}/claude-code/anthropic"
+  resolve_gh_args work
+  # The base URL embeds the jbcentral key — mount it as a secret (not -e / not logged).
+  add_secret_mount anthropic_base_url "$JBCENTRAL_BASE_URL"
 
-    docker run \
-        "${WORK_COMMON_ARGS[@]}" \
-        -e ANTHROPIC_API_KEY=wire-proxy \
-        ${SECRET_ARGS[@]+"${SECRET_ARGS[@]}"} \
-        "$WORK_IMAGE"
-    rc=$?; cleanup_secrets; exit $rc
+  docker run \
+    "${WORK_COMMON_ARGS[@]}" \
+    -e ANTHROPIC_API_KEY=jbcentral-proxy \
+    ${SECRET_ARGS[@]+"${SECRET_ARGS[@]}"} \
+    "$WORK_IMAGE"
+  rc=$?
+  cleanup_secrets
+  exit $rc
 fi
 
 if [[ "$MODE" == "direct" ]]; then
-    # Direct API key mode (from OS keychain)
-    KEY=$(keychain_require "Claude Code" "" "work Claude Code API key" \
-"Log into Claude Code with your work account first (claude login).
+  # Direct API key mode (from OS keychain)
+  KEY=$(keychain_require "Claude Code" "" "work Claude Code API key" \
+    "Log into Claude Code with your work account first (claude login).
 The key is stored automatically in the OS keychain.")
-    resolve_gh_args work
-    add_secret_mount anthropic_api_key "$KEY"
+  resolve_gh_args work
+  add_secret_mount anthropic_api_key "$KEY"
 
-    docker run \
-        "${WORK_COMMON_ARGS[@]}" \
-        ${SECRET_ARGS[@]+"${SECRET_ARGS[@]}"} \
-        "$WORK_IMAGE"
-    rc=$?; cleanup_secrets; exit $rc
+  docker run \
+    "${WORK_COMMON_ARGS[@]}" \
+    ${SECRET_ARGS[@]+"${SECRET_ARGS[@]}"} \
+    "$WORK_IMAGE"
+  rc=$?
+  cleanup_secrets
+  exit $rc
 fi
