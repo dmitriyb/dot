@@ -4,9 +4,9 @@ Isolated Claude Code environments running in Fedora containers with full dotfile
 
 ## What's inside
 
-**Base** (shared): Fish, tmux, neovim (with plugins), starship, eza, bat, fzf, zoxide, lazygit, direnv, glow, Nix (single-user, flakes enabled, with nix-direnv), [beads_rust](https://github.com/Dicklesworthstone/beads_rust), [beads_viewer](https://github.com/Dicklesworthstone/beads_viewer), and Claude Code (native binary).
+**Base** (shared): Fish, tmux, neovim (with plugins), starship, eza, bat, fzf, zoxide, lazygit, direnv, glow, Nix (single-user, flakes enabled, with nix-direnv), and Claude Code (native binary).
 
-**Personal**: + Zig. No MCP servers. Fast startup.
+**Personal**: + Zig, Rust, [beads_rust](https://github.com/Dicklesworthstone/beads_rust) (`br`), and [beads_viewer](https://github.com/Dicklesworthstone/beads_viewer) (`bv`). No MCP servers. Fast startup.
 
 **Work**: + Bun (for MCP servers), SSH server for IDEA Remote Development, timeout tuning for large repos. Repos live on a native ext4 volume (not VirtioFS) for performance.
 
