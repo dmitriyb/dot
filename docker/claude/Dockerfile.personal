@@ -46,15 +46,11 @@ USER dev
 # Install beads_rust (pre-built binary). Not script-pinned — see README "Installer trust".
 RUN curl -fsSL https://raw.githubusercontent.com/Dicklesworthstone/beads_rust/main/install.sh | bash
 
-# Install beads_viewer (TUI for beads dependency graphs)
+# Install beads_viewer (bv) — graph-aware TUI for the Beads issue tracker.
 RUN GOPATH=/home/dev/go go install github.com/Dicklesworthstone/beads_viewer/cmd/bv@latest
 
-# Install Rust toolchain (needed for bvr). Not script-pinned — see README "Installer trust".
+# Install Rust toolchain (interactive Rust work in this box). Not script-pinned — see README "Installer trust".
 RUN curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y
-
-# Install beads_viewer_rust (graph-aware issue triage engine for .beads data).
-# --locked uses the upstream Cargo.lock for reproducible dependency versions.
-RUN . "$HOME/.cargo/env" && cargo install --locked --git https://github.com/Dicklesworthstone/beads_viewer_rust.git beads_viewer_rust
 
 # Add cargo bin to PATH
 RUN echo 'set -gx PATH ~/.cargo/bin $PATH' \
