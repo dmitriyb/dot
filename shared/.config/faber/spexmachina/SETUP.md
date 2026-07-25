@@ -46,7 +46,7 @@ set -x DOT      ~/dot
 ## 0. Prerequisites (verify, don't redo)
 
 docker + nix are on the host; the Anthropic setup-token is in the keychain;
-`faber`/`faber-box`/`portitor` are installed from their verified v0.1.0 releases
+`faber`/`faber-box`/`portitor` are installed from their verified releases
 (§1). The faber assets install from dot via **stow**: `faber-stack`/`role-keys`
 → `~/.local/bin`, the gate compose + egress build-context → `~/.local/share/{portitor,egress}`,
 and this project → `~/.config/faber/spexmachina`. Re-stow after `git -C $DOT pull`.
@@ -61,25 +61,27 @@ command -v faber-stack; and command -v role-keys; and command -v faber; and comm
 
 ## 1. Install the release binaries (verified)
 
-Install `faber`, `faber-box`, and `portitor` from their **v0.1.0 releases** —
-signed archives, each verified with `ssh-keygen -Y verify` against the shared
-release-signing key before anything runs. Do **not** build them from source. Each
-tool's own `install.sh` performs the archive verification; you first verify
-`install.sh` *itself* with the same key (its `install.sh.sig`), exactly as each
-tool's README documents. faber's installer places **both** `faber` and
-`faber-box` side by side in `INSTALL_DIR` (default `/usr/local/bin`) so faber's
-"`faber-box` next to me" resolution works; portitor's installs `portitor`.
+Install `faber`, `faber-box`, and `portitor` from their **latest signed
+releases** — signed archives, each verified with `ssh-keygen -Y verify` against
+the shared release-signing key before anything runs. Do **not** build them from
+source. Each tool's own `install.sh` resolves the latest release and performs the
+archive verification; you first verify `install.sh` *itself* with the same key
+(its `install.sh.sig`), exactly as each tool's README documents. faber's installer
+places **both** `faber` and `faber-box` side by side in `INSTALL_DIR` (default
+`/usr/local/bin`) so faber's "`faber-box` next to me" resolution works; portitor's
+installs `portitor`. This is the same install each README documents — run it by
+hand if you prefer; the block below is the verified one-shot.
 
 ```fish
 # The shared release-signing key (identical across portitor / faber / spex).
 echo 'dvbozhko@gmail.com ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIIhmCWVDP/Tcm3CqXNjTQTChbKxr223xMob9zc56Uuny' >/tmp/release-signers
 
 for tool in portitor faber
-    set -l base https://github.com/dmitriyb/$tool/releases/download/v0.1.0
+    set -l base https://github.com/dmitriyb/$tool/releases/latest/download
     curl -fsSLO $base/install.sh; and curl -fsSLO $base/install.sh.sig
     ssh-keygen -Y verify -f /tmp/release-signers -I dvbozhko@gmail.com -n file \
         -s install.sh.sig <install.sh
-    and env VERSION=v0.1.0 sh install.sh   # install.sh then verifies the archive(s) itself
+    and sh install.sh   # VERSION unset ⇒ install.sh resolves + verifies the latest release
     rm -f install.sh install.sh.sig
 end
 git -C "$DOT" pull   # re-stow if it advanced (see §0)
@@ -89,8 +91,13 @@ git -C "$DOT" pull   # re-stow if it advanced (see §0)
 (it picks the first real `portitor` on `PATH`); no `--portitor-bin` is needed
 once the release is installed. The gate container image is built by faber-stack
 from dot's own context (`~/.local/share/portitor/Dockerfile`), which fetches +
-verifies the same release binary and bakes in `br` (the beads-close check runs it
-inside the gate) — so no portitor checkout is needed at all.
+verifies the latest release binary and bakes in `br` (the beads-close check runs
+it inside the gate) — so no portitor checkout is needed at all.
+
+**Updating later:** `faber upgrade` moves `faber` + `faber-box` forward as a unit
+(they share a contract version); re-run portitor's `install.sh` (above) to move
+`portitor`. The gate image is cached, so to rebuild it against a newer portitor,
+drop it — `docker rmi portitor` — and faber-stack rebuilds it on the next `up`.
 
 ---
 
@@ -195,7 +202,7 @@ role-keys --json \
 ```
 
 On the first `up`, faber-stack builds the gate image from dot's context
-(`~/.local/share/portitor/`): it fetches + SSHSIG-verifies the portitor v0.1.0
+(`~/.local/share/portitor/`): it fetches + SSHSIG-verifies the latest portitor
 release binary and bakes in `br` for the beads-close check (needs network for
 that one build; cached afterwards). Host-side `add-role` uses the **installed**
 release `portitor` binary. Add `--allow <host>` (repeatable) to widen the egress

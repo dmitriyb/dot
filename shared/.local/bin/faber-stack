@@ -58,7 +58,7 @@ HOST_RE='^[A-Za-z0-9._-]+$'                       # egress allow-list host (no m
 
 CONTAINER_SIGNERS="/etc/portitor/allowed_signers" # the in-container allowed_signers path the gate reads
 
-# portitor v0.1.0 per-repo policy (repos.d/<repo>.json). Two policy blocks, both
+# portitor per-repo policy (repos.d/<repo>.json, format_version 1). Two policy blocks, both
 # seeded here and re-asserted on every run so a config written by an older dot
 # converges instead of tripping the gate's fail-closed guards:
 #
@@ -105,7 +105,7 @@ Flags:
   --repo <name>         portitor repo id / repos.d basename (default: repo half of --slug)
   --map <p>=<a>         map portitor role <p> to a differently-named stdin role <a> (repeatable)
   --portitor-bin <path> the verified-release portitor binary for host-side add-role; default:
-                        the first real `portitor` on PATH (install the signed v0.1.0 release)
+                        the first real `portitor` on PATH (install the signed portitor release)
   -h, --help            this help
 
 Roles for up/restart are read as `role-keys --json` on stdin. Exit: 0 ok, 1 runtime, 2 usage.
@@ -215,7 +215,7 @@ if (( BASH_REMATCH[1] < 2 || (BASH_REMATCH[1] == 2 && BASH_REMATCH[2] < 20) )); 
 fi
 
 # ---- resolve the REAL portitor binary (the VERIFIED RELEASE, never a build) --
-# Host-side add-role needs the real portitor binary. We CONSUME the signed v0.1.0
+# Host-side add-role needs the real portitor binary. We CONSUME the signed
 # release — install it once with portitor's own signed install.sh (it verifies the
 # archive with `ssh-keygen -Y verify` against the shared release key) so `portitor`
 # lands on PATH at $INSTALL_DIR (default /usr/local/bin). faber-stack does NOT
@@ -233,7 +233,7 @@ resolve_portitor_bin() {
 			PORTITOR_BIN="$c"; break
 		done < <(type -aP portitor 2>/dev/null)
 	fi
-	[[ -n "$PORTITOR_BIN" ]] || die "no real portitor binary found — install the verified v0.1.0 release (run portitor's signed install.sh, which does the ssh-keygen -Y verify) so 'portitor' is on PATH, or pass --portitor-bin <path>. faber-stack does not build portitor from source." 1
+	[[ -n "$PORTITOR_BIN" ]] || die "no real portitor binary found — install the verified portitor release (run portitor's signed install.sh, which does the ssh-keygen -Y verify) so 'portitor' is on PATH, or pass --portitor-bin <path>. faber-stack does not build portitor from source." 1
 	[[ -x "$PORTITOR_BIN" ]] || die "portitor binary not executable: $PORTITOR_BIN" 1
 	if [[ "$(head -c2 "$PORTITOR_BIN" 2>/dev/null)" == '#!' ]]; then
 		die "--portitor-bin ($PORTITOR_BIN) is a shell script, not the real portitor binary (looks like the SSH wrapper) — point it at the installed release binary" 1
@@ -334,7 +334,7 @@ else
 	mv "$rtmp" "$CFG"
 fi
 
-# Always (re)assert the v0.1.0 policy fields and DROP any retired role_rules — so
+# Always (re)assert the portitor policy fields and DROP any retired role_rules — so
 # a repos.d config left by an older dot converges here instead of failing the
 # gate's format_version guard or its "config carries the retired role_rules key"
 # refusal. Preserves the roles map + allowed_signers that add-role fills below.
@@ -343,7 +343,7 @@ jq --argjson fv 1 --argjson ident "$IDENTITY_ONLY" --argjson actions "$ACTION_RO
    --argjson rules "$CONTENT_RULES" \
 	'del(.role_rules) | .format_version=$fv | .identity_only_roles=$ident
 	 | .action_roles=$actions | .content_rules=$rules' "$CFG" >"$ptmp" \
-	|| die "failed to assert v0.1.0 policy fields for $REPO" 1
+	|| die "failed to assert the portitor policy fields for $REPO" 1
 mv "$ptmp" "$CFG"
 touch "$SIGNERS_HOST"
 
@@ -397,14 +397,15 @@ export INSTANCE CONFIG_DIR GH_TOKEN AGENT_AUTHORIZED_KEY
 
 # ---- (7) build images if missing -------------------------------------------
 # The gate image is SELF-CONTAINED (built from the dot context $GATE_CTX): its
-# Dockerfile fetches + SSHSIG-verifies the portitor v0.1.0 release binary and adds
-# `br` — no portitor checkout. portitor publishes no container image, but this is
-# the only piece we assemble locally, and it still runs the verified release
-# binary. Cached after the first build, so it is built ONLY when missing.
-PORTITOR_RELEASE_TAG="v0.1.0"
+# Dockerfile fetches + SSHSIG-verifies the LATEST portitor release binary (forward-
+# only; the Dockerfile's PORTITOR_VERSION arg can pin a specific one) and adds `br`
+# — no portitor checkout. portitor publishes no container image, but this is the
+# only piece we assemble locally, and it still runs the verified release binary.
+# Cached after the first build, so it is built ONLY when missing — remove the image
+# (`docker rmi portitor`) to rebuild against a newer release.
 docker image inspect portitor >/dev/null 2>&1 \
-	|| docker build -t portitor --build-arg "PORTITOR_VERSION=$PORTITOR_RELEASE_TAG" "$GATE_CTX" \
-	|| die "failed to build the portitor gate image from $GATE_CTX (needs network to fetch + verify the $PORTITOR_RELEASE_TAG release)" 1
+	|| docker build -t portitor "$GATE_CTX" \
+	|| die "failed to build the portitor gate image from $GATE_CTX (needs network to fetch + verify the portitor release)" 1
 docker image inspect egress-proxy >/dev/null 2>&1 || docker build -t egress-proxy "$EGRESS_CTX" \
 	|| die "failed to build the egress-proxy image from $EGRESS_CTX" 1
 

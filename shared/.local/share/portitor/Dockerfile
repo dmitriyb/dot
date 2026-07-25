@@ -1,12 +1,12 @@
 # portitor gate image — SELF-CONTAINED, built entirely from dot (no portitor
-# checkout). The gate runs the VERIFIED portitor v0.1.0 RELEASE binary and adds
+# checkout). The gate runs the VERIFIED portitor RELEASE binary and adds
 # `br`, which the repo's content_rules bead-close check shells out to inside the
 # gate to parse .beads/issues.jsonl. The runtime contract (sshd + forced-command
 # wiring) is supplied by gate-entrypoint.sh, a dot-maintained copy of portitor's
 # deploy entrypoint — so no source tree is needed to build or run the gate.
 #
-#   docker build -t portitor \
-#     --build-arg PORTITOR_VERSION=v0.1.0 [--build-arg TARGETARCH=arm64] .
+#   docker build -t portitor [--build-arg TARGETARCH=arm64] .          # latest release
+#   docker build -t portitor --build-arg PORTITOR_VERSION=vX.Y.Z .     # or pin one
 #
 # faber-stack builds this automatically when the `portitor` image is missing.
 
@@ -19,14 +19,22 @@ ARG ALPINE_VERSION=3.20
 # platform (linux + the target arch) selects the correct linux binary — never the
 # host's darwin build. No archive names or arch tokens are hand-coded here.
 FROM alpine:${ALPINE_VERSION} AS fetch
-ARG PORTITOR_VERSION=v0.1.0
+# Empty (default) => install the LATEST portitor release: install.sh resolves it,
+# hard-refuses a "latest" that moved backward (rollback anomaly), and SSHSIG-verifies
+# the archive. Set a vX.Y.Z tag ONLY to pin a specific release (e.g. to dodge a bad
+# one); faber-stack never passes this, so the gate tracks latest on each rebuild.
+ARG PORTITOR_VERSION=
 RUN apk add --no-cache curl openssh-keygen tar
 WORKDIR /fetch
 RUN printf '%s\n' \
     'dvbozhko@gmail.com ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIIhmCWVDP/Tcm3CqXNjTQTChbKxr223xMob9zc56Uuny' \
     > allowed_signers
 RUN set -eu; \
-    base="https://github.com/dmitriyb/portitor/releases/download/${PORTITOR_VERSION}"; \
+    if [ -n "${PORTITOR_VERSION}" ]; then \
+        base="https://github.com/dmitriyb/portitor/releases/download/${PORTITOR_VERSION}"; \
+    else \
+        base="https://github.com/dmitriyb/portitor/releases/latest/download"; \
+    fi; \
     curl -fsSLO "${base}/install.sh"; \
     curl -fsSLO "${base}/install.sh.sig"; \
     ssh-keygen -Y verify -f allowed_signers -I dvbozhko@gmail.com -n file \
