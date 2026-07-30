@@ -1,0 +1,34 @@
+# tuicr — terminal code review (https://github.com/agavra/tuicr)
+# Stows to ~/.config/tuicr/config.toml (shared layer: macOS + Arch both use XDG).
+# Keys below are the ones documented in the project README; docs/CONFIG.md upstream
+# is the authoritative, exhaustive reference (tuicr is pre-1.0 — keys may shift).
+
+theme = "tokyo-night"        # matches the dotfiles theme system's current default
+appearance = "system"        # "system" | "dark" | "light"
+diff_view = "side-by-side"   # or "unified"
+ignore_whitespace = false
+mouse = true
+
+comment_vim = true           # vim modal editing in the comment box (matches editorMode=vim)
+leader = ";"                 # leader-key prefix
+
+# Comment categories shown while reviewing (color-coded).
+[[comment_types]]
+id = "note"
+color = "blue"
+definition = "non-blocking observation"
+
+[[comment_types]]
+id = "suggestion"
+color = "yellow"
+definition = "optional improvement"
+
+[[comment_types]]
+id = "issue"
+color = "red"
+definition = "must fix before merge"
+
+[[comment_types]]
+id = "praise"
+color = "green"
+definition = "worth calling out"
