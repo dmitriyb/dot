@@ -3,7 +3,7 @@
 # Keys below are the ones documented in the project README; docs/CONFIG.md upstream
 # is the authoritative, exhaustive reference (tuicr is pre-1.0 — keys may shift).
 
-theme = "tokyo-night"        # matches the dotfiles theme system's current default
+theme = "current"            # follows ~/.config/themes/current via theme-set (btop-style symlink)
 appearance = "system"        # "system" | "dark" | "light"
 diff_view = "side-by-side"   # or "unified"
 ignore_whitespace = false

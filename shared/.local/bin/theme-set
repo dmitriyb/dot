@@ -64,6 +64,16 @@ if [ -d "${XDG_CONFIG_HOME:-$HOME/.config}/btop" ]; then
     fi
 fi
 
+# Update tuicr theme symlink. tuicr has no hot-reload and is launched per review, so
+# the new theme applies on its next launch (no signal needed). Guarded on a REAL dir:
+# until setup.sh makes ~/.config/tuicr a real directory it's a stow symlink into the
+# repo, and writing there would land the runtime symlink inside the repo — so skip it.
+TUICR_DIR="${XDG_CONFIG_HOME:-$HOME/.config}/tuicr"
+if [ -d "$TUICR_DIR" ] && [ ! -L "$TUICR_DIR" ]; then
+    mkdir -p "$TUICR_DIR/themes"
+    ln -sfn "$THEMES_DIR/current/tuicr.toml" "$TUICR_DIR/themes/current.toml"
+fi
+
 # Reload neovim colorscheme (if nvr is installed)
 if command -v nvr &>/dev/null; then
     THEME_FILE="$THEMES_DIR/$THEME_NAME/neovim.lua"

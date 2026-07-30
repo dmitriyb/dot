@@ -59,6 +59,13 @@ fi
 # Clear stale links from any earlier layout so stow can re-converge cleanly.
 prune_repo_links
 
+# tuicr keeps a machine-specific runtime theme symlink under ~/.config/tuicr/themes
+# (set by theme-set, pointing through themes/current). Its config dir must therefore
+# stay a REAL directory so stow folds config.toml *inside* it and the runtime symlink
+# lives outside the repo — same rationale as the pre-created dirs above. Done after
+# prune so any stale stow dir-symlink at ~/.config/tuicr is already gone.
+mkdir -p ~/.config/tuicr/themes
+
 # Shared layer (every OS): .config, .local/bin, .claude, .ssh.
 stow -t ~ shared
 echo "Stowed shared."
