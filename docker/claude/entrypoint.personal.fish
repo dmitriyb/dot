@@ -9,6 +9,16 @@ if test -d /run/secrets
     end
 end
 
+# Workaround for anthropics/claude-code#79597: a setup-token's profile omits
+# subscriptionType, so the interactive /model picker fail-closes Fable 5 behind a
+# "usage credits" wall. Declaring the real plan tier restores it. Only the token path
+# needs this (ignored when a /login credential drives). Remove once the token flow
+# resolves the tier server-side.
+if set -q CLAUDE_CODE_OAUTH_TOKEN
+    set -gx CLAUDE_CODE_SUBSCRIPTION_TYPE max
+    set -gx CLAUDE_CODE_RATE_LIMIT_TIER default_claude_max_5x
+end
+
 # ~/.claude is ephemeral (image-baked settings.json + skills). Persistent state lives on the
 # /workspace repo volume: session transcripts + prompt history are symlinked into
 # /workspace/.claude-state, and per-project trust is regenerated from /workspace each boot.
