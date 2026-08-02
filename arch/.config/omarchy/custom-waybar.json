@@ -1,0 +1,66 @@
+{
+  "hyprland/workspaces": {
+    "format": "{name}",
+    "sort-by": "name",
+    "persistent-workspaces": {
+      "E": [],
+      "T": [],
+      "F": [],
+      "G": [],
+      "Z": []
+    }
+  },
+  "modules-center": [
+    "clock",
+    "custom/update",
+    "custom/screenrecording-indicator"
+  ],
+  "modules-right": [
+    "group/tray-expander",
+    "hyprland/language",
+    "custom/vpn",
+    "bluetooth",
+    "network",
+    "pulseaudio",
+    "cpu",
+    "battery"
+  ],
+  "custom/vpn": {
+    "exec": "systemctl is-active vpn >/dev/null && echo '{\"text\": \"󰒄\", \"class\": \"connected\"}' || echo '{\"text\": \"󰒇\", \"class\": \"disconnected\"}'",
+    "return-type": "json",
+    "interval": 5,
+    "on-click": "vpn-toggle",
+    "tooltip-format": "VPN {}"
+  },
+  "cpu": {
+    "interval": 5,
+    "format": "󰍛",
+    "on-click": "omarchy-launch-or-focus-tui btop",
+    "on-click-right": "alacritty"
+  },
+  "battery": {
+    "bat": "BAT0",
+    "format": "{capacity}% {icon}",
+    "format-discharging": "{capacity}% {icon}",
+    "format-charging": "{capacity}% {icon}",
+    "format-plugged": "{capacity}% ",
+    "format-icons": {
+      "charging": ["󰢜", "󰂆", "󰂇", "󰂈", "󰢝", "󰂉", "󰢞", "󰂊", "󰂋", "󰂅"],
+      "default": ["󰁺", "󰁻", "󰁼", "󰁽", "󰁾", "󰁿", "󰂀", "󰂁", "󰂂", "󰁹"]
+    },
+    "format-full": "{capacity}% 󰂅",
+    "tooltip-format-discharging": "{power:>1.0f}W↓ {capacity}%",
+    "tooltip-format-charging": "{power:>1.0f}W↑ {capacity}%",
+    "interval": 5,
+    "on-click": "omarchy-menu power",
+    "states": {
+      "warning": 20,
+      "critical": 10
+    }
+  },
+  "hyprland/language": {
+    "format": " {}  ",
+    "format-en": "us",
+    "format-ru": "ru"
+  }
+}

@@ -83,6 +83,12 @@ case "$(uname)" in
         else
             stow -t ~ arch
             echo "Stowed arch."
+            # prune_repo_links briefly removes ~/.config/omarchy/custom-hyprland.lua
+            # before stow re-creates it. Hyprland watches its config and will have
+            # auto-reloaded inside that window, failing on the missing require and
+            # latching a config-error banner until something reloads it again. The
+            # config is valid by now, so clear it.
+            command -v hyprctl >/dev/null 2>&1 && hyprctl reload >/dev/null 2>&1 || true
         fi
         ;;
 esac

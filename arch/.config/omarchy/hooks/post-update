@@ -23,7 +23,13 @@ fi
 # 2. Merge Waybar customizations with jq
 if [ -f "$CUSTOM_DIR/custom-waybar.json" ] && [ -f "$WAYBAR_CONF" ]; then
   if command -v jq &> /dev/null; then
-    jq -s '.[0] * .[1]' "$WAYBAR_CONF" "$CUSTOM_DIR/custom-waybar.json" > "$WAYBAR_CONF.tmp"
+    # jq's `*` merges objects RECURSIVELY, so sub-keys of the omarchy default survive
+    # even when custom-waybar.json redefines the parent. That is usually what we want,
+    # but persistent-workspaces must be REPLACED, not extended: workspaces are addressed
+    # by letter now (see custom-hyprland.lua), and a recursive merge would leave omarchy's
+    # numeric 1-5 pinned to the bar next to the letters. Drop it from the base first.
+    jq -s '(.[0] | del(."hyprland/workspaces"."persistent-workspaces")) * .[1]' \
+      "$WAYBAR_CONF" "$CUSTOM_DIR/custom-waybar.json" > "$WAYBAR_CONF.tmp"
 
     if [ -s "$WAYBAR_CONF.tmp" ]; then
       mv "$WAYBAR_CONF.tmp" "$WAYBAR_CONF"

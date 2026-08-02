@@ -1,0 +1,108 @@
+# Single source of truth for workspace identity across AeroSpace (macOS) and
+# Hyprland (Linux). Both window managers' workspace bindings, auto-placement rules
+# and monitor assignments are GENERATED from this file by `wm-sync`.
+#
+# Edit here. Never edit inside the generated blocks in either config.
+#
+# Why letters and not digits: `option` on a Mac keyboard and `SUPER` on a PC
+# keyboard sit in the same physical position (immediately left of the key next to
+# the spacebar). So AeroSpace's `alt-t` and Hyprland's `SUPER+T` are one identical
+# chord under the same finger — only the keycap differs. Letters then carry the
+# meaning, so there is no letter->digit translation table to keep in sync.
+#
+# Fields:
+#   letter  the workspace name AND the chord. `alt-<letter>` on macOS,
+#           `SUPER+<letter>` on Linux. `shift` added = move window there.
+#   role    which display it belongs on: personal | work | builtin.
+#           Resolved to an AeroSpace monitor pattern by wm-sync. Not applied on
+#           Linux — this box is single-display; revisit if that changes.
+#   note    free text; rendered as the trailing comment in both generated blocks.
+#   mac     AeroSpace app-id for the on-window-detected auto-placement rule.
+#           Omit for a workspace that should stay empty.
+#   linux   Hyprland window class regexes for the o.window() rule. A list, because
+#           one workspace can collect several classes (G takes both terminals).
+#           Omit for a workspace with no app on this platform.
+#
+# Order here is the order emitted. Keep it stable so `wm-sync` stays idempotent.
+
+[[workspace]]
+letter = "E"
+role   = "personal"
+note   = "scratch / main empty"
+
+[[workspace]]
+letter = "T"
+role   = "personal"
+note   = "Telegram"
+mac    = "com.tdesktop.Telegram"
+linux  = ['^(org\.telegram\.desktop)$']
+
+[[workspace]]
+letter = "F"
+role   = "personal"
+note   = "Firefox"
+mac    = "org.mozilla.firefox"
+linux  = ['^([fF]irefox)$']
+
+[[workspace]]
+letter = "G"
+role   = "personal"
+note   = "terminals"
+mac    = "com.mitchellh.ghostty"
+linux  = ['^(com\.mitchellh\.ghostty)$', '^(Alacritty)$']
+
+[[workspace]]
+letter = "Z"
+role   = "personal"
+note   = "Zed"
+mac    = "dev.zed.Zed"
+linux  = ['^(dev\.zed\.Zed)$']
+
+[[workspace]]
+letter = "C"
+role   = "work"
+note   = "Chrome (work)"
+mac    = "com.google.Chrome"
+linux  = ['^([gG]oogle-chrome)$']
+
+[[workspace]]
+letter = "S"
+role   = "work"
+note   = "Slack"
+mac    = "com.tinyspeck.slackmacgap"
+linux  = ['^([sS]lack)$']
+
+[[workspace]]
+letter = "I"
+role   = "work"
+note   = "IntelliJ IDEA"
+mac    = "com.jetbrains.intellij"
+linux  = ['^(jetbrains-idea)$']
+
+[[workspace]]
+letter = "O"
+role   = "work"
+note   = "CLion"
+mac    = "com.jetbrains.CLion"
+linux  = ['^(jetbrains-clion)$']
+
+[[workspace]]
+letter = "P"
+role   = "work"
+note   = "PyCharm"
+mac    = "com.jetbrains.PyCharm"
+linux  = ['^(jetbrains-pycharm)$']
+
+[[workspace]]
+letter = "B"
+role   = "builtin"
+note   = "empty built-in display"
+
+# role -> AeroSpace monitor pattern. `built-in` is an AeroSpace keyword; `main` and
+# `secondary` are too. Replace either with a monitor-name regex if the ordering ever
+# picks the wrong display — patterns survive a replug, the numeric indices this
+# replaced did not.
+[monitors]
+personal = "main"
+work     = "secondary"
+builtin  = "built-in"

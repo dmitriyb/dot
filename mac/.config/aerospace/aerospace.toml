@@ -1,14 +1,22 @@
-# Place a copy of this config to ~/.aerospace.toml
-# After that, you can edit ~/.aerospace.toml to your liking
+# AeroSpace configuration. Stowed to ~/.config/aerospace/aerospace.toml by setup.sh.
+#
+# Workspace identity is NOT hand-written here. The blocks marked
+# `BEGIN generated:<name>` are rendered by `wm-sync` from
+# shared/.config/wm/workspaces.toml, which is also the source for Hyprland's
+# arch/.config/omarchy/custom-hyprland.lua. Edit the TOML, run wm-sync, commit both.
+#
+# Chords are chosen so macOS and Linux share one muscle memory: `option` here and
+# `SUPER` on the Linux box sit in the same physical position, so `alt-t` and `SUPER+T`
+# are the same key under the same finger.
+#
+# Reference: https://nikitabobko.github.io/AeroSpace/commands
 
 # You can use it to add commands that run after login to macOS user session.
 # 'start-at-login' needs to be 'true' for 'after-login-command' to work
-# Available commands: https://nikitabobko.github.io/AeroSpace/commands
 after-login-command = []
 
 # You can use it to add commands that run after AeroSpace startup.
 # 'after-startup-command' is run after 'after-login-command'
-# Available commands : https://nikitabobko.github.io/AeroSpace/commands
 after-startup-command = []
 
 # Start AeroSpace at login
@@ -18,7 +26,6 @@ start-at-login = true
 enable-normalization-flatten-containers = true
 enable-normalization-opposite-orientation-for-nested-containers = true
 
-# See: https://nikitabobko.github.io/AeroSpace/guide#layouts
 # The 'accordion-padding' specifies the size of accordion padding
 # You can set 0 to disable the padding feature
 accordion-padding = 0
@@ -32,30 +39,16 @@ default-root-container-layout = 'accordion'
 default-root-container-orientation = 'auto'
 
 # Mouse follows focus when focused monitor changes
-# Drop it from your config, if you don't like this behavior
-# See https://nikitabobko.github.io/AeroSpace/guide#on-focus-changed-callbacks
-# See https://nikitabobko.github.io/AeroSpace/commands#move-mouse
-# Fallback value (if you omit the key): on-focused-monitor-changed = []
 on-focused-monitor-changed = ['move-mouse monitor-lazy-center']
 
-# You can effectively turn off macOS "Hide application" (cmd-h) feature by toggling this flag
-# Useful if you don't use this macOS feature, but accidentally hit cmd-h or cmd-alt-h key
-# Also see: https://nikitabobko.github.io/AeroSpace/goodies#disable-hide-app
+# You can effectively turn off macOS "Hide application" (cmd-h) feature by toggling this
 automatically-unhide-macos-hidden-apps = false
 
 # Possible values: (qwerty|dvorak|colemak)
-# See https://nikitabobko.github.io/AeroSpace/guide#key-mapping
 [key-mapping]
 preset = 'qwerty'
 
 # Gaps between windows (inner-*) and between monitor edges (outer-*).
-# Possible values:
-# - Constant:     gaps.outer.top = 8
-# - Per monitor:  gaps.outer.top = [{ monitor.main = 16 }, { monitor."some-pattern" = 32 }, 24]
-#                 In this example, 24 is a default value when there is no match.
-#                 Monitor pattern is the same as for 'workspace-to-monitor-force-assignment'.
-#                 See:
-#                 https://nikitabobko.github.io/AeroSpace/guide#assign-workspaces-to-monitors
 [gaps]
 inner.horizontal = 4
 inner.vertical = 4
@@ -64,24 +57,27 @@ outer.bottom = 4
 outer.top = 4
 outer.right = 4
 
-
+# Monitor patterns, not indices. Indices reshuffle when a display is unplugged or
+# re-ordered; 'main' / 'secondary' / 'built-in' survive a replug. Swap either for a
+# monitor-name regex if the wrong display is ever picked.
+# BEGIN generated:monitors -- edit shared/.config/wm/workspaces.toml, then run wm-sync
 [workspace-to-monitor-force-assignment]
-E = 1  # Main empty
-T = 1  # Telegram workspace
-F = 1  # Firefox workspace
-G = 1  # Terminal emulators
-Z = 1  # Zed
-I = 2  # IDEA
-O = 2  # CLion
-P = 2  # PyCharm
-C = 2  # Chrome work…∂
-S = 2  # Slack
-B = 3  # Empty built-in
+E = 'main'      # scratch / main empty
+T = 'main'      # Telegram
+F = 'main'      # Firefox
+G = 'main'      # terminals
+Z = 'main'      # Zed
+C = 'secondary' # Chrome (work)
+S = 'secondary' # Slack
+I = 'secondary' # IntelliJ IDEA
+O = 'secondary' # CLion
+P = 'secondary' # PyCharm
+B = 'built-in'  # empty built-in display
+# END generated:monitors
 
 # 'main' binding mode declaration
 # See: https://nikitabobko.github.io/AeroSpace/guide#binding-modes
 # 'main' binding mode must be always presented
-# Fallback value (if you omit the key): mode.main.binding = {}
 [mode.main.binding]
 
 # All possible keys:
@@ -96,115 +92,70 @@ B = 3  # Empty built-in
 # - Keypad special. keypadClear, keypadDecimalMark, keypadDivide, keypadEnter, keypadEqual,
 #                   keypadMinus, keypadMultiply, keypadPlus
 # - Arrows.         left, down, up, right
-
+#
 # All possible modifiers: cmd, alt, ctrl, shift
 
-# All possible commands: https://nikitabobko.github.io/AeroSpace/commands
-
-# See: https://nikitabobko.github.io/AeroSpace/commands#exec-and-forget
-# You can uncomment the following lines to open up terminal with alt + enter shortcut
-# (like in i3)
-# alt-enter = '''exec-and-forget osascript -e '
-# tell application "Terminal"
-#     do script
-#     activate
-# end tell'
-# '''
-
-# See: https://nikitabobko.github.io/AeroSpace/commands#layout
+# Layout
 alt-slash = 'layout tiles horizontal vertical'
 alt-comma = 'layout accordion horizontal vertical'
 
-# See: https://nikitabobko.github.io/AeroSpace/commands#focus
+# Full screen. Mirrors SUPER+M on Linux ("maximize"), where the letter layer took
+# SUPER+F. There was no fullscreen binding here at all before.
+alt-m = 'fullscreen'
+
+# Focus
 alt-h = 'focus left'
 alt-j = 'focus down'
 alt-k = 'focus up'
 alt-l = 'focus right'
 
-# See: https://nikitabobko.github.io/AeroSpace/commands#move
+# Move
 alt-shift-h = 'move left'
 alt-shift-j = 'move down'
 alt-shift-k = 'move up'
 alt-shift-l = 'move right'
 
-# See: https://nikitabobko.github.io/AeroSpace/commands#resize
-alt-cmd-minus = 'resize smart -50'
-alt-cmd-equal = 'resize smart +50'
+# Resize. Deliberately alt-, not alt-cmd-: cmd appeared nowhere else in this config, and
+# Hyprland resizes with SUPER+minus / SUPER+equal, so this is now the same chord on both.
+alt-minus = 'resize smart -50'
+alt-equal = 'resize smart +50'
 
-# See: https://nikitabobko.github.io/AeroSpace/commands#workspace
-# alt-1 = 'workspace 1'
-# alt-2 = 'workspace 2'
-# alt-3 = 'workspace 3'
-# alt-4 = 'workspace 4'
-# alt-5 = 'workspace 5'
-# alt-6 = 'workspace 6'
-# alt-7 = 'workspace 7'
-# alt-8 = 'workspace 8'
-# alt-9 = 'workspace 9'
-# alt-0 = 'workspace 10'
-# alt-a = 'workspace A' # In your config, you can drop workspace bindings that you don't need
-alt-b = 'workspace B'
-alt-c = 'workspace C'
-# alt-d = 'workspace D'
-alt-e = 'workspace E'
-alt-f = 'workspace F'
-alt-g = 'workspace G'
-alt-i = 'workspace I'
-# alt-m = 'workspace M'
-# alt-n = 'workspace N'
-alt-o = 'workspace O'
-alt-p = 'workspace P'
-# alt-q = 'workspace Q'
-# alt-r = 'workspace R'
-alt-s = 'workspace S'
-alt-t = 'workspace T'
-# alt-u = 'workspace U'
-# alt-v = 'workspace V'
-# alt-w = 'workspace W'
-# alt-x = 'workspace X'
-# alt-y = 'workspace Y'
-alt-z = 'workspace Z'
+# Letter workspaces. `alt-<letter>` switches, `alt-shift-<letter>` moves the focused
+# window there and follows it (--focus-follows-window), which is what Hyprland's
+# SUPER+SHIFT+<letter> does; without the flag the same chord would behave differently
+# on each machine.
+# BEGIN generated:bindings -- edit shared/.config/wm/workspaces.toml, then run wm-sync
+alt-e = 'workspace E'  # scratch / main empty
+alt-shift-e = 'move-node-to-workspace E --focus-follows-window'
+alt-t = 'workspace T'  # Telegram
+alt-shift-t = 'move-node-to-workspace T --focus-follows-window'
+alt-f = 'workspace F'  # Firefox
+alt-shift-f = 'move-node-to-workspace F --focus-follows-window'
+alt-g = 'workspace G'  # terminals
+alt-shift-g = 'move-node-to-workspace G --focus-follows-window'
+alt-z = 'workspace Z'  # Zed
+alt-shift-z = 'move-node-to-workspace Z --focus-follows-window'
+alt-c = 'workspace C'  # Chrome (work)
+alt-shift-c = 'move-node-to-workspace C --focus-follows-window'
+alt-s = 'workspace S'  # Slack
+alt-shift-s = 'move-node-to-workspace S --focus-follows-window'
+alt-i = 'workspace I'  # IntelliJ IDEA
+alt-shift-i = 'move-node-to-workspace I --focus-follows-window'
+alt-o = 'workspace O'  # CLion
+alt-shift-o = 'move-node-to-workspace O --focus-follows-window'
+alt-p = 'workspace P'  # PyCharm
+alt-shift-p = 'move-node-to-workspace P --focus-follows-window'
+alt-b = 'workspace B'  # empty built-in display
+alt-shift-b = 'move-node-to-workspace B --focus-follows-window'
+# END generated:bindings
 
-# See: https://nikitabobko.github.io/AeroSpace/commands#move-node-to-workspace
-# alt-shift-1 = 'move-node-to-workspace 1'
-# alt-shift-2 = 'move-node-to-workspace 2'
-# alt-shift-3 = 'move-node-to-workspace 3'
-# alt-shift-4 = 'move-node-to-workspace 4'
-# alt-shift-5 = 'move-node-to-workspace 5'
-# alt-shift-6 = 'move-node-to-workspace 6'
-# alt-shift-7 = 'move-node-to-workspace 7'
-# alt-shift-8 = 'move-node-to-workspace 8'
-# alt-shift-9 = 'move-node-to-workspace 9'
-# alt-shift-0 = 'move-node-to-workspace 10'
-# alt-shift-a = 'move-node-to-workspace A'
-alt-shift-b = 'move-node-to-workspace B'
-alt-shift-c = 'move-node-to-workspace C'
-# alt-shift-d = 'move-node-to-workspace D'
-alt-shift-e = 'move-node-to-workspace E'
-alt-shift-f = 'move-node-to-workspace F'
-alt-shift-g = 'move-node-to-workspace G'
-alt-shift-i = 'move-node-to-workspace I'
-# alt-shift-m = 'move-node-to-workspace M'
-# alt-shift-n = 'move-node-to-workspace N'
-alt-shift-o = 'move-node-to-workspace O'
-alt-shift-p = 'move-node-to-workspace P'
-# alt-shift-q = 'move-node-to-workspace Q'
-# alt-shift-r = 'move-node-to-workspace R'
-alt-shift-s = 'move-node-to-workspace S'
-alt-shift-t = 'move-node-to-workspace T'
-# alt-shift-u = 'move-node-to-workspace U'
-# alt-shift-v = 'move-node-to-workspace V'
-# alt-shift-w = 'move-node-to-workspace W'
-# alt-shift-x = 'move-node-to-workspace X'
-# alt-shift-y = 'move-node-to-workspace Y'
-alt-shift-z = 'move-node-to-workspace Z'
-
-# See: https://nikitabobko.github.io/AeroSpace/commands#workspace-back-and-forth
+# Hyprland's SUPER+TAB is bound to the same back-and-forth, and SUPER+SHIFT+TAB to the
+# same move-to-next-monitor, so these two chords match on both machines.
 alt-tab = 'workspace-back-and-forth'
-# See: https://nikitabobko.github.io/AeroSpace/commands#move-workspace-to-monitor
 alt-shift-tab = 'move-workspace-to-monitor --wrap-around next'
 
-# See: https://nikitabobko.github.io/AeroSpace/commands#mode
+# Window mode. Hyprland binds SUPER+SHIFT+SEMICOLON to an equivalent submap, with the
+# same inner letters wherever the verb exists on both.
 alt-shift-semicolon = 'mode service'
 
 # 'service' binding mode declaration.
@@ -230,9 +181,12 @@ down = 'volume down'
 up = 'volume up'
 shift-down = ['volume set 0', 'mode main']
 
+# Auto-placement. Mirrors the o.window() rules in custom-hyprland.lua, from the same
+# source, so the two platforms cannot drift the way they had (9 rules here vs 5 there).
+# BEGIN generated:window-rules -- edit shared/.config/wm/workspaces.toml, then run wm-sync
 [[on-window-detected]]
 if.app-id = 'com.tdesktop.Telegram'
-run = 'move-node-to-workspace T'    # Telegram
+run = 'move-node-to-workspace T'  # Telegram
 
 [[on-window-detected]]
 if.app-id = 'org.mozilla.firefox'
@@ -240,15 +194,23 @@ run = 'move-node-to-workspace F'  # Firefox
 
 [[on-window-detected]]
 if.app-id = 'com.mitchellh.ghostty'
-run = 'move-node-to-workspace G' # Ghostty
+run = 'move-node-to-workspace G'  # terminals
 
 [[on-window-detected]]
 if.app-id = 'dev.zed.Zed'
-run = 'move-node-to-workspace Z' # Zed
+run = 'move-node-to-workspace Z'  # Zed
+
+[[on-window-detected]]
+if.app-id = 'com.google.Chrome'
+run = 'move-node-to-workspace C'  # Chrome (work)
+
+[[on-window-detected]]
+if.app-id = 'com.tinyspeck.slackmacgap'
+run = 'move-node-to-workspace S'  # Slack
 
 [[on-window-detected]]
 if.app-id = 'com.jetbrains.intellij'
-run = 'move-node-to-workspace I'     # IDEA
+run = 'move-node-to-workspace I'  # IntelliJ IDEA
 
 [[on-window-detected]]
 if.app-id = 'com.jetbrains.CLion'
@@ -257,15 +219,4 @@ run = 'move-node-to-workspace O'  # CLion
 [[on-window-detected]]
 if.app-id = 'com.jetbrains.PyCharm'
 run = 'move-node-to-workspace P'  # PyCharm
-
-[[on-window-detected]]
-if.app-id = 'com.google.Chrome'
-run = 'move-node-to-workspace C' # Chrome
-
-[[on-window-detected]]
-if.app-id = 'com.tinyspeck.slackmacgap'
-run = 'move-node-to-workspace S'       # Slack
-
-# [[on-window-detected]]
-# check-further-callbacks = true
-# run = 'layout floating'
+# END generated:window-rules
