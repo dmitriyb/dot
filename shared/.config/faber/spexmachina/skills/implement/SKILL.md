@@ -13,11 +13,11 @@ The box's deterministic hooks have run before this skill — you never run them 
 - the **prelude** hook created your feature branch off `origin/<default>`, guarded the bead (status `open`/`ready`, not `spex:cleanup`), and claimed it (`status in_progress`) with a **signed** commit on the branch,
 - `$FABER_BUNDLE_DIR/bundle.env` carries `BEAD_ID`, `BRANCH`, `BASE`, `RECORD_ID`; these are also in your environment.
 
-**Start by reading `$FABER_BUNDLE_DIR/CONTEXT.md`, then every file in `$FABER_BUNDLE_DIR/spec-files.txt`** (`arch_*`, `impl_*`, `test_*`, `flow_*`, `module.json`). That is your spec — do not re-derive it. Beads carry empty descriptions by design; the spec leaves are the source of truth. If `spec-files.txt` is empty, fall back to the spec references in the bead.
+**Start by reading `$FABER_BUNDLE_DIR/CONTEXT.md`, then every file in `$FABER_BUNDLE_DIR/spec-files.txt`** (`arch_*`, `test_*`, `flow_*`, `module.json` — there are no `impl_*` leaves; the arch leaf is the contract). That is your spec — do not re-derive it. Beads carry empty descriptions by design; the spec leaves are the source of truth. If `spec-files.txt` is empty, fall back to the spec references in the bead.
 
 ## Already-satisfied replacement path
 
-A doc-only edit to a component's `arch_*`/`impl_*` leaf still changes its hash, so the pipeline emits a replacement bead with zero code work. If the implementation and tests already exist on `origin/main` and satisfy the current spec, take this path instead of the TDD workflow. Verify first: the spec delta is non-behavioral (`git show <spec-commit> -- <arch_file>`) and `go build/vet/test` pass unchanged. Do not fabricate a diff; do not close the bead (review closes). Open a PR whose body explains why it should be closed: the delivering commit, the non-behavioral spec delta, and the verification run.
+A doc-only edit to a component's `arch_*` leaf still changes its hash, so the pipeline emits a replacement bead with zero code work. If the implementation and tests already exist on `origin/main` and satisfy the current spec, take this path instead of the TDD workflow. Verify first: the spec delta is non-behavioral (`git show <spec-commit> -- <arch_file>`) and `go build/vet/test` pass unchanged. Do not fabricate a diff; do not close the bead (review closes). Open a PR whose body explains why it should be closed: the delivering commit, the non-behavioral spec delta, and the verification run.
 
 ## Workflow (TDD)
 

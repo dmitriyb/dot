@@ -13,7 +13,7 @@ The **context** hook (`fetch-pr`) has run: it fetched the PR's review state via 
 
 1. The PR diff (you are on its branch) and `pr.json` (`.title`, `.body`, `.reviews[]`, `.comments[]`, `.commits[]`).
 2. The linked bead: extract the bead ID from the PR body/commits (the claim commit subject is `<bead-id>: start implement …`), then `br show <bead-id>`.
-3. The spec for the bead: `spex map context <record-id>` (from the bead's `spex:<n>` label) → read `arch_*.md`, `impl_*.md`, `test_*.md`, `flow_*.md`, `module.json`. No spec label → fall back to spec references in the bead/PR.
+3. The spec for the bead: `spex map context <record-id>` (from the bead's `spex:<n>` label) → read `arch_*.md`, `test_*.md`, `flow_*.md`, `module.json`. There are no `impl_*.md` leaves — the arch leaf IS the contract. No spec label → fall back to spec references in the bead/PR.
 
 ## Review flow
 
@@ -36,7 +36,7 @@ The bundle's `MODE` is coarse. Refine it:
 **Already-satisfied replacement:** if the diff is bead-state-only (+ optional skill/doc), verify against `origin/main` instead (delivering commit is an ancestor and satisfies the requirement, the spec delta is non-behavioral, `go build/vet/test` pass, the cross-bead scope guard holds). All → CLEAN.
 
 1. **Spec traceability**: code maps to bead requirements; no unrelated changes.
-2. **Spec hygiene** (blocker): the bead's spec leaves must match the shipped implementation. Stale prose (`impl_*` referencing removed methods; `test_*` with retired preconditions; output-shape mismatches; `arch_*` describing a contract the code doesn't honor) is a blocker. `spex validate` passing is NOT sufficient — read each leaf against the diff.
+2. **Spec hygiene** (blocker): the bead's spec leaves must match the shipped implementation. Stale prose (`test_*` with retired preconditions; output-shape mismatches; `arch_*` describing a contract the code doesn't honor) is a blocker. `spex validate` passing is NOT sufficient — read each leaf against the diff.
 3. **Bead completion** (most important): re-read the bead line by line; every requirement must have code. Verbs literal (replaces/adds/removes). `TODO`/`FIXME`/`HACK`/shim/compat wrappers deferring the bead's own work are automatic rejections.
 4. **Correctness**: error paths, edge cases, no leaks.
 5. **Patterns**: idiomatic, follows conventions.
