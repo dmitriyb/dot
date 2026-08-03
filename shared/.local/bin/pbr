@@ -1,0 +1,109 @@
+#!/usr/bin/env bash
+# pbr — portitor branches: manage the local branches of a gate instance's
+# bare mirror. The box's push of a deterministic branch name (claim-bead:
+# slug(bead)-slug(title)) is rejected as non-fast-forward when a stale branch
+# from an earlier run still sits on the mirror — portitor never deletes
+# branches itself, so this is the pre-rerun cleanup tool.
+#
+# Deletion here touches the MIRROR only (that is the intention); the
+# upstream forge branch, if one was forwarded, is managed on the forge.
+set -euo pipefail
+
+die() { echo "pbr: $1" >&2; exit "${2:-1}"; }
+
+usage() {
+	cat >&2 <<'EOF'
+Usage:
+  pbr [--instance <name>] [--repo <name>] list
+  pbr [--instance <name>] [--repo <name>] delete <branch>
+  pbr [--instance <name>] [--repo <name>] clear
+
+Verbs:
+  list             branches on the gate mirror (HEAD branch marked)
+  delete <branch>  delete one branch (the default branch is refused)
+  clear            delete every branch except the default
+
+Flags:
+  --instance <name>  gate instance; container portitor-<name>. Auto-detected
+                     when exactly one running portitor-* container exists.
+  --repo <name>      repo id (bare /srv/git/<name>.git). Auto-detected when
+                     the instance holds exactly one mirror.
+
+Exit: 0 ok, 1 runtime, 2 usage.
+EOF
+	exit "${1:-0}"
+}
+
+INSTANCE="" REPO="" VERB="" BRANCH=""
+while [[ $# -gt 0 ]]; do
+	case "$1" in
+		--instance) [[ $# -ge 2 ]] || die "--instance needs a value" 2; INSTANCE="$2"; shift 2 ;;
+		--repo)     [[ $# -ge 2 ]] || die "--repo needs a value" 2; REPO="$2"; shift 2 ;;
+		-h|--help)  usage 0 ;;
+		list|delete|clear)
+			VERB="$1"; shift
+			if [[ "$VERB" == delete ]]; then
+				[[ $# -ge 1 ]] || die "delete needs a branch name" 2
+				BRANCH="$1"; shift
+			fi
+			;;
+		*) die "unknown argument: $1 (see --help)" 2 ;;
+	esac
+done
+[[ -n "$VERB" ]] || usage 2
+
+command -v docker >/dev/null 2>&1 || die "docker not found on PATH" 1
+docker info >/dev/null 2>&1 || die "docker is not running" 1
+
+# ---- resolve the gate container -------------------------------------------
+if [[ -n "$INSTANCE" ]]; then
+	CT="portitor-$INSTANCE"
+	docker ps --format '{{.Names}}' | grep -qx "$CT" || die "container $CT is not running" 1
+else
+	mapfile -t cts < <(docker ps --format '{{.Names}}' | grep '^portitor-' || true)
+	[[ ${#cts[@]} -gt 0 ]] || die "no running portitor-* container (pass --instance)" 1
+	[[ ${#cts[@]} -eq 1 ]] || die "several gate containers running (${cts[*]}); pass --instance" 2
+	CT="${cts[0]}"
+fi
+
+gexec() { docker exec -u git "$CT" "$@"; }
+
+# ---- resolve the bare repo -------------------------------------------------
+if [[ -n "$REPO" ]]; then
+	BARE="/srv/git/$REPO.git"
+	gexec test -d "$BARE" || die "no mirror $BARE in $CT" 1
+else
+	mapfile -t bares < <(gexec sh -c 'ls -d /srv/git/*.git 2>/dev/null' || true)
+	[[ ${#bares[@]} -gt 0 ]] || die "no mirrors under /srv/git in $CT" 1
+	[[ ${#bares[@]} -eq 1 ]] || die "several mirrors in $CT (${bares[*]}); pass --repo" 2
+	BARE="${bares[0]}"
+fi
+
+git_in() { gexec git -C "$BARE" "$@"; }
+DEFAULT="$(git_in symbolic-ref --short HEAD)"
+
+case "$VERB" in
+	list)
+		git_in for-each-ref refs/heads --format='%(refname:short) %(objectname:short) %(subject)' \
+		| while IFS= read -r line; do
+			b="${line%% *}"
+			mark=" "; [[ "$b" == "$DEFAULT" ]] && mark="*"
+			echo "$mark $line"
+		done
+		;;
+	delete)
+		[[ "$BRANCH" != "$DEFAULT" ]] || die "refusing to delete the default branch '$DEFAULT'" 1
+		git_in branch -D "$BRANCH"
+		echo "pbr: deleted $BRANCH from $CT:$BARE"
+		;;
+	clear)
+		deleted=0
+		while IFS= read -r b; do
+			[[ "$b" == "$DEFAULT" ]] && continue
+			git_in branch -D "$b" >/dev/null
+			echo "pbr: deleted $b"
+			deleted=$((deleted + 1))
+		done < <(git_in for-each-ref refs/heads --format='%(refname:short)')
+		echo "pbr: $deleted branch(es) deleted from $CT:$BARE ('$DEFAULT' kept)"
+		;;
+esac
