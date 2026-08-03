@@ -40,8 +40,8 @@ prune_repo_links() {
                 "$DOTDIR"/* | */"$repo"/*) rm -f "$link" ;;
             esac
         done < <(paste -d '\t' \
-            <(find "$dir" -type l 2>/dev/null) \
-            <(find "$dir" -type l -exec readlink {} + 2>/dev/null))
+            <(find "$dir" -type l -not -path "*/.wants/*" -not -path "*/.requires/*" 2>/dev/null) \
+            <(find "$dir" -type l -not -path "*/.wants/*" -not -path "*/.requires/*" -exec readlink {} + 2>/dev/null))
     done
 }
 
@@ -123,8 +123,10 @@ if ! is_headless; then
             fi
             ;;
         Linux)
-            if systemctl --user is-active --quiet ssh-agent.service; then
-                echo "systemd ssh-agent.service already active."
+            # is-enabled (not is-active): a live process can outlast a lost Install
+            # symlink, so only "will this survive the next boot" is a valid skip check.
+            if systemctl --user is-enabled --quiet ssh-agent.service; then
+                echo "systemd ssh-agent.service already enabled."
             else
                 systemctl --user enable --now ssh-agent.service || true
                 echo "Enabled systemd user ssh-agent.service."
