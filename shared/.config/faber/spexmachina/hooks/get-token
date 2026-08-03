@@ -20,7 +20,16 @@ service="${1:?usage: get-token <service>}"
 
 case "$service" in
   claude_code_oauth_token)
-    security find-generic-password -s anthropic -a personal -w
+    # macOS keychain or Linux secret service — same coordinates on both.
+    if command -v security >/dev/null 2>&1; then
+      security find-generic-password -s anthropic -a personal -w
+    else
+      # faber runs resolvers against a minimal env (PATH/HOME/TMPDIR only);
+      # libsecret needs the session bus, so derive the standard systemd
+      # user-bus path when the address wasn't inherited.
+      export DBUS_SESSION_BUS_ADDRESS="${DBUS_SESSION_BUS_ADDRESS:-unix:path=/run/user/$(id -u)/bus}"
+      secret-tool lookup service anthropic account personal
+    fi
     ;;
   *)
     echo "get-token: no wiring for service '$service'" >&2

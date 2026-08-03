@@ -46,7 +46,7 @@ RUN set -eu; \
 FROM alpine:${ALPINE_VERSION}
 # git/openssh-server/tini/github-cli reproduce portitor's runtime; gcompat+libgcc
 # let the glibc `br` binary run on musl Alpine (br needs libgcc_s.so.1).
-RUN apk add --no-cache git openssh-server tini github-cli curl gcompat libgcc \
+RUN apk add --no-cache git openssh-server tini github-cli curl gcompat libgcc bash \
     && adduser -D -s /bin/sh git \
     # adduser -D leaves the account locked (! in shadow); sshd refuses pubkey
     # login to a locked account ("invalid user"). Mark it valid-but-passwordless.
@@ -64,7 +64,7 @@ RUN apk add --no-cache git openssh-server tini github-cli curl gcompat libgcc \
 #   curl -fsSL https://raw.githubusercontent.com/Dicklesworthstone/beads_rust/main/install.sh | sha256sum
 RUN curl -fsSL https://raw.githubusercontent.com/Dicklesworthstone/beads_rust/main/install.sh -o /tmp/br.sh \
     && echo "c398f2fbfbb5facaf255fd52cca22bb3ffe90f0a6e4660e4c34213a9c39863aa  /tmp/br.sh" | sha256sum -c - \
-    && sh /tmp/br.sh && rm /tmp/br.sh \
+    && bash /tmp/br.sh && rm /tmp/br.sh \
     && cp "$HOME/.local/bin/br" /usr/local/bin/br \
     && chmod 0755 /usr/local/bin/br \
     && br --version

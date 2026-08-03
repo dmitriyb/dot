@@ -133,16 +133,19 @@ end
 ```
 
 If the resident credentials already exist on the YubiKey but this host has no
-handle files, recover the handles straight into `~/.ssh` instead (PIN + touch;
-`ssh-keygen -K` downloads *every* resident credential into the cwd — filenames
-don't matter, tools match by fingerprint). The **`.pub` file must land in
-`~/.ssh`** so `role-keys` emits a `pub` path — `faber-stack` requires one for
-every role (it feeds both `AGENT_AUTHORIZED_KEY` and, for signers,
-`allowed_signers`).
+handle files, recover them with `restore-role-keys` (stowed from dot to
+`~/.local/bin`; PIN + one touch). Do **not** use raw `ssh-keygen -K`: it stamps
+every downloaded handle "user presence required" regardless of the no-touch
+policy the credentials were created with (a stock-OpenSSH limitation), and the
+boxes' autonomous signing then dies with "agent refused operation".
+`restore-role-keys` downloads and restores the client-side no-touch flag in one
+step, installs handle + `.pub` into `~/.ssh`, and verifies with a touch-free
+test signature. The **`.pub` file must land in `~/.ssh`** so `role-keys` emits
+a `pub` path — `faber-stack` requires one for every role (it feeds both
+`AGENT_AUTHORIZED_KEY` and, for signers, `allowed_signers`).
 
 ```fish
-cd ~/.ssh
-ssh-keygen -K -N ""
+restore-role-keys
 ```
 
 ---

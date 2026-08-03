@@ -14,8 +14,13 @@ templates:
     identity: implementer
     run:
       resources: {memory: 8g, cpus: 4}
-      env: {FABER_AGENT_CLI: claude, PORTITOR_HOST: portitor-spex, ANTHROPIC_MODEL: claude-sonnet-5}  # PORTITOR_HOST: the gate container the pr/portitor client targets
+      env: {FABER_AGENT_CLI: claude, PORTITOR_HOST: portitor-spex}  # PORTITOR_HOST: the gate container the pr/portitor client targets
+      volumes:
+        /home/paalori/.config/faber/spexmachina/etc/passwd: /etc/passwd   # box ships no passwd; ssh needs getpwuid (see etc/README.md)
+        /home/paalori/.config/faber/spexmachina/etc/group: /etc/group
     skill: implement
+    model: claude-sonnet-5
+    effort: high
     skills: [implement, go-expert]
     skills_link: .claude/skills
     hooks:
@@ -33,8 +38,13 @@ templates:
     image: spex-box
     identity: reviewer             # the ONLY role permitted to close beads (portitor role rule)
     run:
-      env: {FABER_AGENT_CLI: claude, PORTITOR_HOST: portitor-spex, ANTHROPIC_MODEL: claude-opus-5}  # PORTITOR_HOST: the gate container the pr/portitor client targets
+      env: {FABER_AGENT_CLI: claude, PORTITOR_HOST: portitor-spex}  # PORTITOR_HOST: the gate container the pr/portitor client targets
+      volumes:
+        /home/paalori/.config/faber/spexmachina/etc/passwd: /etc/passwd   # box ships no passwd; ssh needs getpwuid (see etc/README.md)
+        /home/paalori/.config/faber/spexmachina/etc/group: /etc/group
     skill: review
+    model: claude-opus-5
+    effort: high
     skills: [review, go-expert]
     skills_link: .claude/skills
     hooks:
@@ -49,8 +59,13 @@ templates:
     image: spex-box
     identity: implementer          # fixes are authored by the implementer identity
     run:
-      env: {FABER_AGENT_CLI: claude, PORTITOR_HOST: portitor-spex, ANTHROPIC_MODEL: claude-sonnet-5}  # PORTITOR_HOST: the gate container the pr/portitor client targets
+      env: {FABER_AGENT_CLI: claude, PORTITOR_HOST: portitor-spex}  # PORTITOR_HOST: the gate container the pr/portitor client targets
+      volumes:
+        /home/paalori/.config/faber/spexmachina/etc/passwd: /etc/passwd   # box ships no passwd; ssh needs getpwuid (see etc/README.md)
+        /home/paalori/.config/faber/spexmachina/etc/group: /etc/group
     skill: fix
+    model: claude-sonnet-5
+    effort: high
     skills: [fix, go-expert]
     skills_link: .claude/skills
     hooks:
@@ -66,7 +81,12 @@ templates:
     identity: merger               # commit-less landing identity (portitor action policy gates merge)
     run:
       env: {FABER_AGENT_CLI: claude, PORTITOR_HOST: portitor-spex}  # PORTITOR_HOST: the gate container the pr/portitor client targets
+      volumes:
+        /home/paalori/.config/faber/spexmachina/etc/passwd: /etc/passwd   # box ships no passwd; ssh needs getpwuid (see etc/README.md)
+        /home/paalori/.config/faber/spexmachina/etc/group: /etc/group
     skill: merge
+    model: claude-sonnet-5
+    effort: low
     skills: [merge]
     skills_link: .claude/skills
     inputs:

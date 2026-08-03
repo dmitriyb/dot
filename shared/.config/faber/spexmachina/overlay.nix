@@ -34,7 +34,7 @@ let
   brVersion = "0.2.16";
   brSha256 = {
     "arm64"  = "0lfch2p45cky01fakcrx2kwg6wl1lf1kwiqpwq0grsl3slqdrdc4";   # verified
-    "x86_64" = final.lib.fakeSha256;   # TODO: fill from the linux_x86_64 asset
+    "x86_64" = "19mirqrbcl2zzm3sm65rijms9glkjygnqk9kqzknd4gc9k2gn7j6";   # verified (nix-prefetch-url, arch host)
   };
 in
 {
@@ -89,10 +89,10 @@ in
     src = final.fetchFromGitHub {
       owner = "dmitriyb";
       repo = "spexmachina";
-      rev = "397866dda3810ba3cdcc499719b58fc61c75a4a0";
-      sha256 = "19hzb3isarpanc91845r3891v99llgwax2s03ny7ws395jba8ix7";
+      rev = "23b2db5082426b5c6ea1b562301c72389626e87c";   # post-task-journal-spec main (epic minted, bead-map model intact)
+      sha256 = "0xyy471i8b69z7qgkji97hvyflb9lfjwf5y64ivzdryhgsvsl99l";
     };
-    vendorHash = "sha256-hiE+LAr6gsCyMKq+Z3FkJitSW4GGTjyMCL5F6BbTVgs=";
+    vendorHash = "sha256-hiE+LAr6gsCyMKq+Z3FkJitSW4GGTjyMCL5F6BbTVgs=";   # unchanged by the 23b2db5 bump (same go.mod deps)
     subPackages = [ "cmd/spex" ];
     meta.description = "Spex Machina structural spec CLI";
   };

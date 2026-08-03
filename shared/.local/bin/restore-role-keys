@@ -1,0 +1,74 @@
+#!/usr/bin/env bash
+# restore-role-keys — re-materialize the faber role-key handles from the
+# YubiKey, with the no-touch policy they were CREATED with.
+#
+# Why this exists: `ssh-keygen -K` downloads resident-key handles but stamps
+# every one "user presence required" (flags 0x21) regardless of how the
+# credential was created — a stock-OpenSSH limitation with no -O override on
+# -K. The no-touch policy is a CLIENT-SIDE flag in the handle file (FIDO2
+# stores no per-credential UP policy; the client requests UP per assertion),
+# so restoring it is a one-byte edit of the freshly downloaded file:
+# 0x21 -> 0x20 (keep "resident", clear "user-presence required"). The
+# credential on the authenticator is never modified.
+#
+# Usage: restore-role-keys [role ...]        (default: implementer reviewer merger)
+# Needs: the YubiKey plugged in; asks PIN + one touch for the download.
+# Writes: ~/.ssh/id_ed25519_sk_rk_<role>{,.pub}, 0600/0644. Non-role resident
+# handles the download surfaces are discarded. Existing files are overwritten
+# (they are re-derivable from the authenticator at any time).
+set -euo pipefail
+
+roles=("${@:-implementer reviewer merger}")
+[[ $# -gt 0 ]] || roles=(implementer reviewer merger)
+
+tmp="$(mktemp -d)"
+trap 'rm -rf "$tmp"' EXIT
+cd "$tmp"
+
+echo "restore-role-keys: downloading resident keys (PIN + one touch)…" >&2
+ssh-keygen -K -N "" >&2
+
+python3 - "$tmp" "${roles[@]}" <<'PY'
+import base64, os, struct, sys, pathlib
+tmp = pathlib.Path(sys.argv[1]); roles = sys.argv[2:]
+ssh = pathlib.Path.home() / ".ssh"
+
+def rd_s(b, o):
+    n = struct.unpack('>I', b[o:o+4])[0]
+    return b[o+4:o+4+n], o+4+n
+
+def flags_offset(blob):
+    off = len(b'openssh-key-v1\x00')
+    for _ in range(3):                      # cipher, kdf, kdfopts
+        _, off = rd_s(blob, off)
+    off += 4                                # nkeys
+    _, off = rd_s(blob, off)                # public blob
+    o = off + 4 + 8                         # priv len + check ints
+    for _ in range(3):                      # keytype, pub, application
+        _, o = rd_s(blob, o)
+    return o
+
+for role in roles:
+    src = tmp / f"id_ed25519_sk_rk_{role}"
+    if not src.exists():
+        sys.exit(f"restore-role-keys: no resident credential ssh:{role} on this authenticator")
+    b64 = ''.join(l for l in src.read_text().splitlines() if not l.startswith('----'))
+    blob = bytearray(base64.b64decode(b64))
+    o = flags_offset(blob)
+    if blob[o] == 0x21:
+        blob[o] = 0x20                      # clear user-presence-required, keep resident
+    elif blob[o] != 0x20:
+        sys.exit(f"restore-role-keys: {role}: unexpected flags 0x{blob[o]:02x}")
+    enc = base64.b64encode(bytes(blob)).decode()
+    body = '\n'.join(enc[i:i+70] for i in range(0, len(enc), 70))
+    dst = ssh / src.name
+    dst.write_text(f"-----BEGIN OPENSSH PRIVATE KEY-----\n{body}\n-----END OPENSSH PRIVATE KEY-----\n")
+    os.chmod(dst, 0o600)
+    pub = ssh / (src.name + ".pub")
+    pub.write_text((tmp / (src.name + ".pub")).read_text())
+    os.chmod(pub, 0o644)
+    print(f"{role}: installed {dst} (no-touch restored)")
+PY
+
+echo "restore-role-keys: verify (should print SIGN-OK with NO touch prompt):" >&2
+ssh-agent sh -c "ssh-add -q $HOME/.ssh/id_ed25519_sk_rk_${roles[0]} && echo x | ssh-keygen -Y sign -n test -f $HOME/.ssh/id_ed25519_sk_rk_${roles[0]}.pub - >/dev/null && echo SIGN-OK"
