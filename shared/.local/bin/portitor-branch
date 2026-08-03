@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# pbr — portitor branches: manage the local branches of a gate instance's
+# portitor-branch — manage the local branches of a gate instance's
 # bare mirror. The box's push of a deterministic branch name (claim-bead:
 # slug(bead)-slug(title)) is rejected as non-fast-forward when a stale branch
 # from an earlier run still sits on the mirror — portitor never deletes
@@ -9,14 +9,14 @@
 # upstream forge branch, if one was forwarded, is managed on the forge.
 set -euo pipefail
 
-die() { echo "pbr: $1" >&2; exit "${2:-1}"; }
+die() { echo "portitor-branch: $1" >&2; exit "${2:-1}"; }
 
 usage() {
 	cat >&2 <<'EOF'
 Usage:
-  pbr [--instance <name>] [--repo <name>] list
-  pbr [--instance <name>] [--repo <name>] delete <branch>
-  pbr [--instance <name>] [--repo <name>] clear
+  portitor-branch [--instance <name>] [--repo <name>] list
+  portitor-branch [--instance <name>] [--repo <name>] delete <branch>
+  portitor-branch [--instance <name>] [--repo <name>] clear
 
 Verbs:
   list             branches on the gate mirror (HEAD branch marked)
@@ -94,16 +94,16 @@ case "$VERB" in
 	delete)
 		[[ "$BRANCH" != "$DEFAULT" ]] || die "refusing to delete the default branch '$DEFAULT'" 1
 		git_in branch -D "$BRANCH"
-		echo "pbr: deleted $BRANCH from $CT:$BARE"
+		echo "portitor-branch: deleted $BRANCH from $CT:$BARE"
 		;;
 	clear)
 		deleted=0
 		while IFS= read -r b; do
 			[[ "$b" == "$DEFAULT" ]] && continue
 			git_in branch -D "$b" >/dev/null
-			echo "pbr: deleted $b"
+			echo "portitor-branch: deleted $b"
 			deleted=$((deleted + 1))
 		done < <(git_in for-each-ref refs/heads --format='%(refname:short)')
-		echo "pbr: $deleted branch(es) deleted from $CT:$BARE ('$DEFAULT' kept)"
+		echo "portitor-branch: $deleted branch(es) deleted from $CT:$BARE ('$DEFAULT' kept)"
 		;;
 esac

@@ -18,6 +18,25 @@
 # (they are re-derivable from the authenticator at any time).
 set -euo pipefail
 
+usage() {
+	cat >&2 <<'EOF2'
+Usage: restore-role-keys [role ...]      (default: implementer reviewer merger)
+
+Re-downloads the YubiKey's resident role keys and restores the client-side
+no-touch flag (raw `ssh-keygen -K` stamps every handle touch-required).
+Needs the YubiKey plugged in; asks PIN + one touch. Writes
+~/.ssh/id_ed25519_sk_rk_<role>{,.pub} (existing files overwritten — they are
+re-derivable from the authenticator at any time).
+EOF2
+	exit "${1:-0}"
+}
+for a in "$@"; do
+	case "$a" in
+		-h|--help) usage 0 ;;
+		-*) echo "restore-role-keys: unknown option: $a" >&2; usage 2 ;;
+	esac
+done
+
 roles=("${@:-implementer reviewer merger}")
 [[ $# -gt 0 ]] || roles=(implementer reviewer merger)
 

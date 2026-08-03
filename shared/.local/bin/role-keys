@@ -26,7 +26,7 @@ die() { echo "role-keys: $*" >&2; exit 1; }
 
 usage() {
 	cat >&2 <<'EOF'
-Usage: role-keys [--yubikey] [--repo <name> ...] [--apply] [--json]
+Usage: role-keys [--yubikey] [--repo <name> ...] [--apply] [--git-email <addr>] [--json]
 
 Enumerates your SSH keys (~/.ssh/*.pub + the running ssh-agent, and with
 --yubikey the attached YubiKey's resident keys), lets you assign a role name to
@@ -35,8 +35,14 @@ each, and emits `faber add-key` + `portitor add-role` commands.
   --yubikey   also enumerate resident keys off an attached YubiKey
               (ssh-keygen -K into a temp dir; needs PIN + touch; handles discarded).
   --repo R    emit portitor add-role lines for repo R (repeatable; default: a <REPO> placeholder).
-  --apply     run `faber add-key` locally for each assignment (global registry on THIS host).
-              portitor lines are always only PRINTED — portitor runs on the gate host.
+  --apply     run `faber add-key` locally for each assignment (global registry
+              on THIS host). portitor lines are always only PRINTED — portitor
+              runs on the gate host.
+  --git-email <addr>
+              committer email registered with every assigned role (faber
+              add-key --git-email). REQUIRED for gated steps: boxes refuse to
+              run a role without one, and the forge verifies signatures only
+              against an email registered to the key's account.
   --json      NON-INTERACTIVE: emit the roles ALREADY registered in faber's
               registry (role->fingerprint + ~/.ssh pub) as JSON, for
               `| faber-stack up`. Assign once with --apply first. Needs jq.
@@ -49,6 +55,7 @@ while [[ $# -gt 0 ]]; do
 		--yubikey) YUBIKEY=true; shift ;;
 		--repo) [[ $# -ge 2 ]] || die "--repo needs a value"; REPOS+=("$2"); shift 2 ;;
 		--apply) APPLY=true; shift ;;
+		--git-email) [[ $# -ge 2 ]] || die "--git-email needs a value"; GIT_EMAIL="$2"; shift 2 ;;
 		--json) JSON=true; shift ;;
 		-h|--help) usage 0 ;;
 		*) die "unknown argument: $1 (see --help)" ;;
@@ -59,6 +66,9 @@ command -v ssh-keygen >/dev/null 2>&1 || die "ssh-keygen not found"
 $JSON && ! command -v jq >/dev/null 2>&1 && die "--json needs jq on PATH"
 $JSON && $APPLY && echo "role-keys: --json emits data only; --apply is ignored with it." >&2
 $APPLY && ! command -v faber >/dev/null 2>&1 && die "--apply needs the faber binary on PATH"
+if $APPLY && [[ -z "${GIT_EMAIL:-}" ]]; then
+	echo "role-keys: warning: no --git-email — roles register without a committer email and gated boxes will refuse to run them (add later: faber add-key --role <r> --fingerprint <fp> --git-email <addr>)" >&2
+fi
 
 # Single cleanup for every temp: named files plus the YubiKey handle dir. cleanup
 # runs on EXIT; INT/TERM re-raise as `exit 130`, which TRIGGERS the EXIT trap — so
@@ -184,12 +194,13 @@ apply_fail=0
 echo >&2
 echo "# --- faber (global, run on THIS host) ---"
 while IFS=$'\t' read -r role fp comment pub; do
+	args=(--role "$role" --fingerprint "$fp")
+	[[ -n "$comment" ]] && args+=(--comment "$comment")
+	[[ -n "${GIT_EMAIL:-}" ]] && args+=(--git-email "$GIT_EMAIL")
 	if $APPLY; then
-		if [[ -n "$comment" ]]; then faber add-key --role "$role" --fingerprint "$fp" --comment "$comment" || apply_fail=$((apply_fail+1))
-		else faber add-key --role "$role" --fingerprint "$fp" || apply_fail=$((apply_fail+1)); fi
+		faber add-key "${args[@]}" || apply_fail=$((apply_fail+1))
 	else
-		if [[ -n "$comment" ]]; then printf 'faber add-key --role %q --fingerprint %q --comment %q\n' "$role" "$fp" "$comment"
-		else printf 'faber add-key --role %q --fingerprint %q\n' "$role" "$fp"; fi
+		printf 'faber add-key'; printf ' %q' "${args[@]}"; printf '\n'
 	fi
 done <"$ASSIGN_FILE"
 

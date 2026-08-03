@@ -21,7 +21,9 @@ images:
     # not found` in the first trial-bead run).
     # cacert: system CA roots — Go verifies TLS against them for the module
     # proxy fetches (claude bundles its own roots; Go does not).
-    packages: [git, openssh, go, gopls, coreutils, gnused, gnugrep, gawk, diffutils, findutils, bash, jq, cacert, spex, br, claude-code, portitor-client]
+    # box-etc: bakes /etc/passwd+group into the image (ssh's getpwuid after the
+    # uid drop) — replaces the old per-host bind mounts, no host paths involved.
+    packages: [git, openssh, go, gopls, coreutils, gnused, gnugrep, gawk, diffutils, findutils, bash, jq, cacert, spex, br, claude-code, portitor-client, box-etc]
     overlay: ./overlay.nix
     # nixos-25.11 (Go 1.25.10) — spex's go.mod requires go >= 1.25.0, newer than
     # faber's compiled-in default pin ships. Reproducible commit-pinned snapshot.

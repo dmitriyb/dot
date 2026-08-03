@@ -105,6 +105,9 @@ Flags:
   --commit-email <e>    allowed committer email for the gate's email allowlist (repeatable;
                         CONVERGED like --allow: omitted on a later run = field dropped, check off;
                         requires a portitor release that knows allowed_committer_emails)
+  --build               also run `faber validate` + `faber build` against
+                        <project>/orchestrator.yaml before bringing the stack up —
+                        one command yields images + gate, leaving only `faber run`
   --config-dir <dir>    override config dir (default $XDG_CONFIG_HOME/portitor/<instance>)
   --repo <name>         portitor repo id / repos.d basename (default: repo half of --slug)
   --map <p>=<a>         map portitor role <p> to a differently-named stdin role <a> (repeatable)
@@ -126,6 +129,7 @@ case "$VERB" in up|down|status|restart) ;; *) die "unknown verb: $VERB (want up|
 INSTANCE="" SLUG="" PAT="" PROJECT="" CONFIG_DIR="" REPO=""
 ALLOW=() MAP_ARGS=() COMMIT_EMAILS=()
 PORTITOR_BIN_ARG=""
+BUILD=false
 
 need_val() { [[ $# -ge 2 ]] || die "$1 needs a value" 2; }
 while [[ $# -gt 0 ]]; do
@@ -138,6 +142,7 @@ while [[ $# -gt 0 ]]; do
 		--repo)         need_val "$@"; REPO="$2"; shift 2 ;;
 		--allow)        need_val "$@"; ALLOW+=("$2"); shift 2 ;;
 		--commit-email) need_val "$@"; COMMIT_EMAILS+=("$2"); shift 2 ;;
+		--build)        BUILD=true; shift ;;
 		--map)          need_val "$@"; MAP_ARGS+=("$2"); shift 2 ;;
 		--portitor-bin)  need_val "$@"; PORTITOR_BIN_ARG="$2"; shift 2 ;;
 		-h|--help)      usage 0 ;;
@@ -178,6 +183,7 @@ if [[ "$VERB" == up || "$VERB" == restart ]]; then
 	for e in ${COMMIT_EMAILS[@]+"${COMMIT_EMAILS[@]}"}; do
 		[[ "$e" =~ $EMAIL_RE ]] || die "invalid --commit-email '$e' (want local@domain, no whitespace)" 2
 	done
+	$BUILD && ! command -v faber >/dev/null 2>&1 && die "--build needs the faber binary on PATH" 2
 fi
 
 # Config dir (default per-instance under XDG). Absolutize (compose bind source).
@@ -211,6 +217,19 @@ fi
 command -v docker >/dev/null 2>&1 || die "docker not found on PATH — install/start docker" 1
 command -v jq >/dev/null 2>&1     || die "jq not found on PATH — install jq" 1
 docker info >/dev/null 2>&1       || die "docker is not running — start docker" 1
+
+# ---- --build: validate + build the box images first ------------------------
+# Fail-fast ordering: a config error dies here, before any gate/network
+# mutation. The config path is passed ABSOLUTE on purpose — with a relative
+# --config faber resolves hook/skill paths against the CWD and every gated box
+# dies at docker's bind-mount guard.
+if $BUILD; then
+	cfg="$(cd -- "$PROJECT" && pwd)/orchestrator.yaml"
+	[[ -f "$cfg" ]] || die "--build: no orchestrator.yaml under --project ($cfg)" 2
+	echo "faber-stack: faber validate + build ($cfg)" >&2
+	faber validate --config "$cfg" || die "faber validate failed" 1
+	faber build    --config "$cfg" || die "faber build failed" 1
+fi
 
 # The gh_token secret is environment-sourced (secrets.gh_token.environment in
 # portitor-stack.yml). That feature landed in Docker Compose 2.20; on anything

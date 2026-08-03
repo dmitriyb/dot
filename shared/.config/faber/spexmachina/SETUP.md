@@ -99,6 +99,26 @@ it inside the gate) — so no portitor checkout is needed at all.
 `portitor`. The gate image is cached, so to rebuild it against a newer portitor,
 drop it — `docker rmi portitor` — and faber-stack rebuilds it on the next `up`.
 
+### macOS host notes (skip on Linux)
+
+Two Docker-Desktop quirks need one explicit file, `~/.config/faber/host.json`
+(faber's per-machine config; strict-decoded, no environment involved):
+
+- the VM presents faber's forwarded agent socket as root-owned, so the box's
+  dropped user needs group-0 membership (`--group-add`; membership, not root
+  powers) — `agent_socket_group`;
+- the VM does not share `/usr/local`, so the default faber-box mount silently
+  becomes an empty directory — keep a real COPY under `~` (a symlink resolves
+  back to the unshared path) and point `box_bin` at it. Refresh the copy after
+  every `faber upgrade`.
+
+```fish
+mkdir -p ~/.local/libexec
+install /usr/local/bin/faber-box ~/.local/libexec/faber-box
+printf '{"agent_socket_group":"0","box_bin":"%s"}\n' ~/.local/libexec/faber-box \
+    > ~/.config/faber/host.json
+```
+
 ---
 
 ## 2. Build the box image
@@ -115,6 +135,9 @@ faber build    --config orchestrator.yaml
 docker run --rm faber/implement:<toolset-hash> sh -lc 'spex --help >/dev/null && br --version && claude --version'
 ```
 
+Day-to-day you can skip this step: `faber-stack up --build` (§6) runs
+validate + build for you before bringing the gate up.
+
 ---
 
 ## 3. Create the role keys
@@ -126,14 +149,14 @@ Skip any role whose key you already have.
 
 A registered key alone is not enough for the green **Verified** badge: GitHub
 also requires the commit's *committer email* to be a verified email on the
-account that owns the key. That email rides in as `FABER_GIT_EMAIL` on the
-**faber host env** (stowed from dot: `~/.config/fish/conf.d/faber.fish`) — it
-cannot go in a template's `env:` block, because the `FABER_` namespace is
-engine-owned and `faber validate` rejects it there. Without it every commit
-shows **Unverified** (`reason: no_user`) despite a valid signature; gated
-steps refuse to start instead of committing as an unverifiable synthetic
-address. The gate's own signature check is key-based and unaffected either
-way.
+account that owns the key. That email is **role-registry state** — registered
+with the key binding via `faber add-key --git-email` (step 4); faber reads no
+configuration from the process environment, and a template's `env:` block
+cannot carry it either (the `FABER_` namespace is engine-owned). Without it
+every commit shows **Unverified** (`reason: no_user`) despite a valid
+signature; gated steps refuse to start instead of committing as an
+unverifiable synthetic address. The gate's own signature check is key-based
+and unaffected either way.
 
 ```fish
 for role in implementer reviewer merger
@@ -165,11 +188,12 @@ restore-role-keys
 
 `role-keys` enumerates your keys, you name each, and it applies `faber add-key`
 locally (the global role→fingerprint registry faber resolves identities against).
-Confirm `orchestrator.yaml`'s three identities are empty registry entries (`{}`)
-so faber looks each up by name.
+`--git-email` registers the committer email with every role — required before
+any gated step runs (see step 3). Confirm `orchestrator.yaml`'s three
+identities are empty registry entries (`{}`) so faber looks each up by name.
 
 ```fish
-role-keys --apply
+role-keys --apply --git-email <verified-account-email>
 ```
 
 The identities block should read:
@@ -218,8 +242,8 @@ so always run the command with the full set.
 
 The `--commit-email` entry seeds the gate's `allowed_committer_emails` policy:
 portitor rejects any pushed commit whose committer email isn't listed, closing
-the gap where a box with a misconfigured `FABER_GIT_EMAIL` would land commits
-GitHub can never verify. Like `--allow`, it is CONVERGED on every `up` — omit
+the gap where a box whose role has a misregistered committer email would land
+commits GitHub can never verify. Like `--allow`, it is CONVERGED on every `up` — omit
 it and the field (and check) is dropped again. It needs a portitor release
 that knows the key (an older gate binary refuses a config carrying it).
 
@@ -227,8 +251,13 @@ that knows the key (an older gate binary refuses a config carrying it).
 role-keys --json \
     | faber-stack up --instance $INSTANCE --slug $SLUG --pat $PAT --project $PROJECT \
         --allow proxy.golang.org --allow sum.golang.org \
-        --commit-email dvbozhko@gmail.com
+        --commit-email dvbozhko@gmail.com \
+        --build
 ```
+
+`--build` folds step 2 in: `faber validate` + `faber build` run first (against
+the absolute `$PROJECT/orchestrator.yaml`), so this one command yields images
+plus gate and the only thing left is `faber run`.
 
 On the first `up`, faber-stack builds the gate image from dot's context
 (`~/.local/share/portitor/`): it fetches + SSHSIG-verifies the latest portitor
@@ -257,16 +286,27 @@ into the image by the step-2 build, and the gate is up from step 6.
 Run one bead through the full **Gate B** chain (implement → review loop →
 auto-merge). Pick a ready bead first.
 
+Pass the config by **absolute path**: with a relative `--config`, faber
+resolves the library paths (hooks, skills) relative to the process CWD and
+every gated box dies at docker's bind-mount guard ("host path is relative").
+
 ```fish
 cd "$PROJECT"
 br ready
-faber run bead --config orchestrator.yaml --param bead=<bead-id>
+faber run bead --config "$PROJECT/orchestrator.yaml" --param bead=<bead-id>
 ```
 
-For a human-reviewed epic instead (fan-out, no auto-merge):
+For an epic, the same full chain runs as a pull-loop, one cycle at a time:
+each cycle's box picks the next ready epic bead from inside the clone (br in
+the image; the host needs no br), lands it, and the loop ends on the first
+cycle that finds nothing ready. Sequential landing is also correctness —
+every merge advances main and the gate's stale-base rule rejects branches
+claimed off an older main. A failed cycle fail-stops the epic after the
+already-landed beads; `faber resume` continues — run `portitor-branch clear` (alias `pbr`) first to
+drop the failed cycle's stale mirror branch.
 
 ```fish
-faber run epic --config orchestrator.yaml --param epic=<epic-id>
+faber run epic --config "$PROJECT/orchestrator.yaml" --param epic=<epic-id>
 ```
 
 ---

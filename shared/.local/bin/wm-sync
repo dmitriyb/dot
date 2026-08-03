@@ -152,6 +152,9 @@ def aero_window_rules(workspaces: list[dict]) -> list[str]:
 
 def main() -> int:
     args = set(sys.argv[1:])
+    if args & {"-h", "--help"}:
+        print(__doc__.strip())
+        return 0
     check = "--check" in args
     show_diff = "--diff" in args
     if args - {"--check", "--diff"}:

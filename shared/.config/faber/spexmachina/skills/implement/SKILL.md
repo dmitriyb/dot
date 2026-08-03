@@ -47,10 +47,24 @@ Before committing, re-read the bead and verify **every** claim is met. Mandatory
 
 ## Emit your result (required)
 
-Last step, after the PR exists — faber scores the step from this file:
+Last step, after the PR exists — faber scores the step from this file.
+
+Single-bead run (your inputs carry a bead id):
 
 ```bash
 printf '{"branch":"%s","pr":%s}\n' "$BRANCH" "<pr-number>" > "$FABER_RESULT_DIR/output.json"
+```
+
+Epic cycle (your inputs carry an epic id — CONTEXT.md says so):
+
+```bash
+printf '{"done":false,"branch":"%s","pr":%s}\n' "$BRANCH" "<pr-number>" > "$FABER_RESULT_DIR/output.json"
+```
+
+Done-cycle (CONTEXT.md says no ready bead remains — you did no work):
+
+```bash
+printf '{"done":true}\n' > "$FABER_RESULT_DIR/output.json"
 ```
 
 `branch` is `$BRANCH` from your environment; `pr` is the integer PR number the gate auto-opened for your push (step 8).

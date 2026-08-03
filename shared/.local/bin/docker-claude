@@ -18,12 +18,11 @@ docker-claude — single entrypoint for the containerized Claude cockpit.
 
 usage:
   docker-claude personal [-a] [-r | --no-cache] [--workspace <path>]
-  docker-claude work | direct [-r | --no-cache]
+  docker-claude work [-r | --no-cache]
 
 commands:
   personal           personal account, Anthropic OAuth token from the keychain
   work               work account via the wire proxy (needs the `wire` CLI)
-  direct             work account with a direct API key from the keychain
 
 options:
   -a, --agent        personal only: forward an ephemeral no-touch SSH signing agent
@@ -33,7 +32,7 @@ options:
   --workspace <path> host dir to mount as the workspace (default: ~/Work, ~/work on macOS)
   -h, --help         show this help
 
-aliases: dc=docker-claude, dcp=personal, dcw=work, dcwd=direct.
+aliases: dc=docker-claude, dcp=personal, dcw=work.
 
 examples:
   docker-claude personal --agent     # interactive personal session w/ signing agent
@@ -68,10 +67,6 @@ work)
   shift
   set -- --work "$@"
   ;;
-direct)
-  shift
-  set -- --direct "$@"
-  ;;
 help)
   usage
   exit 0
@@ -91,10 +86,6 @@ while [[ $# -gt 0 ]]; do
     ;;
   -w | --work)
     MODE="work"
-    shift
-    ;;
-  --direct)
-    MODE="direct"
     shift
     ;;
   -r | --rebuild)
@@ -180,7 +171,7 @@ if [[ "$REBUILD" == true ]]; then
     exit 0
   fi
   [[ "$MODE" == "personal" ]] && build_personal
-  [[ "$MODE" == "work" || "$MODE" == "direct" ]] && build_work
+  [[ "$MODE" == "work" ]] && build_work
 else
   if ! docker image inspect "$BASE_IMAGE" &>/dev/null; then
     build_base
@@ -188,13 +179,13 @@ else
   if [[ "$MODE" == "personal" ]] && ! docker image inspect "$PERSONAL_IMAGE" &>/dev/null; then
     build_personal
   fi
-  if [[ "$MODE" == "work" || "$MODE" == "direct" ]] && ! docker image inspect "$WORK_IMAGE" &>/dev/null; then
+  if [[ "$MODE" == "work" ]] && ! docker image inspect "$WORK_IMAGE" &>/dev/null; then
     build_work
   fi
 fi
 
 if [[ -z "$MODE" ]]; then
-  echo "Error: specify an account mode (-p | -w | --direct)." >&2
+  echo "Error: specify an account mode (-p | -w)." >&2
   usage >&2
   exit 1
 fi
@@ -279,7 +270,7 @@ Then store it:
   exit $rc
 fi
 
-# Common work args (shared between wire and direct modes)
+# Common work args (wire mode)
 WORK_REPO_VOLUME="claude-work-repos"
 WORK_COMMON_ARGS=(
   -it --rm
@@ -319,19 +310,3 @@ if [[ "$MODE" == "work" ]]; then
   exit $rc
 fi
 
-if [[ "$MODE" == "direct" ]]; then
-  # Direct API key mode (from OS keychain)
-  KEY=$(keychain_require "Claude Code" "" "work Claude Code API key" \
-    "Log into Claude Code with your work account first (claude login).
-The key is stored automatically in the OS keychain.")
-  resolve_gh_args work
-  add_secret_mount anthropic_api_key "$KEY"
-
-  docker run \
-    "${WORK_COMMON_ARGS[@]}" \
-    ${SECRET_ARGS[@]+"${SECRET_ARGS[@]}"} \
-    "$WORK_IMAGE"
-  rc=$?
-  cleanup_secrets
-  exit $rc
-fi

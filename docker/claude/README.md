@@ -59,13 +59,12 @@ Load your normal (touch) keys into the main agent with `ssh-load-keys`, which ex
 docker-claude personal             # Personal account (Max subscription via OAuth)
 docker-claude personal --agent     # Personal, agent mode: ephemeral no-touch signing agent
 docker-claude work                 # Work account (via wire proxy, default)
-docker-claude direct               # Work account (direct API key from keychain)
 docker-claude personal -r          # Rebuild images, then launch personal
 docker-claude personal --no-cache  # Full fresh rebuild (re-downloads everything)
 docker-claude personal --workspace ~/projects  # Custom workspace mount (personal only)
 ```
 
-Aliases: `dc` (docker-claude), `dcp` (personal), `dcw` (work), `dcwd` (direct).
+Aliases: `dc` (docker-claude), `dcp` (personal), `dcw` (work).
 
 ## Trust model
 

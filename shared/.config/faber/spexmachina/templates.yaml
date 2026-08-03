@@ -15,9 +15,6 @@ templates:
     run:
       resources: {memory: 8g, cpus: 4}
       env: {FABER_AGENT_CLI: claude, PORTITOR_HOST: portitor-spex}  # PORTITOR_HOST: the gate container the pr/portitor client targets
-      volumes:
-        /home/paalori/.config/faber/spexmachina/etc/passwd: /etc/passwd   # box ships no passwd; ssh needs getpwuid (see etc/README.md)
-        /home/paalori/.config/faber/spexmachina/etc/group: /etc/group
     skill: implement
     model: claude-sonnet-5
     effort: high
@@ -34,14 +31,40 @@ templates:
       branch: {type: string, required: true}
       pr:     {type: int,    required: true}
 
+  # The epic pull-loop's implementer: same box, same skill, but instead of a
+  # given bead id it takes the EPIC id and selects the next ready child bead
+  # from INSIDE the box (next-bead-context; br + spex are in the image, so the
+  # host needs neither). Output carries the done sentinel: {done:false, branch,
+  # pr} on a work cycle, {done:true} when no ready bead remains — the epic
+  # workflow's outer loop settles on it.
+  implement-next:
+    image: spex-box
+    identity: implementer
+    run:
+      resources: {memory: 8g, cpus: 4}
+      env: {FABER_AGENT_CLI: claude, PORTITOR_HOST: portitor-spex}  # PORTITOR_HOST: the gate container the pr/portitor client targets
+    skill: implement
+    model: claude-sonnet-5
+    effort: high
+    skills: [implement, go-expert]
+    skills_link: .claude/skills
+    hooks:
+      context: next-bead-context   # next ready epic bead (or done-cycle) -> CONTEXT.md
+      prelude: claim-next-bead     # branch off origin/main + signed in_progress claim
+      on_failure: release-bead     # host-side: logging no-op (claim dies with the box clone)
+    inputs:
+      repo: {type: string, required: true}
+      epic: {type: string, required: true}
+    output:
+      done:   {type: bool,   required: true}
+      branch: {type: string}
+      pr:     {type: int}
+
   review:
     image: spex-box
     identity: reviewer             # the ONLY role permitted to close beads (portitor role rule)
     run:
       env: {FABER_AGENT_CLI: claude, PORTITOR_HOST: portitor-spex}  # PORTITOR_HOST: the gate container the pr/portitor client targets
-      volumes:
-        /home/paalori/.config/faber/spexmachina/etc/passwd: /etc/passwd   # box ships no passwd; ssh needs getpwuid (see etc/README.md)
-        /home/paalori/.config/faber/spexmachina/etc/group: /etc/group
     skill: review
     model: claude-opus-5
     effort: high
@@ -60,9 +83,6 @@ templates:
     identity: implementer          # fixes are authored by the implementer identity
     run:
       env: {FABER_AGENT_CLI: claude, PORTITOR_HOST: portitor-spex}  # PORTITOR_HOST: the gate container the pr/portitor client targets
-      volumes:
-        /home/paalori/.config/faber/spexmachina/etc/passwd: /etc/passwd   # box ships no passwd; ssh needs getpwuid (see etc/README.md)
-        /home/paalori/.config/faber/spexmachina/etc/group: /etc/group
     skill: fix
     model: claude-sonnet-5
     effort: high
@@ -81,9 +101,6 @@ templates:
     identity: merger               # commit-less landing identity (portitor action policy gates merge)
     run:
       env: {FABER_AGENT_CLI: claude, PORTITOR_HOST: portitor-spex}  # PORTITOR_HOST: the gate container the pr/portitor client targets
-      volumes:
-        /home/paalori/.config/faber/spexmachina/etc/passwd: /etc/passwd   # box ships no passwd; ssh needs getpwuid (see etc/README.md)
-        /home/paalori/.config/faber/spexmachina/etc/group: /etc/group
     skill: merge
     model: claude-sonnet-5
     effort: low

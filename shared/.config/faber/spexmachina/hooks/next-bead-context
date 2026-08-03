@@ -1,0 +1,112 @@
+#!/bin/bash
+# context hook (implement-next / epic pull-loop) — runs IN the box, cwd = the
+# repo clone, on the freshly-cloned default branch, BEFORE the prelude.
+# Read-only: selects the NEXT ready bead of the epic and turns it into the
+# agent's prompt body. The epic never enumerates children up front — each cycle
+# clones post-merge main and asks br afresh, so ordering falls out of bead deps
+# and the ready state, and beads created mid-epic join automatically.
+#
+# Contract with the prelude + skill:
+#   - a bead was selected  -> $FABER_BUNDLE_DIR/selected-bead carries its id;
+#     CONTEXT.md is the normal implement prompt (claim-next-bead claims it).
+#   - nothing ready        -> $FABER_BUNDLE_DIR/epic-done exists; CONTEXT.md
+#     tells the agent to emit {"done":true} and stop (no branch, no claim).
+set -euo pipefail
+
+die() { echo "next-bead-context: $*" >&2; exit 1; }
+epic="${FABER_INPUT_EPIC:?FABER_INPUT_EPIC is required}"
+bundle="${FABER_BUNDLE_DIR:?FABER_BUNDLE_DIR is required}"
+
+# The db (.beads/beads.db) is gitignored and rebuilt from the committed jsonl;
+# a fresh clone has none, so import before querying.
+br sync --import-only >/dev/null 2>&1 || true
+
+all="$(br list --all --limit 0 --json 2>/dev/null || br list --json 2>/dev/null || echo '{"issues":[]}')"
+
+# Epic members: explicit `epic:<id>` label UNION parent-child children (how the
+# spex pipeline links epics: `br dep add <child> <epic> --type parent-child`).
+members="$({
+  jq -r --arg e "epic:$epic" '(.issues? // .) | .[]? | select((.labels // []) | index($e)) | .id' <<<"$all" 2>/dev/null
+  while read -r id; do
+    { [ -n "$id" ] && [ "$id" != "$epic" ]; } || continue
+    br dep list "$id" --json 2>/dev/null \
+      | jq -e --arg e "$epic" 'any(.[]?; (.depends_on_id // .depends_on)==$e and (((.type // ""))|test("parent")))' >/dev/null 2>&1 \
+      && echo "$id" || :
+  done < <(jq -r '(.issues? // .) | .[]?.id' <<<"$all")
+} | sort -u)"
+
+# Ready beads in br's own order (deps satisfied, open work only); the next bead
+# is the first ready member that is not a cleanup bead.
+bead=""
+while read -r id; do
+  [ -n "$id" ] || continue
+  grep -qx "$id" <<<"$members" || continue
+  br show "$id" --json 2>/dev/null | jq -e '.[0].labels | index("spex:cleanup")' >/dev/null && continue
+  bead="$id"; break
+done < <(br ready --json 2>/dev/null | jq -r '(.issues? // .) | .[]?.id')
+
+if [ -z "$bead" ]; then
+  : > "$bundle/epic-done"
+  {
+    echo "# Epic $epic: no ready beads remain"
+    echo
+    echo "Every child bead of this epic is done, blocked, or in progress elsewhere."
+    echo "There is NOTHING to implement in this cycle. Do exactly one thing and stop:"
+    echo
+    echo '    printf '\''{"done":true}\n'\'' > "$FABER_RESULT_DIR/output.json"'
+    echo
+    echo "Do not create branches, do not commit, do not push, do not touch beads."
+  } > "$bundle/CONTEXT.md"
+  echo "next-bead-context: epic $epic has no ready bead; done-cycle"
+  exit 0
+fi
+
+printf '%s\n' "$bead" > "$bundle/selected-bead"
+
+json="$(br show "$bead" --json)" || die "br show $bead failed"
+title="$(jq -r '.[0].title' <<<"$json")"
+status="$(jq -r '.[0].status' <<<"$json")"
+record="$(jq -r '.[0].labels[]? | select(startswith("spex:")) | select(. != "spex:cleanup") | ltrimstr("spex:")' <<<"$json" | head -n1)"
+
+# Resolve the spec leaves for the record (spex map context: arch/impl/test/flow/module files).
+specs=""
+if [ -n "$record" ]; then
+  if mapjson="$(spex map context "$record" 2>/dev/null)"; then
+    specs="$(jq -r '[.arch_file] + (.impl_files//[]) + (.test_files//[]) + (.flow_files//[]) + [.module_file]
+                    | .[] | select(. != null and . != "")' <<<"$mapjson")"
+  else
+    echo "next-bead-context: warning: spex map context $record failed" >&2
+  fi
+fi
+
+printf '%s\n' "$specs" | sed '/^$/d' > "$bundle/spec-files.txt"
+
+{
+  echo "# Implement bead $bead (next ready in epic $epic)"
+  echo
+  echo "- title: $title"
+  echo "- status: $status (the prelude claims it in_progress on your feature branch)"
+  [ -n "$record" ] && echo "- spec record: $record"
+  echo
+  echo "You are on your feature branch (see \$BRANCH in your environment); the bead"
+  echo "is claimed. Do NOT push to the default branch and do NOT close the bead —"
+  echo "review closes it."
+  echo
+  echo "## Spec context — read these first (this is the source of truth)"
+  if [ -s "$bundle/spec-files.txt" ]; then
+    sed 's/^/- /' "$bundle/spec-files.txt"
+  else
+    echo "- (none resolved; consult the bead + proposal for spec references)"
+  fi
+  echo
+  echo "## Your job"
+  echo "Implement the single component this bead covers against its spec leaves,"
+  echo "write/adjust the tests its test_* leaves define, run the completion gate"
+  echo "(\`go build/vet/test ./...\`), then commit (signed), push the branch, open"
+  echo "the PR, and link the bead. Full workflow: your \`implement\` skill."
+  echo
+  echo "This is one cycle of an epic run: emit \`\"done\":false\` in your output"
+  echo "(see the skill's emit step) so the next cycle follows."
+} > "$bundle/CONTEXT.md"
+
+echo "next-bead-context: selected $bead ($record); $(wc -l < "$bundle/spec-files.txt") spec files"

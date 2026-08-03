@@ -1,6 +1,10 @@
 # Backup files
 .backup/
 
+# Local binaries that land inside the stow tree via directory folding (e.g. the
+# macOS faber-box copy under ~/.local/libexec) — machine artifacts, never content.
+shared/.local/libexec/
+
 # Claude Code (user's local config at repo root; NOT the tracked shared/.claude package)
 /.claude/
 
@@ -22,3 +26,5 @@ shared/.config/nvim/lazy-lock.json
 
 # Active theme (machine-specific)
 shared/.config/themes/current
+__pycache__/
+*.pyc

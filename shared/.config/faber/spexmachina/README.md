@@ -11,9 +11,9 @@ plus five reusable named libraries (`images`, `skills`, `hooks`, `templates`,
 orchestrator.yaml   project assembly: substrate (network/remote/credentials/identities) + include
 images.yaml         spex-box — pinned toolset (nixos-25.11 / Go 1.25.10) + overlay
 skills.yaml         implement / review / fix / merge / go-expert  → skills/<name>/
-hooks.yaml          gather-context / claim-bead / fetch-pr / release-bead / list-epic-beads → hooks/<name>
+hooks.yaml          gather-context / claim-bead / next-bead-context / claim-next-bead / fetch-pr / release-bead → hooks/<name>
 templates.yaml      implement / review / fix / merge  (named refs into the libraries)
-workflows.yaml      bead (Gate B, auto-merge) / epic (Gate A, human-landed)
+workflows.yaml      bead (auto-merge chain) / epic (the same chain per child, sequential)
 overlay.nix         claude-code + spex + br derivations (real hashes; br x86_64 hash TODO)
 skills/             the SKILL.md trees (implement / review / fix / merge / go-expert)
 hooks/              the hook executables (context runs before prelude; cwd = the clone)
@@ -45,6 +45,9 @@ faber run epic --config orchestrator.yaml --param epic=<epic-id>
 - **Complete**: image (real hashes, incl. the in-box `pr`/`portitor` client), hooks, skills,
   templates, workflows, the assembly. `faber-stack up` (see `SETUP.md`) stands up the gate:
   roles, mirror, host-key pin — everything `keys/README.md` describes.
-- Gate B (`bead`) is the primary, proven shape — trial it on the Batch-B bugs first.
-  Gate A (`epic`) fans implement over an epic's children with no auto-merge; its single-big-PR
-  refinement waits on a faber aggregate step (noted in `workflows.yaml`).
+- `bead` is the primary, proven shape — trial it on the Batch-B bugs first.
+  `epic` is a pull-loop of that same chain (implement → review loop → auto-merge):
+  each cycle's box selects the next ready epic bead from inside the clone
+  (`next-bead-context`), lands it, and the loop settles on the first cycle that
+  finds nothing ready. Strictly sequential by construction — every merge advances
+  main and the gate's stale-base rule rejects branches claimed off an older main.

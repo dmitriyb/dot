@@ -151,4 +151,28 @@ in
     ];
     meta.description = "in-box portitor client (SSH-forwarded, credential-less)";
   };
+
+  # --- box-etc: minimal /etc identity database ---------------------------------
+  # The nix image ships no /etc/passwd; after faber-box drops to the host uid,
+  # ssh (invoked by git for the gate clone/push) hard-fails its getpwuid lookup
+  # with "No user exists for uid N". Baking passwd/group into the image fixes it
+  # with no bind mounts and no host paths: passwd is a lookup table, so one
+  # machine-agnostic image lists every host uid the boxes run as — add a line
+  # when a new host joins. Read-only image content, discarded with the container.
+  box-etc = final.symlinkJoin {
+    name = "box-etc";
+    paths = [
+      (final.writeTextDir "etc/passwd" ''
+        root:x:0:0:root:/root:/bin/sh
+        box:x:1000:1000:faber box (linux host):/home/box:/bin/sh
+        boxm:x:502:20:faber box (mac host):/home/box:/bin/sh
+      '')
+      (final.writeTextDir "etc/group" ''
+        root:x:0:
+        box:x:1000:
+        staff:x:20:
+      '')
+    ];
+    meta.description = "minimal /etc passwd+group so in-box getpwuid resolves";
+  };
 }

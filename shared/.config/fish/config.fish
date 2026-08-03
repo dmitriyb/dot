@@ -130,7 +130,10 @@ alias cem 'claude --effort maximum'
 alias dc docker-claude
 alias dcp 'docker-claude personal'
 alias dcw 'docker-claude work'
-alias dcwd 'docker-claude direct'
+
+# faber gate tooling
+alias fbs faber-stack
+alias pbr portitor-branch
 
 # Neovim function
 function n

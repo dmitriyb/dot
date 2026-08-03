@@ -10,6 +10,22 @@
 # selectively, then the handle files are discarded — nothing is left on disk.
 set -euo pipefail
 
+if [[ $# -gt 0 ]]; then
+	case "$1" in
+		-h|--help)
+			cat >&2 <<'EOF2'
+Usage: ssh-load-keys        (no arguments)
+
+Loads the YubiKey's resident FIDO2 keys into the running ssh-agent, EXCLUDING
+any sign-only / no-touch key listed in ~/.ssh/signing-key-hashes (those load
+only into the ephemeral agent of `docker-claude --agent`). Needs the YubiKey
+plugged in; asks PIN + one touch; downloaded handle files are discarded.
+EOF2
+			exit 0 ;;
+		*) echo "ssh-load-keys: takes no arguments (got: $1); see --help" >&2; exit 2 ;;
+	esac
+fi
+
 SIGNING_HASH_FILE="$HOME/.ssh/signing-key-hashes"
 
 if [[ ! -S "${SSH_AUTH_SOCK:-}" ]]; then

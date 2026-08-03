@@ -2,6 +2,13 @@
 # Show current theme
 # Usage: theme-current
 
+if [ $# -gt 0 ]; then
+    case "$1" in
+        -h|--help) echo "Usage: theme-current        (no arguments)"; echo "Print the currently active theme name."; exit 0 ;;
+        *) echo "theme-current: takes no arguments (got: $1); see --help" >&2; exit 2 ;;
+    esac
+fi
+
 THEMES_DIR="${XDG_CONFIG_HOME:-$HOME/.config}/themes"
 
 if [ -L "$THEMES_DIR/current" ]; then

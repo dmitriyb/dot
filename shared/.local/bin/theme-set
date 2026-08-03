@@ -5,7 +5,7 @@
 THEMES_DIR="${XDG_CONFIG_HOME:-$HOME/.config}/themes"
 THEME_NAME="$1"
 
-if [ -z "$THEME_NAME" ]; then
+if [ -z "$THEME_NAME" ] || [ "$THEME_NAME" = "-h" ] || [ "$THEME_NAME" = "--help" ]; then
     echo "Usage: theme-set <theme-name>"
     echo "Run 'theme-list' to see available themes"
     exit 0
