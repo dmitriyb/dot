@@ -19,7 +19,9 @@ images:
     # coreutils; hooks use sed/diff/find and the agent's shell work expects
     # grep/awk (learned the hard way: the context hook died on `sed: command
     # not found` in the first trial-bead run).
-    packages: [git, openssh, go, gopls, coreutils, gnused, gnugrep, gawk, diffutils, findutils, bash, jq, spex, br, claude-code, portitor-client]
+    # cacert: system CA roots — Go verifies TLS against them for the module
+    # proxy fetches (claude bundles its own roots; Go does not).
+    packages: [git, openssh, go, gopls, coreutils, gnused, gnugrep, gawk, diffutils, findutils, bash, jq, cacert, spex, br, claude-code, portitor-client]
     overlay: ./overlay.nix
     # nixos-25.11 (Go 1.25.10) — spex's go.mod requires go >= 1.25.0, newer than
     # faber's compiled-in default pin ships. Reproducible commit-pinned snapshot.

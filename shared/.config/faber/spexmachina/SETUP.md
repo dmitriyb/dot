@@ -199,9 +199,16 @@ into `$PROJECT/keys/`, and prints the orchestrator substrate it satisfies.
 Idempotent — re-run any time; it converges, never duplicating roles, mirrors, or
 filter lines.
 
+The two `--allow` entries widen the egress allow-list beyond the default
+`api.anthropic.com`: implement/fix boxes run `go build`/`go test` on a fresh
+clone, so the Go module proxy and checksum db must be reachable. The allow-list
+is CONVERGED on every `up` — flags omitted from a later run are dropped again —
+so always run the command with the full set.
+
 ```fish
 role-keys --json \
-    | faber-stack up --instance $INSTANCE --slug $SLUG --pat $PAT --project $PROJECT
+    | faber-stack up --instance $INSTANCE --slug $SLUG --pat $PAT --project $PROJECT \
+        --allow proxy.golang.org --allow sum.golang.org
 ```
 
 On the first `up`, faber-stack builds the gate image from dot's context
@@ -255,7 +262,8 @@ the `$INSTANCE-repos` mirror volume, so a later `up` is instant.
 faber-stack status --instance $INSTANCE
 faber-stack down   --instance $INSTANCE
 role-keys --json \
-    | faber-stack restart --instance $INSTANCE --slug $SLUG --pat $PAT --project $PROJECT
+    | faber-stack restart --instance $INSTANCE --slug $SLUG --pat $PAT --project $PROJECT \
+        --allow proxy.golang.org --allow sum.golang.org
 ```
 
 ---
