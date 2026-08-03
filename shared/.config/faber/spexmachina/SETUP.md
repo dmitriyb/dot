@@ -124,6 +124,17 @@ them apart by fingerprint. YubiKey resident + no-touch, so autonomous boxes sign
 without a prompt. Register each pubkey on GitHub as a *Signing Key* separately.
 Skip any role whose key you already have.
 
+A registered key alone is not enough for the green **Verified** badge: GitHub
+also requires the commit's *committer email* to be a verified email on the
+account that owns the key. That email rides in as `FABER_GIT_EMAIL` on the
+**faber host env** (stowed from dot: `~/.config/fish/conf.d/faber.fish`) — it
+cannot go in a template's `env:` block, because the `FABER_` namespace is
+engine-owned and `faber validate` rejects it there. Without it every commit
+shows **Unverified** (`reason: no_user`) despite a valid signature; gated
+steps refuse to start instead of committing as an unverifiable synthetic
+address. The gate's own signature check is key-based and unaffected either
+way.
+
 ```fish
 for role in implementer reviewer merger
     ssh-keygen -t ed25519-sk -O resident -O no-touch-required \
