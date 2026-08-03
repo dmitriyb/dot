@@ -216,10 +216,18 @@ clone, so the Go module proxy and checksum db must be reachable. The allow-list
 is CONVERGED on every `up` — flags omitted from a later run are dropped again —
 so always run the command with the full set.
 
+The `--commit-email` entry seeds the gate's `allowed_committer_emails` policy:
+portitor rejects any pushed commit whose committer email isn't listed, closing
+the gap where a box with a misconfigured `FABER_GIT_EMAIL` would land commits
+GitHub can never verify. Like `--allow`, it is CONVERGED on every `up` — omit
+it and the field (and check) is dropped again. It needs a portitor release
+that knows the key (an older gate binary refuses a config carrying it).
+
 ```fish
 role-keys --json \
     | faber-stack up --instance $INSTANCE --slug $SLUG --pat $PAT --project $PROJECT \
-        --allow proxy.golang.org --allow sum.golang.org
+        --allow proxy.golang.org --allow sum.golang.org \
+        --commit-email dvbozhko@gmail.com
 ```
 
 On the first `up`, faber-stack builds the gate image from dot's context
@@ -274,7 +282,8 @@ faber-stack status --instance $INSTANCE
 faber-stack down   --instance $INSTANCE
 role-keys --json \
     | faber-stack restart --instance $INSTANCE --slug $SLUG --pat $PAT --project $PROJECT \
-        --allow proxy.golang.org --allow sum.golang.org
+        --allow proxy.golang.org --allow sum.golang.org \
+        --commit-email dvbozhko@gmail.com
 ```
 
 ---

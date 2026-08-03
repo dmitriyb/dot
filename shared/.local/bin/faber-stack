@@ -55,6 +55,7 @@ INSTANCE_RE='^[a-z0-9][a-z0-9-]{0,30}$'          # docker/DNS/path-safe, <=31 ch
 SLUG_RE='^[^/ ]+/[^/ ]+$'                         # owner/repo
 FP_RE='^SHA256:[A-Za-z0-9+/]{43}$'                # portitor addrole.go's own regex (no '=', exactly 43)
 HOST_RE='^[A-Za-z0-9._-]+$'                       # egress allow-list host (no metachars)
+EMAIL_RE='^[^[:space:]@]+@[^[:space:]@]+$'        # committer email shape (gate compares byte-exact)
 
 CONTAINER_SIGNERS="/etc/portitor/allowed_signers" # the in-container allowed_signers path the gate reads
 
@@ -101,6 +102,9 @@ Flags:
   --pat <svc>[/acct]    keychain coordinates for the scoped GitHub PAT; no default  (up/restart, required)
   --project <dir>       faber orchestrator dir; host-key pin lands in <dir>/keys/   (up/restart, required)
   --allow <host>        extra egress allow-list host (repeatable; default api.anthropic.com)
+  --commit-email <e>    allowed committer email for the gate's email allowlist (repeatable;
+                        CONVERGED like --allow: omitted on a later run = field dropped, check off;
+                        requires a portitor release that knows allowed_committer_emails)
   --config-dir <dir>    override config dir (default $XDG_CONFIG_HOME/portitor/<instance>)
   --repo <name>         portitor repo id / repos.d basename (default: repo half of --slug)
   --map <p>=<a>         map portitor role <p> to a differently-named stdin role <a> (repeatable)
@@ -120,7 +124,7 @@ VERB="$1"; shift
 case "$VERB" in up|down|status|restart) ;; *) die "unknown verb: $VERB (want up|down|status|restart)" 2 ;; esac
 
 INSTANCE="" SLUG="" PAT="" PROJECT="" CONFIG_DIR="" REPO=""
-ALLOW=() MAP_ARGS=()
+ALLOW=() MAP_ARGS=() COMMIT_EMAILS=()
 PORTITOR_BIN_ARG=""
 
 need_val() { [[ $# -ge 2 ]] || die "$1 needs a value" 2; }
@@ -133,6 +137,7 @@ while [[ $# -gt 0 ]]; do
 		--config-dir)   need_val "$@"; CONFIG_DIR="$2"; shift 2 ;;
 		--repo)         need_val "$@"; REPO="$2"; shift 2 ;;
 		--allow)        need_val "$@"; ALLOW+=("$2"); shift 2 ;;
+		--commit-email) need_val "$@"; COMMIT_EMAILS+=("$2"); shift 2 ;;
 		--map)          need_val "$@"; MAP_ARGS+=("$2"); shift 2 ;;
 		--portitor-bin)  need_val "$@"; PORTITOR_BIN_ARG="$2"; shift 2 ;;
 		-h|--help)      usage 0 ;;
@@ -168,6 +173,10 @@ if [[ "$VERB" == up || "$VERB" == restart ]]; then
 	# egress hosts: reject any regex metacharacter now (fail-fast, before mutation).
 	for h in ${ALLOW[@]+"${ALLOW[@]}"}; do
 		[[ "$h" =~ $HOST_RE ]] || die "invalid --allow host '$h' (allowed: A-Za-z0-9._-; no regex metacharacters — a host must never widen into a wildcard)" 2
+	done
+	# committer emails: gate compares byte-exact; catch obviously broken values here.
+	for e in ${COMMIT_EMAILS[@]+"${COMMIT_EMAILS[@]}"}; do
+		[[ "$e" =~ $EMAIL_RE ]] || die "invalid --commit-email '$e' (want local@domain, no whitespace)" 2
 	done
 fi
 
@@ -338,11 +347,19 @@ fi
 # a repos.d config left by an older dot converges here instead of failing the
 # gate's format_version guard or its "config carries the retired role_rules key"
 # refusal. Preserves the roles map + allowed_signers that add-role fills below.
+# allowed_committer_emails converges with the --commit-email flags: present when
+# any were given, DELETED when none (not an empty list) — a gate release that
+# predates the key strict-decode-rejects any config carrying it, so an absent
+# field is what keeps a flagless run compatible with an older gate binary.
+EMAILS_JSON="$(jq -cn '$ARGS.positional' --args ${COMMIT_EMAILS[@]+"${COMMIT_EMAILS[@]}"})" \
+	|| die "failed to render the committer-email list" 1
 mktmp ptmp "$REPOS_D/.$REPO.json"
 jq --argjson fv 1 --argjson ident "$IDENTITY_ONLY" --argjson actions "$ACTION_ROLES" \
-   --argjson rules "$CONTENT_RULES" \
+   --argjson rules "$CONTENT_RULES" --argjson emails "$EMAILS_JSON" \
 	'del(.role_rules) | .format_version=$fv | .identity_only_roles=$ident
-	 | .action_roles=$actions | .content_rules=$rules' "$CFG" >"$ptmp" \
+	 | .action_roles=$actions | .content_rules=$rules
+	 | if ($emails | length) > 0 then .allowed_committer_emails=$emails
+	   else del(.allowed_committer_emails) end' "$CFG" >"$ptmp" \
 	|| die "failed to assert the portitor policy fields for $REPO" 1
 mv "$ptmp" "$CFG"
 touch "$SIGNERS_HOST"
