@@ -1,0 +1,14 @@
+# skills library — one entry per skill tree (SKILL.md at the tree root, no
+# <name>/ wrapper). Templates deliver a set of these via `skills: [name, ...]`.
+# Paths resolve relative to THIS file.
+#
+# These are spexmachina's own prelude-driven skills, adapted from dot's proven
+# implement/review/fix so the agent reads the faber bundle ($FABER_BUNDLE_DIR)
+# rather than dot's $HARNESS_DIR, and emits output.json for faber to score.
+
+skills:
+  implement:  {dir: ./skills/implement}
+  review:     {dir: ./skills/review}
+  fix:        {dir: ./skills/fix}
+  merge:      {dir: ./skills/merge}
+  go-expert:  {dir: ./skills/go-expert}   # referenced by implement/review/fix for Go guidance

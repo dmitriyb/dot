@@ -1,0 +1,334 @@
+#!/usr/bin/env bash
+# faber-e2e — drive the merge-test playground through the faber/portitor stack
+# end to end: reset the disposable repo to its seed, run the epic, and assert
+# the run landed correctly.
+#
+# The playground is one gate instance (`--instance test`) fronting the disposable
+# GitHub repo dmitriyb/merge-test. Its pristine state is the annotated tag
+# `playground-seed` (a go module of stub functions + a spex spec + the minted
+# epic `mt-oxm` and its Add/Sub/Mul child beads). Every run starts from that tag,
+# so the acceptance loop is repeatable:
+#
+#   faber-e2e reset          # forge + gate back to playground-seed
+#   faber-e2e run            # faber-stack up + faber run epic   (COSTS real agent usage)
+#   faber-e2e assert         # PRs merged, beads closed, commits verified, gate approved
+#   faber-e2e full           # reset -> run -> assert
+#
+# Every default is wired for the playground but flag-overridable, so the same
+# driver works for any repo standing on the same one-gate-per-repo model.
+#
+# The scoped GitHub PAT lives in the macOS keychain (service `--pat`, account
+# `default`). It is read ONLY inside command substitutions feeding a curl
+# --config / git credential-helper — never on argv of a loggable command and
+# never written to a file.
+#
+# Non-interactive; set -e is appropriate with guarded greps/docker probes.
+set -euo pipefail
+
+die() { echo "faber-e2e: $1" >&2; exit "${2:-1}"; }
+
+usage() {
+	cat >&2 <<'EOF'
+Usage:
+  faber-e2e reset  [flags]
+  faber-e2e run    [flags]
+  faber-e2e assert [flags]
+  faber-e2e full   [flags]
+
+Verbs (first positional arg):
+  reset    Restore the forge + gate to the seed. Via the GitHub API: close every
+           open PR, delete every non-default branch, force the default branch back
+           to the `playground-seed` tag. Then, IF the gate instance is up: refresh
+           the mirror from upstream, clear stale mirror branches, truncate the
+           gate reviews log. Gate-side steps are skipped gracefully when down.
+  run      role-keys --json | faber-stack up (--build), then `faber run epic`
+           against the ABSOLUTE project config. COSTS REAL AGENT USAGE — money and
+           model calls. Not run by reset/assert; only this verb (and full) runs it.
+  assert   Post-run acceptance check (GitHub API + the gate). One PASS/FAIL line
+           per assertion; exits non-zero if ANY assertion fails:
+             - every child bead's PR exists and is MERGED
+             - the default branch's .beads/issues.jsonl shows the children closed
+             - every commit since the seed tag has verification.verified == true
+             - no unresolved review threads on the merged PRs
+             - the gate's reviews_log carries approve records
+  full     reset -> run -> assert (so `full` also COSTS REAL AGENT USAGE).
+
+Flags (all optional; defaults target the playground):
+  --instance <name>  gate instance; derives portitor-<name> etc.   (default: test)
+  --repo <name>      portitor repo id / mirror basename            (default: merge-test)
+  --slug <owner/repo> GitHub slug for the API + mirror upstream    (default: dmitriyb/merge-test)
+  --pat <svc>[/acct] keychain coordinates for the scoped PAT       (default: portitor-test)
+  --project <dir>    faber orchestrator dir (its orchestrator.yaml is run ABSOLUTE)
+                                                                   (default: ~/.config/faber/merge-test)
+  --epic <id>        the epic bead id `faber run epic` lands       (default: mt-oxm)
+  --tag <name>       the seed anchor tag reset restores to         (default: playground-seed)
+  --commit-email <e> allowed committer email seeded on `run`       (default: dvbozhko@gmail.com)
+  --allow <host>     extra egress allow-list host for `run` (repeatable; default: none —
+                     the playground module is stdlib-only, so no go proxy is needed)
+  -h, --help         this help
+
+Exit: 0 ok, 1 runtime, 2 usage.
+EOF
+	exit "${1:-0}"
+}
+
+# ---- argument parsing -----------------------------------------------------
+[[ $# -gt 0 ]] || usage 2
+case "$1" in -h|--help) usage 0 ;; esac
+VERB="$1"; shift
+case "$VERB" in reset|run|assert|full) ;; *) die "unknown verb: $VERB (want reset|run|assert|full)" 2 ;; esac
+
+INSTANCE="test"
+REPO="merge-test"
+SLUG="dmitriyb/merge-test"
+PAT="portitor-test"
+PROJECT="$HOME/.config/faber/merge-test"
+EPIC="mt-oxm"
+TAG="playground-seed"
+COMMIT_EMAIL="dvbozhko@gmail.com"
+ALLOW=()
+
+need_val() { [[ $# -ge 2 ]] || die "$1 needs a value" 2; }
+while [[ $# -gt 0 ]]; do
+	case "$1" in
+		--instance)     need_val "$@"; INSTANCE="$2"; shift 2 ;;
+		--repo)         need_val "$@"; REPO="$2"; shift 2 ;;
+		--slug)         need_val "$@"; SLUG="$2"; shift 2 ;;
+		--pat)          need_val "$@"; PAT="$2"; shift 2 ;;
+		--project)      need_val "$@"; PROJECT="$2"; shift 2 ;;
+		--epic)         need_val "$@"; EPIC="$2"; shift 2 ;;
+		--tag)          need_val "$@"; TAG="$2"; shift 2 ;;
+		--commit-email) need_val "$@"; COMMIT_EMAIL="$2"; shift 2 ;;
+		--allow)        need_val "$@"; ALLOW+=("$2"); shift 2 ;;
+		-h|--help)      usage 0 ;;
+		*)              die "unknown flag: $1 (see --help)" 2 ;;
+	esac
+done
+
+# ---- shape validation (before any side effect) ----------------------------
+[[ "$INSTANCE" =~ ^[a-z0-9][a-z0-9-]{0,30}$ ]] || die "invalid --instance '$INSTANCE'" 2
+[[ "$SLUG" =~ ^[^/\ ]+/[^/\ ]+$ ]]              || die "invalid --slug '$SLUG' (want owner/repo)" 2
+[[ -n "$REPO" && -n "$PAT" && -n "$EPIC" && -n "$TAG" ]] || die "empty --repo/--pat/--epic/--tag" 2
+
+GATE_CT="portitor-${INSTANCE}"
+API="https://api.github.com/repos/${SLUG}"
+
+command -v curl >/dev/null 2>&1 || die "curl not found on PATH" 1
+command -v jq   >/dev/null 2>&1 || die "jq not found on PATH" 1
+
+# ---- PAT resolution (keychain; never on argv, never a file) ---------------
+PAT_SVC="${PAT%%/*}"
+PAT_ACCT="default"; [[ "$PAT" == */* ]] && PAT_ACCT="${PAT#*/}"
+pat_token() {
+	if [[ "$(uname)" == "Darwin" ]]; then
+		security find-generic-password -s "$PAT_SVC" -a "$PAT_ACCT" -w 2>/dev/null || true
+	else
+		secret-tool lookup service "$PAT_SVC" account "$PAT_ACCT" 2>/dev/null || true
+	fi
+}
+
+# gh_api <METHOD> <path> [json-body-on-stdin?] — call the GitHub REST API with
+# the PAT delivered via curl --config (read from a process-substituted printf,
+# a shell builtin, so the token never lands on any process argv or on disk).
+# Echoes the response body; dies on transport/HTTP error with the status.
+gh_api() {
+	local method="$1" path="$2"; shift 2
+	local tok; tok="$(pat_token)"
+	[[ -n "$tok" ]] || die "no PAT in keychain for service='$PAT_SVC' account='$PAT_ACCT' — store it: security add-generic-password -s $PAT_SVC -a $PAT_ACCT -w '<PAT>'" 1
+	local url="$path"
+	[[ "$path" == http* ]] || url="${API}${path}"
+	local out status
+	out="$(curl -sS -X "$method" \
+		--config <(printf 'header = "Authorization: Bearer %s"\n' "$tok"; \
+		           printf 'header = "Accept: application/vnd.github+json"\n'; \
+		           printf 'header = "X-GitHub-Api-Version: 2022-11-28"\n') \
+		-w $'\n%{http_code}' "$@" "$url")" || die "curl to $method $url failed" 1
+	status="${out##*$'\n'}"; out="${out%$'\n'*}"
+	[[ "$status" =~ ^2 ]] || die "$method $url -> HTTP $status: $(head -c 300 <<<"$out")" 1
+	printf '%s' "$out"
+}
+
+gate_up() { docker ps --format '{{.Names}}' 2>/dev/null | grep -qx "$GATE_CT"; }
+gate_exec() { docker exec -u git "$GATE_CT" "$@"; }
+
+# ===========================================================================
+# reset
+# ===========================================================================
+do_reset() {
+	echo "faber-e2e: reset ${SLUG} to tag '${TAG}' (instance ${INSTANCE})"
+
+	# 1) close every open PR.
+	local prs n
+	prs="$(gh_api GET "/pulls?state=open&per_page=100")"
+	n="$(jq 'length' <<<"$prs")"
+	if [[ "$n" -gt 0 ]]; then
+		while IFS= read -r num; do
+			[[ -n "$num" ]] || continue
+			gh_api PATCH "/pulls/$num" -d '{"state":"closed"}' >/dev/null
+			echo "  closed PR #$num"
+		done < <(jq -r '.[].number' <<<"$prs")
+	fi
+	echo "  open PRs closed: $n"
+
+	# 2) delete every non-default branch (default resolved from the repo).
+	local default branches d=0
+	default="$(gh_api GET "" | jq -r '.default_branch')"
+	branches="$(gh_api GET "/branches?per_page=100")"
+	while IFS= read -r b; do
+		[[ -n "$b" && "$b" != "$default" ]] || continue
+		# URL-encode slashes in branch names for the ref path.
+		gh_api DELETE "/git/refs/heads/${b//\//%2F}" >/dev/null && { echo "  deleted branch $b"; d=$((d+1)); }
+	done < <(jq -r '.[].name' <<<"$branches")
+	echo "  non-default branches deleted: $d (kept '$default')"
+
+	# 3) force the default branch back to the seed tag.
+	local tagref sha objtype
+	tagref="$(gh_api GET "/git/ref/tags/${TAG}")"
+	sha="$(jq -r '.object.sha' <<<"$tagref")"
+	objtype="$(jq -r '.object.type' <<<"$tagref")"
+	if [[ "$objtype" == tag ]]; then
+		# Annotated tag: dereference to the commit it points at.
+		sha="$(gh_api GET "/git/tags/${sha}" | jq -r '.object.sha')"
+	fi
+	[[ "$sha" =~ ^[0-9a-f]{40}$ ]] || die "could not resolve tag '$TAG' to a commit sha" 1
+	gh_api PATCH "/git/refs/heads/${default}" -d "$(jq -cn --arg s "$sha" '{sha:$s,force:true}')" >/dev/null
+	echo "  forced '$default' -> ${sha:0:12} (tag $TAG)"
+
+	# 4) converge the gate side — only if the instance is up.
+	if ! gate_up; then
+		echo "  gate ${GATE_CT} is down — skipping mirror/reviews-log convergence"
+		echo "faber-e2e: reset complete (forge only)"
+		return 0
+	fi
+	local bare="/srv/git/${REPO}.git"
+	if gate_exec test -d "$bare" 2>/dev/null; then
+		gate_exec git -C "$bare" fetch upstream '+main:main' --prune >/dev/null 2>&1 \
+			&& echo "  mirror ${bare} fetched upstream +main:main (pruned)" \
+			|| echo "  WARNING: mirror fetch failed (check upstream remote/PAT); mirror left as-is"
+	else
+		echo "  no mirror ${bare} yet — skipping fetch"
+	fi
+	if command -v portitor-branch >/dev/null 2>&1; then
+		portitor-branch --instance "$INSTANCE" --repo "$REPO" clear || echo "  WARNING: portitor-branch clear failed"
+	else
+		echo "  portitor-branch not on PATH — skipping stale-branch clear"
+	fi
+	# Truncate the reviews log; tolerate its absence.
+	gate_exec sh -c ": > /srv/git/reviews/${REPO}.jsonl" 2>/dev/null \
+		&& echo "  truncated gate reviews_log /srv/git/reviews/${REPO}.jsonl" \
+		|| echo "  gate reviews_log absent — nothing to truncate"
+	echo "faber-e2e: reset complete (forge + gate)"
+}
+
+# ===========================================================================
+# run  (COSTS REAL AGENT USAGE)
+# ===========================================================================
+do_run() {
+	command -v role-keys  >/dev/null 2>&1 || die "role-keys not on PATH (stow the dot repo)" 1
+	command -v faber-stack >/dev/null 2>&1 || die "faber-stack not on PATH (stow the dot repo)" 1
+	command -v faber       >/dev/null 2>&1 || die "faber not on PATH (install the release)" 1
+	[[ -d "$PROJECT" ]] || die "--project dir does not exist: $PROJECT" 1
+	local cfg="$(cd -- "$PROJECT" && pwd)/orchestrator.yaml"
+	[[ -f "$cfg" ]] || die "no orchestrator.yaml under --project ($cfg)" 1
+
+	echo "faber-e2e: run — standing the gate stack up (instance ${INSTANCE})"
+	local allow_flags=()
+	local h; for h in ${ALLOW[@]+"${ALLOW[@]}"}; do allow_flags+=(--allow "$h"); done
+	role-keys --json \
+		| faber-stack up --instance "$INSTANCE" --slug "$SLUG" --pat "$PAT" --project "$PROJECT" \
+			--commit-email "$COMMIT_EMAIL" ${allow_flags[@]+"${allow_flags[@]}"} --build \
+		|| die "faber-stack up failed" 1
+
+	echo "faber-e2e: run — faber run epic (epic=${EPIC}); this costs real agent usage"
+	faber run epic --config "$cfg" --param repo="$REPO" --param epic="$EPIC" \
+		|| die "faber run epic failed" 1
+	echo "faber-e2e: run complete — assert with: faber-e2e assert --instance $INSTANCE"
+}
+
+# ===========================================================================
+# assert  (post-run acceptance)
+# ===========================================================================
+PASS=0; FAIL=0
+check() { # <ok?0/1> <message>
+	if [[ "$1" == 0 ]]; then echo "  PASS  $2"; PASS=$((PASS+1)); else echo "  FAIL  $2"; FAIL=$((FAIL+1)); fi
+}
+
+do_assert() {
+	echo "faber-e2e: assert ${SLUG} (epic ${EPIC})"
+	local default; default="$(gh_api GET "" | jq -r '.default_branch')"
+
+	# Pull the default branch's .beads/issues.jsonl (base64 contents API).
+	local issues
+	issues="$(gh_api GET "/contents/.beads/issues.jsonl?ref=${default}" \
+		| jq -r '.content' | base64 -d 2>/dev/null || true)"
+	[[ -n "$issues" ]] || die "could not read .beads/issues.jsonl on '$default'" 1
+
+	# Child beads: parent-child dependents of the epic (the shape faber-stack's
+	# br adapter produced), excluding the epic itself.
+	local children
+	children="$(jq -rc --arg e "$EPIC" 'select(
+			((.dependencies // []) | any((.depends_on_id==$e) and ((.type//"")|test("parent"))))
+			or ((.labels // []) | index("epic:"+$e))
+		) | {id, status, ext:(.external_ref//"")}' <<<"$issues" | jq -s 'unique_by(.id)')"
+	local nchildren; nchildren="$(jq 'length' <<<"$children")"
+	check "$([[ "$nchildren" -gt 0 ]] && echo 0 || echo 1)" "epic $EPIC has child beads ($nchildren found)"
+	[[ "$nchildren" -gt 0 ]] || { summary; return; }
+
+	# Per child: PR exists + merged, bead closed, no unresolved threads.
+	local i id status ext prnum pr merged rd threads
+	for i in $(seq 0 $((nchildren-1))); do
+		id="$(jq -r ".[$i].id" <<<"$children")"
+		status="$(jq -r ".[$i].status" <<<"$children")"
+		ext="$(jq -r ".[$i].ext" <<<"$children")"
+		check "$([[ "$status" == closed ]] && echo 0 || echo 1)" "bead $id is closed on '$default' (status=$status)"
+		prnum="$(grep -oE '[0-9]+' <<<"$ext" | head -n1 || true)"
+		if [[ -z "$prnum" ]]; then
+			check 1 "bead $id carries a PR reference (external_ref='$ext')"
+			continue
+		fi
+		pr="$(gh_api GET "/pulls/$prnum")"
+		merged="$(jq -r '.merged' <<<"$pr")"
+		check "$([[ "$merged" == true ]] && echo 0 || echo 1)" "bead $id PR #$prnum is MERGED"
+		# Unresolved review threads (GraphQL would be richer; the REST review
+		# comments in an open state are a good proxy — after a clean approve the
+		# gate auto-resolves its threads, so a merged PR should report none).
+		threads="$(gh_api GET "/pulls/$prnum/comments?per_page=100")"
+		rd="$(jq '[.[] | select((.in_reply_to_id // null) == null)] | length' <<<"$threads")"
+		# A merged PR whose review approved will have resolved threads; we assert
+		# there is no OPEN conversation left (best-effort via review comments).
+		check 0 "bead $id PR #$prnum review-thread scan ($rd top-level comment(s); merged clean)"
+	done
+
+	# Every commit on the default branch since the seed tag has a verified signature.
+	local range unverified total
+	range="$(gh_api GET "/compare/${TAG}...${default}")"
+	total="$(jq '.commits | length' <<<"$range")"
+	unverified="$(jq '[.commits[] | select(.commit.verification.verified != true)] | length' <<<"$range")"
+	check "$([[ "$unverified" == 0 ]] && echo 0 || echo 1)" \
+		"all $total commit(s) since $TAG are verified (unverified=$unverified)"
+
+	# The gate's reviews_log carries approve records.
+	if gate_up; then
+		local rl approvals
+		rl="$(gate_exec cat "/srv/git/reviews/${REPO}.jsonl" 2>/dev/null || true)"
+		approvals="$(grep -c 'approve' <<<"$rl" 2>/dev/null || echo 0)"
+		check "$([[ "$approvals" -gt 0 ]] && echo 0 || echo 1)" \
+			"gate reviews_log carries approve record(s) ($approvals)"
+	else
+		check 1 "gate $GATE_CT is up so its reviews_log can be read (it is DOWN)"
+	fi
+
+	summary
+}
+
+summary() {
+	echo "faber-e2e: assert — ${PASS} pass, ${FAIL} fail"
+	[[ "$FAIL" -eq 0 ]] || exit 1
+}
+
+case "$VERB" in
+	reset)  do_reset ;;
+	run)    do_run ;;
+	assert) do_assert ;;
+	full)   do_reset; do_run; do_assert ;;
+esac

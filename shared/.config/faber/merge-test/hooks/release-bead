@@ -1,0 +1,20 @@
+#!/usr/bin/env bash
+# on_failure hook (implement) — runs HOST-SIDE after a failed implement step,
+# with the failed step's inputs as FABER_INPUT_* and the error record as JSON on
+# stdin. Idempotent by design (it also runs between retry attempts).
+#
+# In this model the claim commit lived only in the box's ephemeral clone
+# (discarded with --rm), so the CANONICAL bead state on main is untouched by a
+# failure before merge — there is usually nothing to reopen. The one durable
+# side-effect a failed step can leave is a pushed feature branch on the gate.
+set -euo pipefail
+
+err="$(cat || true)"    # {"reason":...,"detail":...,"handoff":...}
+bead="${FABER_INPUT_BEAD:-<unknown>}"
+
+echo "release-bead: implement failed for $bead: $err" >&2
+
+# Best-effort branch cleanup: branch deletion is not a portitor pr action yet
+# (comment|review|merge|close|fetch only). Once it is, delete the abandoned
+# feature branch here. Kept a no-op so the hook never fails the retry path.
+exit 0

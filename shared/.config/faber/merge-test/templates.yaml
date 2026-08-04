@@ -1,0 +1,115 @@
+# templates library — composition nodes. Each aspect is a NAMED reference into a
+# library: image -> images, identity -> identities, skill/skills -> skills,
+# hooks.* -> hooks. The engine resolves every name; nothing here is inline. This
+# is the project-flavored layer — workflows below reference these templates by
+# name only, staying project-agnostic.
+#
+# Every skill's last act is to write $FABER_RESULT_DIR/output.json with exactly
+# the fields declared in `output:` — that JSON is how faber scores the step and
+# feeds ${steps.<id>.<field>} to the next one.
+
+templates:
+  implement:
+    image: spex-box
+    identity: implementer
+    run:
+      resources: {memory: 8g, cpus: 4}
+      env: {FABER_AGENT_CLI: claude, PORTITOR_HOST: portitor-test}  # PORTITOR_HOST: the gate container the pr/portitor client targets
+    skill: implement
+    model: claude-sonnet-5
+    effort: high
+    skills: [implement, go-expert]
+    skills_link: .claude/skills
+    hooks:
+      context: gather-context      # bead + spec -> CONTEXT.md (read-only, default branch)
+      prelude: claim-bead          # branch off origin/main + signed in_progress claim
+      on_failure: release-bead     # host-side: undo the claim if the step fails
+    inputs:
+      repo: {type: string, required: true}
+      bead: {type: string, required: true}
+    output:
+      branch: {type: string, required: true}
+      pr:     {type: int,    required: true}
+
+  # The epic pull-loop's implementer: same box, same skill, but instead of a
+  # given bead id it takes the EPIC id and selects the next ready child bead
+  # from INSIDE the box (next-bead-context; br + spex are in the image, so the
+  # host needs neither). Output carries the done sentinel: {done:false, branch,
+  # pr} on a work cycle, {done:true} when no ready bead remains — the epic
+  # workflow's outer loop settles on it.
+  implement-next:
+    image: spex-box
+    identity: implementer
+    run:
+      resources: {memory: 8g, cpus: 4}
+      env: {FABER_AGENT_CLI: claude, PORTITOR_HOST: portitor-test}  # PORTITOR_HOST: the gate container the pr/portitor client targets
+    skill: implement
+    model: claude-sonnet-5
+    effort: high
+    skills: [implement, go-expert]
+    skills_link: .claude/skills
+    hooks:
+      context: next-bead-context   # next ready epic bead (or done-cycle) -> CONTEXT.md
+      prelude: claim-next-bead     # branch off origin/main + signed in_progress claim
+      on_failure: release-bead     # host-side: logging no-op (claim dies with the box clone)
+    inputs:
+      repo: {type: string, required: true}
+      epic: {type: string, required: true}
+    output:
+      done:   {type: bool,   required: true}
+      branch: {type: string}
+      pr:     {type: int}
+
+  review:
+    image: spex-box
+    identity: reviewer             # the ONLY role permitted to close beads (portitor role rule)
+    run:
+      env: {FABER_AGENT_CLI: claude, PORTITOR_HOST: portitor-test}  # PORTITOR_HOST: the gate container the pr/portitor client targets
+    skill: review
+    model: claude-opus-5
+    effort: high
+    skills: [review, go-expert]
+    skills_link: .claude/skills
+    hooks:
+      context: fetch-pr            # PR review state + threads -> CONTEXT.md, pr.json, threads.json
+      postlude: post-review        # review.json -> gate-submitted review (internal verdict recorded); needs faber with the postlude phase
+    inputs:
+      repo: {type: string, required: true}
+      pr:   {type: int,    required: true}
+    output:
+      verdict: {type: string, enum: [approved, changes], required: true}
+
+  fix:
+    image: spex-box
+    identity: implementer          # fixes are authored by the implementer identity
+    run:
+      env: {FABER_AGENT_CLI: claude, PORTITOR_HOST: portitor-test}  # PORTITOR_HOST: the gate container the pr/portitor client targets
+    skill: fix
+    model: claude-sonnet-5
+    effort: high
+    skills: [fix, go-expert]
+    skills_link: .claude/skills
+    hooks:
+      context: fetch-pr            # PR feedback + threads -> CONTEXT.md, pr.json, threads.json
+      postlude: post-answers       # answers.json -> per-thread replies through the gate; needs faber with the postlude phase
+    inputs:
+      repo: {type: string, required: true}
+      pr:   {type: int,    required: true}
+    output:
+      status: {type: string, required: true}
+
+  merge:
+    image: spex-box                # shares the toolset; only needs git/openssh + the portitor client
+    identity: merger               # commit-less landing identity (portitor action policy gates merge)
+    run:
+      env: {FABER_AGENT_CLI: claude, PORTITOR_HOST: portitor-test}  # PORTITOR_HOST: the gate container the pr/portitor client targets
+    skill: merge
+    model: claude-sonnet-5
+    effort: low
+    skills: [merge]
+    skills_link: .claude/skills
+    inputs:
+      repo: {type: string, required: true}
+      pr:   {type: int,    required: true}
+    output:
+      merged: {type: bool, required: true}

@@ -1,0 +1,74 @@
+#!/bin/bash
+# context hook (implement) — runs IN the box, cwd = the repo clone, on the
+# freshly-cloned default branch, BEFORE the prelude. Read-only: it turns the
+# bead input into the agent's prompt body. Contract: write a non-empty
+# CONTEXT.md into $FABER_BUNDLE_DIR (and, here, spec-files.txt) and exit 0, or
+# the step aborts before the agent starts.
+#
+# Grounding follows spexmachina's rule: the bead's title + its spex:<record_id>
+# label are the entry point; `spex map context <record>` resolves the spec
+# leaves that ARE the source of truth. Beads carry empty descriptions by design.
+set -euo pipefail
+
+die() { echo "gather-context: $*" >&2; exit 1; }
+bead="${FABER_INPUT_BEAD:?FABER_INPUT_BEAD is required}"
+bundle="${FABER_BUNDLE_DIR:?FABER_BUNDLE_DIR is required}"
+
+# The db (.beads/beads.db) is gitignored and rebuilt from the committed jsonl;
+# a fresh clone has none, so import before querying. Best-effort: a repo without
+# .beads still lets the bead lookup fail loudly below.
+br sync --import-only >/dev/null 2>&1 || true
+
+json="$(br show "$bead" --json)" || die "br show $bead failed"
+[ "$(jq 'length' <<<"$json")" -gt 0 ] || die "bead $bead not found"
+
+# A cleanup bead (spex:cleanup) has no map record — it does not belong to this
+# spec-driven implement path.
+if jq -e '.[0].labels | index("spex:cleanup")' <<<"$json" >/dev/null; then
+  die "bead $bead is a cleanup bead (spex:cleanup); not an implement bead"
+fi
+
+title="$(jq -r '.[0].title' <<<"$json")"
+status="$(jq -r '.[0].status' <<<"$json")"
+record="$(jq -r '.[0].labels[]? | select(startswith("spex:")) | select(. != "spex:cleanup") | ltrimstr("spex:")' <<<"$json" | head -n1)"
+
+# Resolve the spec leaves for the record. spex map context returns the record
+# plus arch_file / impl_files / test_files / flow_files / module_file.
+specs=""
+if [ -n "$record" ]; then
+  if mapjson="$(spex map context "$record" 2>/dev/null)"; then
+    specs="$(jq -r '[.arch_file] + (.impl_files//[]) + (.test_files//[]) + (.flow_files//[]) + [.module_file]
+                    | .[] | select(. != null and . != "")' <<<"$mapjson")"
+  else
+    echo "gather-context: warning: spex map context $record failed" >&2
+  fi
+fi
+
+printf '%s\n' "$specs" | sed '/^$/d' > "$bundle/spec-files.txt"
+
+{
+  echo "# Implement bead $bead"
+  echo
+  echo "- title: $title"
+  echo "- status: $status (the prelude claims it in_progress on your feature branch)"
+  [ -n "$record" ] && echo "- spec record: $record"
+  echo
+  echo "You are on your feature branch (see \$BRANCH in your environment); the bead"
+  echo "is claimed. Do NOT push to the default branch and do NOT close the bead —"
+  echo "review closes it."
+  echo
+  echo "## Spec context — read these first (this is the source of truth)"
+  if [ -s "$bundle/spec-files.txt" ]; then
+    sed 's/^/- /' "$bundle/spec-files.txt"
+  else
+    echo "- (none resolved; consult the bead + proposal for spec references)"
+  fi
+  echo
+  echo "## Your job"
+  echo "Implement the single component this bead covers against its spec leaves,"
+  echo "write/adjust the tests its test_* leaves define, run the completion gate"
+  echo "(\`go build/vet/test ./...\`), then commit (signed), push the branch, open"
+  echo "the PR, and link the bead. Full workflow: your \`implement\` skill."
+} > "$bundle/CONTEXT.md"
+
+echo "gather-context: bead $bead ($record); $(wc -l < "$bundle/spec-files.txt") spec files"

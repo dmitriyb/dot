@@ -1,0 +1,55 @@
+version: 1
+
+# merge-test playground project assembly. The substrate (root-only sections)
+# lives here; the five component libraries are pulled in via include: and
+# union-merged into one flat config before validation. Every included path
+# resolves relative to the file that declares it; the substrate paths below
+# resolve relative to THIS file.
+#
+# This is the acceptance playground for the faber/portitor stack — it drives the
+# disposable github.com/dmitriyb/merge-test repo through the same box chain
+# (implement / review / fix / merge) spexmachina uses, on its own `test`
+# gate instance. The scenario driver is `faber-e2e` (reset / run / assert).
+#
+# Run from THIS directory (or pass an absolute --config):
+#   faber validate --config orchestrator.yaml [--emit-ir]
+#   faber build    --config orchestrator.yaml
+#   faber run bead --config orchestrator.yaml --param bead=<id>
+#   faber run epic --config orchestrator.yaml --param epic=<epic-id>
+#
+# The image/hooks/skills/templates/workflows are shared, unchanged, with
+# spexmachina ON PURPOSE — the same toolset hash means the already-built
+# faber/*:tag images are reused. Only the substrate (this instance's network,
+# egress, gate) and the PORTITOR_HOST env differ. The gate side (roles, mirror,
+# host-key pin) is stood up by `faber-stack up --instance test`.
+
+# --- substrate ---------------------------------------------------------------
+
+network:
+  name: test-net                         # this repo's own faber internal network
+  proxy: http://test-egress:8888         # this repo's allow-list egress (api.anthropic.com only)
+  no_proxy: [portitor-test, localhost, 127.0.0.1]   # token rides in the box (file mode); proxy carries no secret
+
+remote:                                  # portitor step: the box's ONLY git remote (per-repo instance)
+  url: ssh://git@portitor-test/srv/git   # security module splices <repo>.git per step
+  host_key_file: ./keys/portitor_host_key.pub   # portitor step: pin portitor's SSH host key here
+
+credentials:
+  resolver: ./hooks/get-token            # host-side get_token(service); reads the macOS keychain
+  services:
+    claude_code_oauth_token:             # file mode -> /run/secrets -> env CLAUDE_CODE_OAUTH_TOKEN
+      mode: file                         # (the var Claude Code honors); shredded after the run
+
+identities:                             # resolved by role NAME via the faber registry (`faber add-key`):
+  implementer: {}                        #   name -> fingerprint (registry) -> the matching key in ~/.ssh.
+  reviewer:    {}                        # reviewer is the only role portitor lets sign bead-closes,
+  merger:      {}                        # merger the only one it lets merge (portitor policy).
+
+# --- component libraries -----------------------------------------------------
+
+include:
+  - images.yaml       # spex-box (pinned toolset + overlay)
+  - skills.yaml       # implement / review / fix / merge / go-expert
+  - hooks.yaml        # gather-context / claim-bead / fetch-pr / release-bead / list-epic-beads
+  - templates.yaml    # implement / review / fix / merge
+  - workflows.yaml    # bead (Gate B) / epic (Gate A)

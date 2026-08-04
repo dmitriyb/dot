@@ -1,0 +1,4 @@
+# Never commit key material. Only the README is tracked.
+*
+!.gitignore
+!README.md

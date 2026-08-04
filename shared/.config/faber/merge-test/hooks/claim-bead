@@ -1,0 +1,62 @@
+#!/bin/bash
+# prelude hook (implement) — runs IN the box, cwd = the repo clone, AFTER the
+# context hook and BEFORE the agent, with the delegated implementer identity
+# (its ssh-agent key already loaded, git signing already configured by the box's
+# signing phase). Deterministic pre-agent setup: create the feature branch off
+# the default, claim the bead in_progress with a SIGNED commit, and declare the
+# branch as this step's side-effect in bundle.env (faber verifies it exists
+# after the agent phase; BRANCH also requires a repo binding, which this step
+# has).
+set -euo pipefail
+
+die() { echo "claim-bead: $*" >&2; exit 1; }
+bead="${FABER_INPUT_BEAD:?FABER_INPUT_BEAD is required}"
+bundle="${FABER_BUNDLE_DIR:?FABER_BUNDLE_DIR is required}"
+
+# slugify: stdin -> git-ref-safe kebab token, max 40 chars.
+slugify() { tr '[:upper:]' '[:lower:]' | sed -E 's/[^a-z0-9]+/-/g; s/^-+//; s/-+$//' | cut -c1-40 | sed -E 's/-+$//'; }
+
+default_branch() {
+  local ref
+  if ref="$(git symbolic-ref --quiet --short refs/remotes/origin/HEAD 2>/dev/null)"; then
+    echo "${ref#origin/}"; return
+  fi
+  for b in main master; do
+    git rev-parse --verify --quiet "refs/remotes/origin/$b^{commit}" >/dev/null 2>&1 && { echo "$b"; return; }
+  done
+  echo main
+}
+
+br sync --import-only >/dev/null 2>&1 || true
+
+json="$(br show "$bead" --json)" || die "br show $bead failed"
+[ "$(jq 'length' <<<"$json")" -gt 0 ] || die "bead $bead not found"
+if jq -e '.[0].labels | index("spex:cleanup")' <<<"$json" >/dev/null; then
+  die "bead $bead is a cleanup bead (spex:cleanup); not an implement bead"
+fi
+status="$(jq -r '.[0].status' <<<"$json")"
+case "$status" in
+  open|ready) ;;
+  *) die "bead $bead status is '$status', expected open or ready" ;;
+esac
+
+title="$(jq -r '.[0].title' <<<"$json")"
+record="$(jq -r '.[0].labels[]? | select(startswith("spex:")) | select(. != "spex:cleanup") | ltrimstr("spex:")' <<<"$json" | head -n1)"
+base="origin/$(default_branch)"
+branch="$(printf '%s' "$bead" | slugify)-$(printf '%s' "$title" | slugify)"
+branch="${branch%-}"
+
+# Branch first, so the claim commit never lands on the default branch.
+git checkout -q -b "$branch" "$base" || die "branch $branch off $base failed"
+br update "$bead" --status in_progress >/dev/null || die "br update $bead --status in_progress failed"
+git add .beads/issues.jsonl
+git commit -qS -m "$bead: start implement (claim in_progress)" || die "signed claim commit failed"
+
+{
+  echo "BEAD_ID=$bead"
+  echo "BRANCH=$branch"
+  echo "BASE=$base"
+  [ -n "$record" ] && echo "RECORD_ID=$record"
+} > "$bundle/bundle.env"
+
+echo "claim-bead: $bead claimed in_progress; on branch $branch (off $base)"

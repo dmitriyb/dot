@@ -1,0 +1,86 @@
+# workflows library — project-AGNOSTIC DAGs. They reference templates by NAME
+# only (the interface), never by path or inline, so the same shape could drive a
+# different project's templates. One landing gate, two scopes:
+#   bead: one given bead -> implement -> bounded review loop -> AUTO-merge.
+#   epic: a pull-loop of that same chain — each cycle picks the next ready
+#         epic bead in-box, lands it, and the loop ends when nothing is ready.
+
+workflows:
+  # ---- Gate B: single bead, auto-merge -------------------------------------
+  # Trial this on the small Batch-B bugs before the big remediation epic. The
+  # reviewer step is the only one that closes the bead (reviewer-signed jsonl,
+  # gated by portitor's role rule); the merger step lands the PR.
+  bead:
+    params:
+      repo: {type: string, required: true, default: merge-test}
+      bead: {type: string, required: true}
+    steps:
+      - id: implement
+        use: implement
+        with: {repo: "${params.repo}", bead: "${params.bead}"}
+
+      - id: review-cycle
+        loop:
+          max: 3                                    # bound; exhaustion = step failure
+          until: steps.review.verdict == "approved"
+          steps:
+            - id: review
+              use: review
+              with: {repo: "${params.repo}", pr: "${steps.implement.pr}"}
+            - id: fix
+              use: fix
+              when: steps.review.verdict == "changes"
+              with: {repo: "${params.repo}", pr: "${steps.implement.pr}"}
+
+      - id: merge
+        use: merge
+        when: steps.review.verdict == "approved"    # post-loop ref = final iteration
+        with: {repo: "${params.repo}", pr: "${steps.implement.pr}"}
+
+  # ---- epic: pull-loop — one full bead chain per cycle, until dry ----------
+  # No up-front child enumeration: each cycle's implement-next box clones
+  # post-merge main and asks br from INSIDE for the next ready bead of the
+  # epic (so ordering falls out of bead deps + ready state, mid-epic beads
+  # join automatically, and the host needs no br). The cycle runs the full
+  # chain — implement -> bounded review/fix loop -> auto-merge — and the next
+  # cycle starts only after the merge landed (the loop unrolls into a strict
+  # sequential chain). Sequential landing is also correctness: every merge
+  # advances main and the gate's stale-base rule rejects branches claimed off
+  # an older main.
+  #
+  # A cycle that finds nothing ready reports {done:true}: its review/fix/merge
+  # skip (guards below), the remaining cycles self-skip via the loop gate, and
+  # the epic settles OK. If the epic holds more beads than `max`, the loop
+  # exhausts as an explicit failure — bump max and `faber resume`. A failed
+  # cycle fail-stops the epic; clean its stale mirror branch with `portitor-branch`
+  # before rerunning.
+  epic:
+    params:
+      repo: {type: string, required: true, default: merge-test}
+      epic: {type: string, required: true}
+    steps:
+      - id: cycles
+        loop:
+          max: 45
+          until: steps.implement.done == true
+          steps:
+            - id: implement
+              use: implement-next
+              with: {repo: "${params.repo}", epic: "${params.epic}"}
+            - id: review-cycle
+              loop:
+                max: 3
+                until: steps.review.verdict == "approved"
+                steps:
+                  - id: review
+                    use: review
+                    when: steps.implement.done == false
+                    with: {repo: "${params.repo}", pr: "${steps.implement.pr}"}
+                  - id: fix
+                    use: fix
+                    when: steps.review.verdict == "changes"
+                    with: {repo: "${params.repo}", pr: "${steps.implement.pr}"}
+            - id: merge
+              use: merge
+              when: steps.implement.done == false && steps.review.verdict == "approved"
+              with: {repo: "${params.repo}", pr: "${steps.implement.pr}"}
