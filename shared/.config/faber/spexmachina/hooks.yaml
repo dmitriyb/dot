@@ -12,5 +12,7 @@ hooks:
   claim-bead:     {path: ./hooks/claim-bead}            # prelude (implement): branch + signed claim
   next-bead-context: {path: ./hooks/next-bead-context}  # context (implement-next): pick next ready epic bead in-box -> CONTEXT.md (or done-cycle)
   claim-next-bead:   {path: ./hooks/claim-next-bead}    # prelude (implement-next): claim the selected bead (no-op on a done-cycle)
-  fetch-pr:       {path: ./hooks/fetch-pr}              # context (review/fix): PR state -> CONTEXT.md + pr.json
+  fetch-pr:       {path: ./hooks/fetch-pr}              # context (review/fix): PR state + threads -> CONTEXT.md, pr.json, threads.json
+  post-answers:   {path: ./hooks/post-answers}          # postlude (fix): answers.json -> portitor pr reply per thread (deterministic; exact failure attribution)
+  post-review:    {path: ./hooks/post-review}           # postlude (review): review.json -> portitor pr review --inline (gate records the verdict)
   release-bead:   {path: ./hooks/release-bead}          # on_failure (implement*): host-side, logging no-op

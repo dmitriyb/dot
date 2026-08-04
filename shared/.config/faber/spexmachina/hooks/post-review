@@ -1,0 +1,47 @@
+#!/bin/bash
+# postlude hook (review) — runs IN the box AFTER the agent, BEFORE result
+# extraction. Deterministically submits the agent's review through the gate
+# (`portitor pr review --inline`): the gate posts a COMMENT-type review to
+# GitHub, records the internal verdict against the PR's current head in its
+# reviews_log — the record the merge gate consults — and, on approve,
+# auto-resolves the threads its own reviews created. The agent never posts
+# the review itself; it only writes the document this hook validates:
+#   $FABER_RESULT_DIR/review.json:
+#     {"event": "approve"|"request-changes"|"comment",
+#      "body": "<markdown summary>",
+#      "comments": [{"path": "...", "line": N, "body": "<md>"}, ...]}
+# Failure shapes are distinct: ABSENT (the agent never wrote its review),
+# MALFORMED (contract violation, named), and a gate refusal (posted verbatim).
+set -euo pipefail
+
+die() { echo "post-review: $*" >&2; exit 1; }
+bundle="${FABER_BUNDLE_DIR:?FABER_BUNDLE_DIR is required}"
+result="${FABER_RESULT_DIR:?FABER_RESULT_DIR is required}"
+
+[ -f "$bundle/bundle.env" ] || die "no bundle.env — fetch-pr contract broken"
+# shellcheck disable=SC1091
+. "$bundle/bundle.env"
+pr="${PR:?bundle.env carries no PR}"
+
+review="$result/review.json"
+[ -f "$review" ] || die "review.json is ABSENT — the agent never wrote its review"
+
+jq -e '
+  type == "object"
+  and ((.event == "approve") or (.event == "request-changes") or (.event == "comment"))
+  and (.body | type == "string" and length > 0)
+  and ((.comments // []) | type == "array")
+  and ([ (.comments // [])[]
+         | select((.path | type != "string") or (.line | type != "number")
+                  or (.body | type != "string") or (.body | length == 0)) ] | length == 0)
+' "$review" >/dev/null 2>&1 \
+  || die "review.json is MALFORMED — want {event: approve|request-changes|comment, body: md, comments: [{path, line, body}]}"
+
+event="$(jq -r '.event' "$review")"
+ncomments="$(jq '(.comments // []) | length' "$review")"
+
+jq '{body: .body, comments: (.comments // [])}' "$review" \
+  | portitor pr review --pr "$pr" --event "$event" --inline \
+  || die "the gate refused the review (see error above)"
+
+echo "post-review: submitted $event review on PR #$pr ($ncomments inline comment(s))"

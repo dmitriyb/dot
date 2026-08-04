@@ -99,6 +99,14 @@ it inside the gate) — so no portitor checkout is needed at all.
 `portitor`. The gate image is cached, so to rebuild it against a newer portitor,
 drop it — `docker rmi portitor` — and faber-stack rebuilds it on the next `up`.
 
+**Version floor for this config:** the review/fix postludes need a faber
+release with the postlude phase (> 0.1.5; older faber silently ignores the
+`postlude:` keys — the hooks simply don't run), and the seeded
+`merge_gate`/`reviews_log`/`reply`/`resolve` policy needs a portitor release
+with merge-gate v2 (> 0.1.3; an OLDER gate binary strict-refuses those keys
+at boot, so run `docker rmi portitor` and the next `up` in one step — the
+seed and the new image land together).
+
 ### macOS host notes (skip on Linux)
 
 Two Docker-Desktop quirks need one explicit file, `~/.config/faber/host.json`

@@ -28,6 +28,12 @@ mode=REVIEW
 [ "$prior" -gt 0 ] && mode=FOLLOWUP
 
 printf '%s\n' "$prjson" > "$bundle/pr.json"
+
+# Unresolved review threads (portitor >= 0.1.4 includes reviewThreads in fetch;
+# tolerate absence on an older gate). threads.json is the postlude's contract:
+# the post-answers hook validates the agent's replies against exactly these ids.
+jq '[(.reviewThreads // [])[] | select(.isResolved | not)]' <<<"$prjson" > "$bundle/threads.json"
+nthreads="$(jq 'length' "$bundle/threads.json")"
 # NB: deliberately NOT declaring BRANCH here. BRANCH in bundle.env is faber's
 # implement-only side-effect convention (result phase verifies it exists on the
 # gateway). review/fix are already checked out on the PR branch below, so they
@@ -35,6 +41,7 @@ printf '%s\n' "$prjson" > "$bundle/pr.json"
 {
   echo "PR=$pr"
   echo "MODE=$mode"
+  echo "UNRESOLVED_THREADS=$nthreads"
 } > "$bundle/bundle.env"
 {
   echo "# PR #$pr — on branch \`$branch\`"
@@ -42,6 +49,13 @@ printf '%s\n' "$prjson" > "$bundle/pr.json"
   echo "Coarse mode: **$mode** (prior feedback items: $prior). The PR's full review"
   echo "state — reviews[], inline comments[], commits[] — is in \`pr.json\` in this"
   echo "bundle directory. You are checked out on the PR branch."
+  if [ "$nthreads" -gt 0 ]; then
+    echo
+    echo "## Unresolved review threads ($nthreads) — address EVERY one"
+    jq -r '.[] | "- thread \(.id) — \(.path // \"(no file)\"):\(.line // \"-\")\n\(( [.comments[]?.body] | join(\"\n  > \")) as $c | \"  > \" + $c)"' "$bundle/threads.json"
+    echo
+    echo "(Full thread objects: \`threads.json\` in the bundle.)"
+  fi
   echo
   echo "## Your job"
   echo "Follow your skill (review or fix). All GitHub actions go through"
@@ -49,4 +63,4 @@ printf '%s\n' "$prjson" > "$bundle/pr.json"
   echo "Do NOT push to the default branch."
 } > "$bundle/CONTEXT.md"
 
-echo "fetch-pr: PR #$pr on $branch (mode=$mode)"
+echo "fetch-pr: PR #$pr on $branch (mode=$mode, unresolved threads=$nthreads)"

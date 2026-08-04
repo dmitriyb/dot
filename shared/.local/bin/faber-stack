@@ -75,7 +75,13 @@ CONTAINER_SIGNERS="/etc/portitor/allowed_signers" # the in-container allowed_sig
 #     (`br --no-db list --json --all --limit 0`; --all is load-bearing — br hides
 #     closed records by default, so without it a close reads as a record removal),
 #     so the portitor gate image must carry `br` on PATH.
-ACTION_ROLES='{"fetch":["implementer","reviewer","merger"],"comment":["implementer","reviewer","merger"],"review":["reviewer"],"merge":["merger"],"close":["merger"]}'
+ACTION_ROLES='{"fetch":["implementer","reviewer","merger"],"comment":["implementer","reviewer","merger"],"review":["reviewer"],"reply":["implementer"],"resolve":["reviewer"],"merge":["merger"],"close":["merger"]}'
+# merge-gate v2 (portitor >= 0.1.4): the internal review verdict is the merge
+# gate (the PAT account can never approve its own PRs on GitHub), recorded per
+# PR head in reviews_log. Seeded ALWAYS — an older gate binary strict-refuses
+# these keys at boot, so apply this seed only together with the new release
+# (docker rmi portitor before `up`, per SETUP "Updating later").
+MERGE_GATE='{"review":"internal"}'
 CONTENT_RULES='{"version":1,"structural":{"rules":[{"name":"beads-file-reviewer-only","paths":[".beads/**"],"operations":["delete","rename"],"roles":{"not_in":["reviewer"]},"effect":"deny"}]},"semantic":{"files":[{"path":".beads/issues.jsonl","check":{"command":["br","--no-db","list","--json","--all","--limit","0"],"input_file":".beads/issues.jsonl","records_path":"issues","id_field":"id"},"rules":[{"name":"bead-close-reviewer-only","match":{"type":"field","field":"status","to":"closed"},"roles":{"not_in":["reviewer"]},"effect":"deny"}],"default":"allow"}]}}'
 IDENTITY_ONLY='["merger"]'   # landing-only role: add-role refuses --pub; never enters allowed_signers
 
@@ -375,8 +381,10 @@ EMAILS_JSON="$(jq -cn '$ARGS.positional' --args ${COMMIT_EMAILS[@]+"${COMMIT_EMA
 mktmp ptmp "$REPOS_D/.$REPO.json"
 jq --argjson fv 1 --argjson ident "$IDENTITY_ONLY" --argjson actions "$ACTION_ROLES" \
    --argjson rules "$CONTENT_RULES" --argjson emails "$EMAILS_JSON" \
+   --argjson mg "$MERGE_GATE" --arg rl "/srv/git/reviews/$REPO.jsonl" \
 	'del(.role_rules) | .format_version=$fv | .identity_only_roles=$ident
 	 | .action_roles=$actions | .content_rules=$rules
+	 | .merge_gate=$mg | .reviews_log=$rl
 	 | if ($emails | length) > 0 then .allowed_committer_emails=$emails
 	   else del(.allowed_committer_emails) end' "$CFG" >"$ptmp" \
 	|| die "failed to assert the portitor policy fields for $REPO" 1

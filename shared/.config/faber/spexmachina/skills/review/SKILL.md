@@ -48,16 +48,20 @@ The bundle's `MODE` is coarse. Refine it:
 
 ### Step 3: Act — one of four, no other paths
 
-GitHub actions go through `portitor pr <action>` (no `gh`); bodies are read from stdin:
+You do NOT post the review yourself: write it to `$FABER_RESULT_DIR/review.json` and the **postlude** (`post-review`) submits it through the gate — which posts a comment-type review to GitHub, records your verdict against the PR's current head in the gate's reviews_log (**that record is what the merge gate consults**), and on approve auto-resolves the threads the gate's own reviews created.
 
-- **CLEAN + REVIEW** → post an LGTM summary, then close the bead. PR is ready to merge.
-  `printf '%s' "LGTM — <summary>" | portitor pr review --pr <n> --event comment`
-- **CLEAN + FOLLOWUP** → close the bead; do NOT post another review.
-- **ISSUES + REVIEW** → post the review describing each blocker (reference `path:line`); do not close.
-  `printf '%s' "<blockers>" | portitor pr review --pr <n> --event request-changes`
-- **ISSUES + FOLLOWUP** → post what's still wrong per unfixed item; do not close.
+```json
+{"event": "approve" | "request-changes" | "comment",
+ "body": "<markdown summary>",
+ "comments": [{"path": "<file>", "line": <n>, "body": "<blocker, as an inline thread>"}, ...]}
+```
 
-> Use `--event comment` for own-account PRs (GitHub disallows approve/request-changes on your own PR); the **closed bead is the approval signal**.
+- **CLEAN + REVIEW** → `event: approve`, body = LGTM summary, no comments; then close the bead.
+- **CLEAN + FOLLOWUP** → `event: approve`, short body; close the bead.
+- **ISSUES + REVIEW** → `event: request-changes`, body = the blocker summary, one `comments[]` entry per blocker at its `path:line` (these become real threads the fix step answers); do not close.
+- **ISSUES + FOLLOWUP** → `event: request-changes` with what's still wrong per unfixed item; do not close.
+
+The STOP case (author never responded) writes `event: comment` with a one-line body naming the wait.
 
 #### Closing the bead (reviewer-signed)
 
@@ -79,4 +83,4 @@ Last step — faber loops or merges on this verdict:
 printf '{"verdict":"%s"}\n' "<approved|changes>" > "$FABER_RESULT_DIR/output.json"
 ```
 
-`approved` iff you reached CLEAN and closed the bead; `changes` in every other case (issues posted, or the STOP case where the author hasn't responded).
+`approved` iff you reached CLEAN, wrote `event: approve` into review.json, and closed the bead; `changes` in every other case (issues written, or the STOP case where the author hasn't responded).

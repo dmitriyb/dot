@@ -71,7 +71,8 @@ templates:
     skills: [review, go-expert]
     skills_link: .claude/skills
     hooks:
-      context: fetch-pr            # PR review state -> CONTEXT.md + pr.json
+      context: fetch-pr            # PR review state + threads -> CONTEXT.md, pr.json, threads.json
+      postlude: post-review        # review.json -> gate-submitted review (internal verdict recorded); needs faber with the postlude phase
     inputs:
       repo: {type: string, required: true}
       pr:   {type: int,    required: true}
@@ -89,7 +90,8 @@ templates:
     skills: [fix, go-expert]
     skills_link: .claude/skills
     hooks:
-      context: fetch-pr            # PR feedback -> CONTEXT.md + pr.json
+      context: fetch-pr            # PR feedback + threads -> CONTEXT.md, pr.json, threads.json
+      postlude: post-answers       # answers.json -> per-thread replies through the gate; needs faber with the postlude phase
     inputs:
       repo: {type: string, required: true}
       pr:   {type: int,    required: true}

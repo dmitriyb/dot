@@ -1,0 +1,67 @@
+#!/bin/bash
+# postlude hook (fix) — runs IN the box AFTER the agent, BEFORE result
+# extraction. Deterministically posts the agent's per-thread answers through
+# the gate, so "the agent addressed the feedback but never answered it" cannot
+# happen silently. The three failure shapes are distinct on purpose:
+#   - threads existed but answers.json is ABSENT  -> the agent never wrote it
+#   - answers.json is MALFORMED                    -> contract violation, named
+#   - answers.json is EMPTY (replies: [])          -> legal, recorded, no posts
+#
+# Contract with the context hook + skill:
+#   - fetch-pr wrote $FABER_BUNDLE_DIR/threads.json (the unresolved threads at
+#     context time) and UNRESOLVED_THREADS into bundle.env;
+#   - the fix skill wrote $FABER_RESULT_DIR/answers.json:
+#       {"replies": [{"thread": "<id>", "body": "<markdown>"}, ...]}
+#     answering EVERY thread listed in threads.json.
+set -euo pipefail
+
+die() { echo "post-answers: $*" >&2; exit 1; }
+bundle="${FABER_BUNDLE_DIR:?FABER_BUNDLE_DIR is required}"
+result="${FABER_RESULT_DIR:?FABER_RESULT_DIR is required}"
+
+# bundle.env carries PR (and UNRESOLVED_THREADS); source it rather than trust
+# ambient env — the file is the contract.
+[ -f "$bundle/bundle.env" ] || die "no bundle.env — fetch-pr contract broken"
+# shellcheck disable=SC1091
+. "$bundle/bundle.env"
+pr="${PR:?bundle.env carries no PR}"
+threads_file="$bundle/threads.json"
+[ -f "$threads_file" ] || die "no threads.json — fetch-pr contract broken (portitor without reviewThreads?)"
+nthreads="$(jq 'length' "$threads_file")"
+
+answers="$result/answers.json"
+
+if [ ! -f "$answers" ]; then
+  [ "$nthreads" -eq 0 ] && { echo "post-answers: no unresolved threads, no answers file — nothing to post"; exit 0; }
+  die "answers.json is ABSENT but $nthreads unresolved thread(s) exist — the agent never wrote its answers"
+fi
+
+jq -e 'type == "object" and (.replies | type == "array")' "$answers" >/dev/null 2>&1 \
+  || die "answers.json is MALFORMED — want {\"replies\": [{\"thread\": id, \"body\": md}, ...]}"
+
+nreplies="$(jq '.replies | length' "$answers")"
+if [ "$nreplies" -eq 0 ]; then
+  echo "post-answers: answers.json carries zero replies (legal; $nthreads thread(s) were open)"
+  exit 0
+fi
+
+# Every reply must target a KNOWN unresolved thread; every reply needs a body.
+bad="$(jq --slurpfile th "$threads_file" -r '
+  ([$th[0][].id]) as $known
+  | [ .replies[]
+      | select((.thread | type != "string") or ((.thread as $t | $known | index($t)) | not)
+               or (.body | type != "string") or (.body | length == 0)) ]
+  | length' "$answers")"
+[ "$bad" -eq 0 ] || die "answers.json is MALFORMED — $bad reply(ies) target an unknown thread id or carry no body (known ids are in threads.json)"
+
+fail=0
+while IFS= read -r idx; do
+  tid="$(jq -r ".replies[$idx].thread" "$answers")"
+  if ! jq -r ".replies[$idx].body" "$answers" | portitor pr reply --pr "$pr" --thread "$tid"; then
+    echo "post-answers: reply to thread $tid failed" >&2
+    fail=$((fail+1))
+  fi
+done < <(jq -r '.replies | keys[]' "$answers")
+
+[ "$fail" -eq 0 ] || die "$fail of $nreplies replies failed to post (gate error above)"
+echo "post-answers: posted $nreplies replies on PR #$pr"
