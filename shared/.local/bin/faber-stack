@@ -59,33 +59,18 @@ EMAIL_RE='^[^[:space:]@]+@[^[:space:]@]+$'        # committer email shape (gate 
 
 CONTAINER_SIGNERS="/etc/portitor/allowed_signers" # the in-container allowed_signers path the gate reads
 
-# portitor per-repo policy (repos.d/<repo>.json, format_version 1). Two policy blocks, both
-# seeded here and re-asserted on every run so a config written by an older dot
-# converges instead of tripping the gate's fail-closed guards:
-#
-#   * action_roles — DEFAULT-DENY authority for the pr verbs. An absent map denies
-#     every verb for everyone, so the workflow (implementer/reviewer fetch,
-#     reviewer review, merger merge) MUST be enumerated. Roles are the identity
-#     names portitor resolves each caller fingerprint to.
-#   * content_rules — replaces the retired role_rules key (a config still carrying
-#     role_rules refuses to gate). Reproduces the old "only the reviewer may close
-#     a bead" intent as a semantic rule over .beads/issues.jsonl (a status->closed
-#     transition), plus a structural rule denying delete/rename of .beads/** to
-#     non-reviewers. The semantic check shells the beads CLI in the GATE container
-#     (`br --no-db list --json --all --limit 0`; --all is load-bearing — br hides
-#     closed records by default, so without it a close reads as a record removal),
-#     so the portitor gate image must carry `br` on PATH.
-ACTION_ROLES='{"fetch":["implementer","reviewer","merger"],"comment":["implementer","reviewer","merger"],"review":["reviewer"],"reply":["implementer"],"resolve":["reviewer"],"merge":["merger"],"close":["merger"]}'
-# merge-gate v2 (portitor >= 0.1.4): the internal review verdict is the merge
-# gate (the PAT account can never approve its own PRs on GitHub), recorded per
-# PR head in reviews_log. Seeded ALWAYS — an older gate binary strict-refuses
-# these keys at boot, so apply this seed only together with the new release
-# (docker rmi portitor before `up`, per SETUP "Updating later").
-MERGE_GATE='{"review":"internal"}'
-CONTENT_RULES='{"version":1,"structural":{"rules":[{"name":"beads-file-reviewer-only","paths":[".beads/**"],"operations":["delete","rename"],"roles":{"not_in":["reviewer"]},"effect":"deny"}]},"semantic":{"files":[{"path":".beads/issues.jsonl","check":{"command":["br","--no-db","list","--json","--all","--limit","0"],"input_file":".beads/issues.jsonl","records_path":"issues","id_field":"id"},"rules":[{"name":"bead-close-reviewer-only","match":{"type":"field","field":"status","to":"closed"},"roles":{"not_in":["reviewer"]},"effect":"deny"}],"default":"allow"}]}}'
-IDENTITY_ONLY='["merger"]'   # landing-only role: add-role refuses --pub; never enters allowed_signers
+# portitor per-repo policy (repos.d/<repo>.json). The STATIC gate policy —
+# format_version, action_roles, merge_gate, content_rules, identity_only_roles — is
+# DECLARATIVE and lives in the project's own $PROJECT/portitor/policy.json (loaded via
+# --policy below), re-asserted onto the config every run so an older config converges.
+# faber-stack only COMPUTES the runtime-derived fields (roles map, allowed_signers path,
+# upstream_slug/remote, default_branch, allowed_committer_emails). The policy itself and
+# its rationale (default-deny action_roles; the reviewer-only bead-close content rule
+# whose semantic check shells `br` in the gate image; the merge_gate bead-closed
+# predicate) now live next to that JSON, not here.
 
-# Signing roles get --pub (enter allowed_signers); merger is identity-only.
+# Signing roles get --pub (enter allowed_signers); merger is identity-only
+# (must match policy.json identity_only_roles).
 PORTITOR_ROLES=(implementer reviewer merger)
 declare -A IS_SIGNER=([implementer]=1 [reviewer]=1 [merger]=0)
 
@@ -113,12 +98,18 @@ Flags:
                         requires a portitor release that knows allowed_committer_emails)
   --build               also run `faber validate` + `faber build` against
                         <project>/orchestrator.yaml before bringing the stack up —
-                        one command yields images + gate, leaving only `faber run`
+                        one command yields images + gate, leaving only `faber run`.
+                        Under --build the gate image is audited for staleness vs the
+                        installed portitor and rebuilt (prompted) if it lags.
+  --force-portitor-rebuild  under --build, auto-confirm the stale-gate rmi + --no-cache
+                        rebuild (non-interactive; otherwise a /dev/tty Y/n prompt gates it)
   --config-dir <dir>    override config dir (default $XDG_CONFIG_HOME/portitor/<instance>)
   --repo <name>         portitor repo id / repos.d basename (default: repo half of --slug)
   --map <p>=<a>         map portitor role <p> to a differently-named stdin role <a> (repeatable)
   --portitor-bin <path> the verified-release portitor binary for host-side add-role; default:
                         the first real `portitor` on PATH (install the signed portitor release)
+  --policy <file>       declarative static gate policy (action_roles / merge_gate /
+                        content_rules / identity_only_roles); default $PROJECT/portitor/policy.json
   -h, --help            this help
 
 Roles for up/restart are read as `role-keys --json` on stdin. Exit: 0 ok, 1 runtime, 2 usage.
@@ -135,7 +126,9 @@ case "$VERB" in up|down|status|restart) ;; *) die "unknown verb: $VERB (want up|
 INSTANCE="" SLUG="" PAT="" PROJECT="" CONFIG_DIR="" REPO=""
 ALLOW=() MAP_ARGS=() COMMIT_EMAILS=()
 PORTITOR_BIN_ARG=""
+POLICY_ARG=""
 BUILD=false
+FORCE_PORTITOR_REBUILD=false
 
 need_val() { [[ $# -ge 2 ]] || die "$1 needs a value" 2; }
 while [[ $# -gt 0 ]]; do
@@ -149,8 +142,10 @@ while [[ $# -gt 0 ]]; do
 		--allow)        need_val "$@"; ALLOW+=("$2"); shift 2 ;;
 		--commit-email) need_val "$@"; COMMIT_EMAILS+=("$2"); shift 2 ;;
 		--build)        BUILD=true; shift ;;
+		--force-portitor-rebuild) FORCE_PORTITOR_REBUILD=true; shift ;;
 		--map)          need_val "$@"; MAP_ARGS+=("$2"); shift 2 ;;
 		--portitor-bin)  need_val "$@"; PORTITOR_BIN_ARG="$2"; shift 2 ;;
+		--policy)        need_val "$@"; POLICY_ARG="$2"; shift 2 ;;
 		-h|--help)      usage 0 ;;
 		*)              die "unknown flag: $1 (see --help)" 2 ;;
 	esac
@@ -164,6 +159,7 @@ done
 NET="${INSTANCE}-net"
 EGRESS_CT="${INSTANCE}-egress"
 GATE_CT="portitor-${INSTANCE}"
+PORTITOR_IMAGE="portitor-${INSTANCE}"   # per-instance gate image: rmi/rebuild never touches another instance
 REPOS_VOL="${INSTANCE}-repos"
 
 # Usage-error (exit 2) validation for up/restart BEFORE any filesystem/docker
@@ -174,6 +170,13 @@ if [[ "$VERB" == up || "$VERB" == restart ]]; then
 	[[ -n "$PAT" ]]     || die "--pat <service>[/account] is required for $VERB" 2
 	[[ -n "$PROJECT" ]] || die "--project <dir> is required for $VERB" 2
 	[[ -d "$PROJECT" ]] || die "--project dir does not exist: $PROJECT" 2
+	# Static gate policy: a declarative file in the project (override with --policy).
+	[[ -n "$POLICY_ARG" ]] && POLICY="$POLICY_ARG" || POLICY="$PROJECT/portitor/policy.json"
+	[[ -f "$POLICY" ]] || die "gate policy not found: $POLICY (expected \$PROJECT/portitor/policy.json or --policy)" 2
+	jq -e 'type=="object" and has("format_version") and has("action_roles")
+	       and has("merge_gate") and has("content_rules") and has("identity_only_roles")' \
+		"$POLICY" >/dev/null 2>&1 \
+		|| die "gate policy $POLICY malformed or missing keys (format_version, action_roles, merge_gate, content_rules, identity_only_roles)" 2
 	# repo id defaults to the repo half of the slug.
 	[[ -n "$REPO" ]] || REPO="${SLUG#*/}"
 	# Match portitor config.ValidName exactly: [A-Za-z0-9._-]+ but never '.'/'..'
@@ -368,26 +371,28 @@ else
 	mv "$rtmp" "$CFG"
 fi
 
-# Always (re)assert the portitor policy fields and DROP any retired role_rules — so
-# a repos.d config left by an older dot converges here instead of failing the
-# gate's format_version guard or its "config carries the retired role_rules key"
-# refusal. Preserves the roles map + allowed_signers that add-role fills below.
-# allowed_committer_emails converges with the --commit-email flags: present when
-# any were given, DELETED when none (not an empty list) — a gate release that
-# predates the key strict-decode-rejects any config carrying it, so an absent
-# field is what keeps a flagless run compatible with an older gate binary.
+# Overlay the STATIC gate policy from $POLICY onto the computed config, and DROP the
+# retired role_rules / reviews_log keys so an older repos.d config converges here
+# instead of failing the gate's format_version guard or its "config carries the
+# retired role_rules key" refusal. Preserves the computed fields already in $CFG
+# (roles map, allowed_signers, upstream_*, default_branch). allowed_committer_emails
+# converges with the --commit-email flags: present when any were given, DELETED when
+# none (not an empty list) — a gate release predating the key strict-decode-rejects
+# any config carrying it, so an absent field keeps a flagless run compatible.
 EMAILS_JSON="$(jq -cn '$ARGS.positional' --args ${COMMIT_EMAILS[@]+"${COMMIT_EMAILS[@]}"})" \
 	|| die "failed to render the committer-email list" 1
 mktmp ptmp "$REPOS_D/.$REPO.json"
-jq --argjson fv 1 --argjson ident "$IDENTITY_ONLY" --argjson actions "$ACTION_ROLES" \
-   --argjson rules "$CONTENT_RULES" --argjson emails "$EMAILS_JSON" \
-   --argjson mg "$MERGE_GATE" --arg rl "/srv/git/reviews/$REPO.jsonl" \
-	'del(.role_rules) | .format_version=$fv | .identity_only_roles=$ident
-	 | .action_roles=$actions | .content_rules=$rules
-	 | .merge_gate=$mg | .reviews_log=$rl
+jq --slurpfile pol "$POLICY" --argjson emails "$EMAILS_JSON" \
+	'($pol[0]) as $p
+	 | del(.role_rules) | del(.reviews_log)
+	 | .format_version      = $p.format_version
+	 | .action_roles        = $p.action_roles
+	 | .content_rules       = $p.content_rules
+	 | .merge_gate          = $p.merge_gate
+	 | .identity_only_roles = $p.identity_only_roles
 	 | if ($emails | length) > 0 then .allowed_committer_emails=$emails
 	   else del(.allowed_committer_emails) end' "$CFG" >"$ptmp" \
-	|| die "failed to assert the portitor policy fields for $REPO" 1
+	|| die "failed to overlay the gate policy for $REPO" 1
 mv "$ptmp" "$CFG"
 touch "$SIGNERS_HOST"
 
@@ -437,19 +442,55 @@ mktmp etmp "$CONFIG_DIR/.egress-filter"
 mv "$etmp" "$EGRESS_FILTER"
 
 # ---- (6) export the interpolation env for compose --------------------------
-export INSTANCE CONFIG_DIR GH_TOKEN AGENT_AUTHORIZED_KEY
+export INSTANCE CONFIG_DIR GH_TOKEN AGENT_AUTHORIZED_KEY PORTITOR_IMAGE
 
-# ---- (7) build images if missing -------------------------------------------
+# ---- (7) build / refresh images --------------------------------------------
 # The gate image is SELF-CONTAINED (built from the dot context $GATE_CTX): its
-# Dockerfile fetches + SSHSIG-verifies the LATEST portitor release binary (forward-
-# only; the Dockerfile's PORTITOR_VERSION arg can pin a specific one) and adds `br`
-# — no portitor checkout. portitor publishes no container image, but this is the
-# only piece we assemble locally, and it still runs the verified release binary.
-# Cached after the first build, so it is built ONLY when missing — remove the image
-# (`docker rmi portitor`) to rebuild against a newer release.
-docker image inspect portitor >/dev/null 2>&1 \
-	|| docker build -t portitor "$GATE_CTX" \
-	|| die "failed to build the portitor gate image from $GATE_CTX (needs network to fetch + verify the portitor release)" 1
+# Dockerfile fetches + SSHSIG-verifies the portitor release binary (the PORTITOR_VERSION
+# arg can pin one) and adds `br` — no portitor checkout. It is PER-INSTANCE
+# ($PORTITOR_IMAGE = portitor-$INSTANCE) so a rebuild for this repo can never disturb
+# another instance's gate. Built when missing; under --build it is ALSO audited for
+# staleness against the installed portitor and rebuilt --no-cache if it lags (a stale
+# gate silently runs old policy semantics), after warning which containers that removes.
+ensure_gate_image() {
+	# Missing → build it fresh (any verb).
+	if ! docker image inspect "$PORTITOR_IMAGE" >/dev/null 2>&1; then
+		docker build -t "$PORTITOR_IMAGE" "$GATE_CTX" \
+			|| die "failed to build gate image $PORTITOR_IMAGE from $GATE_CTX (needs network to fetch + verify portitor)" 1
+		return 0
+	fi
+	$BUILD || return 0   # only --build audits freshness; plain up trusts the cached image
+	local baked installed
+	baked="$(docker run --rm --entrypoint portitor "$PORTITOR_IMAGE" --version 2>/dev/null | awk 'NR==1{print $2}')"
+	installed="$("$PORTITOR_BIN" --version 2>/dev/null | awk 'NR==1{print $2}')"
+	if [[ -n "$baked" && "$baked" == "$installed" ]]; then
+		echo "faber-stack: gate image $PORTITOR_IMAGE is current (portitor $baked)" >&2; return 0
+	fi
+	echo "faber-stack: gate $PORTITOR_IMAGE bakes portitor '${baked:-unknown}' but installed is '${installed:-unknown}' — rebuild needed for current policy." >&2
+	local cs; cs="$(docker ps -a --filter "ancestor=$PORTITOR_IMAGE" --format '    {{.Names}}  [{{.State}}]')"
+	if [[ -n "$cs" ]]; then
+		echo "faber-stack: rebuild does 'rmi $PORTITOR_IMAGE'; these use it (torn down + recreated on up):" >&2
+		printf '%s\n' "$cs" >&2
+	else
+		echo "faber-stack: no containers currently use $PORTITOR_IMAGE." >&2
+	fi
+	if $FORCE_PORTITOR_REBUILD; then
+		echo "faber-stack: --force-portitor-rebuild set — rebuilding without prompt." >&2
+	elif [[ -r /dev/tty ]]; then
+		local ans; printf 'faber-stack: rmi + --no-cache rebuild the gate now? [Y/n] ' >&2
+		read -r ans </dev/tty || ans=n
+		case "$ans" in ""|[Yy]|[Yy][Ee][Ss]) : ;; *) die "aborted: gate image is stale and the rebuild was declined" 1 ;; esac
+	else
+		die "gate image stale and no TTY to confirm — re-run with --force-portitor-rebuild (or without --build to use it as-is)" 1
+	fi
+	compose down >/dev/null 2>&1 || true   # free the image — this instance only (-p $INSTANCE)
+	docker rmi "$PORTITOR_IMAGE" >/dev/null 2>&1 \
+		|| die "failed to rmi stale gate image $PORTITOR_IMAGE (a container still holds it — stop it and retry)" 1
+	docker build --no-cache -t "$PORTITOR_IMAGE" "$GATE_CTX" \
+		|| die "failed to rebuild gate image $PORTITOR_IMAGE from $GATE_CTX" 1
+	echo "faber-stack: rebuilt gate image $PORTITOR_IMAGE (portitor $installed)." >&2
+}
+ensure_gate_image
 docker image inspect egress-proxy >/dev/null 2>&1 || docker build -t egress-proxy "$EGRESS_CTX" \
 	|| die "failed to build the egress-proxy image from $EGRESS_CTX" 1
 
@@ -458,9 +499,41 @@ docker image inspect egress-proxy >/dev/null 2>&1 || docker build -t egress-prox
 [[ "$VERB" == restart ]] && compose down >/dev/null 2>&1 || true
 compose up -d || die "docker compose up failed" 1
 
-# ---- (9) mirror the repo IN the container (needs GitHub + rw /srv/git) ------
-# Idempotent: skip if the bare mirror already exists. A mirror failure (e.g. bad
-# PAT scope) does NOT tear the stack down — the gate is up; report + name the retry.
+# ---- (9) wait for the gate to be READY, pinning its host key as the probe --
+# `compose up -d` returns when the container is STARTED, not when its sshd is
+# accepting — the gate entrypoint runs `ssh-keygen -A`, `gh auth login`, config
+# validation, and `exec sshd` LAST. A one-shot ssh-keyscan fired in that window
+# gets nothing and leaves a STALE (or absent) pin; the box then fails host-key
+# verification (StrictHostKeyChecking=yes) on the fresh gate's new key, or the
+# security bind can't read the pin at all. So retry the keyscan until the gate
+# answers: the first success is a total readiness barrier (sshd up ⟹ the
+# entrypoint finished ⟹ gh auth is persisted), and we pin the CURRENT key. Do it
+# BEFORE add-repo so a good pin also gates the mirror fetch, which needs the
+# gate's gh auth. ssh-keyscan runs on the internal net via the egress image
+# (present locally, ships openssh-client) so it never triggers a network pull.
+mkdir -p "$PROJECT/keys"
+PIN="$PROJECT/keys/portitor_host_key.pub"
+mktmp ptmp "$PROJECT/keys/.portitor_host_key.pub"
+pinned=""
+for _ in $(seq 1 30); do
+	if docker run --rm --network "$NET" egress-proxy \
+			ssh-keyscan -t ed25519 "$GATE_CT" >"$ptmp" 2>/dev/null && [[ -s "$ptmp" ]]; then
+		mv "$ptmp" "$PIN"; pinned=1; break
+	fi
+	sleep 1
+done
+if [[ -n "$pinned" ]]; then
+	echo "faber-stack: pinned $GATE_CT host key -> $PIN" >&2
+else
+	echo "faber-stack: WARNING — gate $GATE_CT did not answer in 30s; host key unpinned (stack is up; re-pin any time):" >&2
+	echo "  docker run --rm --network $NET egress-proxy ssh-keyscan -t ed25519 $GATE_CT > $PIN" >&2
+fi
+
+# ---- (10) mirror the repo IN the container (needs GitHub + rw /srv/git) -----
+# Gated by the readiness barrier above (sshd up ⟹ gh auth persisted), so the
+# upstream fetch has its credential. Idempotent: skip if the bare mirror already
+# exists. A mirror failure (e.g. bad PAT scope) does NOT tear the stack down —
+# the gate is up; report + name the retry.
 if docker exec -u git "$GATE_CT" test -d "/srv/git/$REPO.git" 2>/dev/null; then
 	echo "faber-stack: mirror /srv/git/$REPO.git already present — skipping add-repo." >&2
 else
@@ -470,22 +543,6 @@ else
 		echo "  Check the PAT scope (Contents+PR on $SLUG), then retry just the mirror:" >&2
 		echo "  docker exec -u git $GATE_CT portitor add-repo --repo $REPO --upstream https://github.com/$SLUG.git" >&2
 	fi
-fi
-
-# ---- (10) pin the gate host key from inside the internal net ---------------
-# ssh-keyscan must run where portitor-<instance> resolves — attached to the
-# internal net. Use the egress image (already built, present locally, ships
-# ssh-keyscan via openssh-client) so this never triggers a network pull.
-mkdir -p "$PROJECT/keys"
-PIN="$PROJECT/keys/portitor_host_key.pub"
-mktmp ptmp "$PROJECT/keys/.portitor_host_key.pub"
-if docker run --rm --network "$NET" egress-proxy \
-		ssh-keyscan -t ed25519 "$GATE_CT" >"$ptmp" 2>/dev/null && [[ -s "$ptmp" ]]; then
-	mv "$ptmp" "$PIN"
-	echo "faber-stack: pinned $GATE_CT host key -> $PIN" >&2
-else
-	echo "faber-stack: WARNING — could not pin the host key (stack is up; re-pin any time):" >&2
-	echo "  docker run --rm --network $NET egress-proxy ssh-keyscan -t ed25519 $GATE_CT > $PIN" >&2
 fi
 
 # ---- (11) print the faber substrate this instance now satisfies ------------

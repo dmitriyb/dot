@@ -1,11 +1,12 @@
 #!/bin/bash
 # postlude hook (review) — runs IN the box AFTER the agent, BEFORE result
 # extraction. Deterministically submits the agent's review through the gate
-# (`portitor pr review --inline`): the gate posts a COMMENT-type review to
-# GitHub, records the internal verdict against the PR's current head in its
-# reviews_log — the record the merge gate consults — and, on approve,
-# auto-resolves the threads its own reviews created. The agent never posts
-# the review itself; it only writes the document this hook validates:
+# (`portitor pr review --inline`) as a COMMENT-type GitHub review — feedback only.
+# It NEVER casts a real approve/request-changes event: a single PAT account can't
+# review its own PR (GitHub 422). Approval is the reviewer's signed bead close
+# (gated to the reviewer role), read by the merge_gate "bead-closed" predicate; on
+# an approve verdict this hook also resolves the threads its comment-reviews raised.
+# The agent never posts the review itself; it only writes the document this hook validates:
 #   $FABER_RESULT_DIR/review.json:
 #     {"event": "approve"|"request-changes"|"comment",
 #      "body": "<markdown summary>",
@@ -37,11 +38,23 @@ jq -e '
 ' "$review" >/dev/null 2>&1 \
   || die "review.json is MALFORMED — want {event: approve|request-changes|comment, body: md, comments: [{path, line, body}]}"
 
-event="$(jq -r '.event' "$review")"
+verdict="$(jq -r '.event' "$review")"
 ncomments="$(jq '(.comments // []) | length' "$review")"
 
+# ALWAYS a comment-type review (feedback + inline threads). The approve/changes
+# distinction is carried by output.json + the bead close, NOT a GitHub event.
 jq '{body: .body, comments: (.comments // [])}' "$review" \
-  | portitor pr review --pr "$pr" --event "$event" --inline \
+  | portitor pr review --pr "$pr" --event comment --inline \
   || die "the gate refused the review (see error above)"
+echo "post-review: posted comment review on PR #$pr ($ncomments inline comment(s); verdict=$verdict)"
 
-echo "post-review: submitted $event review on PR #$pr ($ncomments inline comment(s))"
+# On approval every prior feedback thread is addressed — resolve the gate's own
+# threads so no open conversation rides into the merge. Non-fatal: a first-pass
+# clean approve has no threads to resolve.
+if [ "$verdict" = approve ]; then
+  if portitor pr resolve --pr "$pr" --gate-threads; then
+    echo "post-review: resolved gate threads on PR #$pr (approval)"
+  else
+    echo "post-review: no gate threads to resolve on PR #$pr (or none open)" >&2
+  fi
+fi

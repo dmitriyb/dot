@@ -12,7 +12,7 @@ workflows:
   # gated by portitor's role rule); the merger step lands the PR.
   bead:
     params:
-      repo: {type: string, required: true, default: merge-test}
+      repo: {type: string, required: true, default: faber-stack-service}
       bead: {type: string, required: true}
     steps:
       - id: implement
@@ -56,7 +56,7 @@ workflows:
   # before rerunning.
   epic:
     params:
-      repo: {type: string, required: true, default: merge-test}
+      repo: {type: string, required: true, default: faber-stack-service}
       epic: {type: string, required: true}
     steps:
       - id: cycles

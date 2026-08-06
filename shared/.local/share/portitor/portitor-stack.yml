@@ -15,7 +15,7 @@
 
 services:
   gate:
-    image: portitor                       # self-built by faber-stack from ../portitor/Dockerfile if missing
+    image: ${PORTITOR_IMAGE:-portitor}    # per-instance (portitor-${INSTANCE}); faber-stack builds/refreshes it
     container_name: portitor-${INSTANCE}   # box reaches it as ssh://git@portitor-${INSTANCE} on the internal net
     restart: unless-stopped
     environment:

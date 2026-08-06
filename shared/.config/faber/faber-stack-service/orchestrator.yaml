@@ -1,14 +1,14 @@
 version: 1
 
-# merge-test playground project assembly. The substrate (root-only sections)
+# faber-stack-service playground project assembly. The substrate (root-only sections)
 # lives here; the five component libraries are pulled in via include: and
 # union-merged into one flat config before validation. Every included path
 # resolves relative to the file that declares it; the substrate paths below
 # resolve relative to THIS file.
 #
 # This is the acceptance playground for the faber/portitor stack — it drives the
-# disposable github.com/dmitriyb/merge-test repo through the same box chain
-# (implement / review / fix / merge) spexmachina uses, on its own `test`
+# disposable github.com/dvb-service/faber-stack-service repo through the same box chain
+# (implement / review / fix / merge) spexmachina uses, on its own `faber-stack-service`
 # gate instance. The scenario driver is `faber-e2e` (reset / run / assert).
 #
 # Run from THIS directory (or pass an absolute --config):
@@ -21,17 +21,17 @@ version: 1
 # spexmachina ON PURPOSE — the same toolset hash means the already-built
 # faber/*:tag images are reused. Only the substrate (this instance's network,
 # egress, gate) and the PORTITOR_HOST env differ. The gate side (roles, mirror,
-# host-key pin) is stood up by `faber-stack up --instance test`.
+# host-key pin) is stood up by `faber-stack up --instance faber-stack-service`.
 
 # --- substrate ---------------------------------------------------------------
 
 network:
-  name: test-net                         # this repo's own faber internal network
-  proxy: http://test-egress:8888         # this repo's allow-list egress (api.anthropic.com only)
-  no_proxy: [portitor-test, localhost, 127.0.0.1]   # token rides in the box (file mode); proxy carries no secret
+  name: faber-stack-service-net          # this repo's own faber internal network
+  proxy: http://faber-stack-service-egress:8888   # this repo's allow-list egress (api.anthropic.com only)
+  no_proxy: [portitor-faber-stack-service, localhost, 127.0.0.1]   # token rides in the box (file mode); proxy carries no secret
 
 remote:                                  # portitor step: the box's ONLY git remote (per-repo instance)
-  url: ssh://git@portitor-test/srv/git   # security module splices <repo>.git per step
+  url: ssh://git@portitor-faber-stack-service/srv/git   # security module splices <repo>.git per step
   host_key_file: ./keys/portitor_host_key.pub   # portitor step: pin portitor's SSH host key here
 
 credentials:

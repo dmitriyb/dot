@@ -1,0 +1,38 @@
+{
+  "format_version": 1,
+  "action_roles": {
+    "fetch":   ["implementer", "reviewer", "merger"],
+    "comment": ["implementer", "reviewer", "merger"],
+    "review":  ["reviewer"],
+    "reply":   ["implementer"],
+    "resolve": ["reviewer"],
+    "merge":   ["merger"],
+    "close":   ["merger"]
+  },
+  "merge_gate": {
+    "review": "none",
+    "checks": [
+      { "name": "bead-closed",
+        "command": ["/bin/sh", "-c", "git show \"$2\":.beads/issues.jsonl 2>/dev/null | grep -q '\"status\":\"closed\"'", "bead-closed"] }
+    ]
+  },
+  "content_rules": {
+    "version": 1,
+    "structural": {
+      "rules": [
+        { "name": "beads-file-reviewer-only", "paths": [".beads/**"], "operations": ["delete", "rename"], "roles": { "not_in": ["reviewer"] }, "effect": "deny" }
+      ]
+    },
+    "semantic": {
+      "files": [
+        { "path": ".beads/issues.jsonl",
+          "check": { "command": ["br", "--no-db", "list", "--json", "--all", "--limit", "0"], "input_file": ".beads/issues.jsonl", "records_path": "issues", "id_field": "id" },
+          "rules": [
+            { "name": "bead-close-reviewer-only", "match": { "type": "field", "field": "status", "to": "closed" }, "roles": { "not_in": ["reviewer"] }, "effect": "deny" }
+          ],
+          "default": "allow" }
+      ]
+    }
+  },
+  "identity_only_roles": ["merger"]
+}

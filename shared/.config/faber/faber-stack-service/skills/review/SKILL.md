@@ -48,7 +48,7 @@ The bundle's `MODE` is coarse. Refine it:
 
 ### Step 3: Act — one of four, no other paths
 
-You do NOT post the review yourself: write it to `$FABER_RESULT_DIR/review.json` and the **postlude** (`post-review`) submits it through the gate — which posts a comment-type review to GitHub, records your verdict against the PR's current head in the gate's reviews_log (**that record is what the merge gate consults**), and on approve auto-resolves the threads the gate's own reviews created.
+You do NOT post the review yourself: write it to `$FABER_RESULT_DIR/review.json` and the **postlude** (`post-review`) submits it as a **comment-type** GitHub review — feedback only, never a GitHub approve/request-changes (a single PAT account can't cast those on its own PR). Approval is **not** an internal verdict: it is your **signed bead close** below (portitor gates the close to the reviewer role), which the merge gate's `bead-closed` predicate reads off the PR head. On an `approve` verdict the postlude also resolves the threads your prior comment-reviews raised.
 
 ```json
 {"event": "approve" | "request-changes" | "comment",

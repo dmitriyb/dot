@@ -1,17 +1,17 @@
 #!/usr/bin/env bash
-# faber-e2e — drive the merge-test playground through the faber/portitor stack
+# faber-e2e — drive the faber-stack-service playground through the faber/portitor stack
 # end to end: reset the disposable repo to its seed, run the epic, and assert
 # the run landed correctly.
 #
 # The playground is one gate instance (`--instance test`) fronting the disposable
-# GitHub repo dmitriyb/merge-test. Its pristine state is the annotated tag
+# GitHub repo dvb-service/faber-stack-service. Its pristine state is the annotated tag
 # `playground-seed` (a go module of stub functions + a spex spec + the minted
 # epic `mt-oxm` and its Add/Sub/Mul child beads). Every run starts from that tag,
 # so the acceptance loop is repeatable:
 #
 #   faber-e2e reset          # forge + gate back to playground-seed
 #   faber-e2e run            # faber-stack up + faber run epic   (COSTS real agent usage)
-#   faber-e2e assert         # PRs merged, beads closed, commits verified, gate approved
+#   faber-e2e assert         # PRs merged, beads closed, commits verified (bead-closed gate)
 #   faber-e2e full           # reset -> run -> assert
 #
 # Every default is wired for the playground but flag-overridable, so the same
@@ -50,21 +50,23 @@ Verbs (first positional arg):
              - the default branch's .beads/issues.jsonl shows the children closed
              - every commit since the seed tag has verification.verified == true
              - no unresolved review threads on the merged PRs
-             - the gate's reviews_log carries approve records
+             - the gate carries no reviews_log (transparent-approve; approval = signed bead close)
   full     reset -> run -> assert (so `full` also COSTS REAL AGENT USAGE).
 
 Flags (all optional; defaults target the playground):
   --instance <name>  gate instance; derives portitor-<name> etc.   (default: test)
-  --repo <name>      portitor repo id / mirror basename            (default: merge-test)
-  --slug <owner/repo> GitHub slug for the API + mirror upstream    (default: dmitriyb/merge-test)
-  --pat <svc>[/acct] keychain coordinates for the scoped PAT       (default: portitor-test)
+  --repo <name>      portitor repo id / mirror basename            (default: faber-stack-service)
+  --slug <owner/repo> GitHub slug for the API + mirror upstream    (default: dvb-service/faber-stack-service)
+  --pat <svc>[/acct] keychain coordinates for the scoped PAT       (default: service-bot/dvb-service)
   --project <dir>    faber orchestrator dir (its orchestrator.yaml is run ABSOLUTE)
-                                                                   (default: ~/.config/faber/merge-test)
+                                                                   (default: ~/.config/faber/faber-stack-service)
   --epic <id>        the epic bead id `faber run epic` lands       (default: mt-oxm)
   --tag <name>       the seed anchor tag reset restores to         (default: playground-seed)
   --commit-email <e> allowed committer email seeded on `run`       (default: dvbozhko@gmail.com)
   --allow <host>     extra egress allow-list host for `run` (repeatable; default: none —
                      the playground module is stdlib-only, so no go proxy is needed)
+  --force-portitor-rebuild  auto-confirm the gate-image rebuild if it lags the installed
+                     portitor (forwarded to `faber-stack up`; for non-interactive runs)
   -h, --help         this help
 
 Exit: 0 ok, 1 runtime, 2 usage.
@@ -78,15 +80,16 @@ case "$1" in -h|--help) usage 0 ;; esac
 VERB="$1"; shift
 case "$VERB" in reset|run|assert|full) ;; *) die "unknown verb: $VERB (want reset|run|assert|full)" 2 ;; esac
 
-INSTANCE="test"
-REPO="merge-test"
-SLUG="dmitriyb/merge-test"
-PAT="portitor-test"
-PROJECT="$HOME/.config/faber/merge-test"
+INSTANCE="faber-stack-service"
+REPO="faber-stack-service"
+SLUG="dvb-service/faber-stack-service"
+PAT="service-bot/dvb-service"
+PROJECT="$HOME/.config/faber/faber-stack-service"
 EPIC="mt-oxm"
 TAG="playground-seed"
 COMMIT_EMAIL="dvbozhko@gmail.com"
 ALLOW=()
+FORCE_REBUILD=false
 
 need_val() { [[ $# -ge 2 ]] || die "$1 needs a value" 2; }
 while [[ $# -gt 0 ]]; do
@@ -100,6 +103,7 @@ while [[ $# -gt 0 ]]; do
 		--tag)          need_val "$@"; TAG="$2"; shift 2 ;;
 		--commit-email) need_val "$@"; COMMIT_EMAIL="$2"; shift 2 ;;
 		--allow)        need_val "$@"; ALLOW+=("$2"); shift 2 ;;
+		--force-portitor-rebuild) FORCE_REBUILD=true; shift ;;
 		-h|--help)      usage 0 ;;
 		*)              die "unknown flag: $1 (see --help)" 2 ;;
 	esac
@@ -213,10 +217,8 @@ do_reset() {
 	else
 		echo "  portitor-branch not on PATH — skipping stale-branch clear"
 	fi
-	# Truncate the reviews log; tolerate its absence.
-	gate_exec sh -c ": > /srv/git/reviews/${REPO}.jsonl" 2>/dev/null \
-		&& echo "  truncated gate reviews_log /srv/git/reviews/${REPO}.jsonl" \
-		|| echo "  gate reviews_log absent — nothing to truncate"
+	# Transparent-approve: the gate keeps no reviews_log, so there is nothing to
+	# truncate here — approval is the reviewer-signed bead close, reset with main.
 	echo "faber-e2e: reset complete (forge + gate)"
 }
 
@@ -234,13 +236,19 @@ do_run() {
 	echo "faber-e2e: run — standing the gate stack up (instance ${INSTANCE})"
 	local allow_flags=()
 	local h; for h in ${ALLOW[@]+"${ALLOW[@]}"}; do allow_flags+=(--allow "$h"); done
+	local force_flag=(); $FORCE_REBUILD && force_flag=(--force-portitor-rebuild)
 	role-keys --json \
 		| faber-stack up --instance "$INSTANCE" --slug "$SLUG" --pat "$PAT" --project "$PROJECT" \
-			--commit-email "$COMMIT_EMAIL" ${allow_flags[@]+"${allow_flags[@]}"} --build \
+			--commit-email "$COMMIT_EMAIL" ${allow_flags[@]+"${allow_flags[@]}"} ${force_flag[@]+"${force_flag[@]}"} --build \
 		|| die "faber-stack up failed" 1
 
 	echo "faber-e2e: run — faber run epic (epic=${EPIC}); this costs real agent usage"
-	faber run epic --config "$cfg" --param repo="$REPO" --param epic="$EPIC" \
+	# Run faber FROM the project dir: orchestrator.yaml's relative paths — notably
+	# remote.host_key_file (./keys/portitor_host_key.pub) — are resolved against the
+	# process CWD, not the (absolute) --config's dir. Without this cd the security
+	# module can't find the host-key pin and every gated box dies at launch. Also
+	# keeps faber's .faber/ run dir inside the (gitignored) project, not the CWD.
+	(cd "$PROJECT" && faber run epic --config "$cfg" --param repo="$REPO" --param epic="$EPIC") \
 		|| die "faber run epic failed" 1
 	echo "faber-e2e: run complete — assert with: faber-e2e assert --instance $INSTANCE"
 }
@@ -307,15 +315,14 @@ do_assert() {
 	check "$([[ "$unverified" == 0 ]] && echo 0 || echo 1)" \
 		"all $total commit(s) since $TAG are verified (unverified=$unverified)"
 
-	# The gate's reviews_log carries approve records.
+	# Transparent-approve: there is no gate-owned reviews_log any more. Approval is
+	# the reviewer-signed bead close (asserted above) that the merge_gate bead-closed
+	# predicate reads — a merged PR with its bead closed already proves it passed.
+	# Confirm the retired log is absent.
 	if gate_up; then
-		local rl approvals
-		rl="$(gate_exec cat "/srv/git/reviews/${REPO}.jsonl" 2>/dev/null || true)"
-		approvals="$(grep -c 'approve' <<<"$rl" 2>/dev/null || echo 0)"
-		check "$([[ "$approvals" -gt 0 ]] && echo 0 || echo 1)" \
-			"gate reviews_log carries approve record(s) ($approvals)"
-	else
-		check 1 "gate $GATE_CT is up so its reviews_log can be read (it is DOWN)"
+		gate_exec test -e "/srv/git/reviews/${REPO}.jsonl" 2>/dev/null \
+			&& check 1 "gate carries NO reviews_log — but /srv/git/reviews/${REPO}.jsonl exists" \
+			|| check 0 "gate carries no reviews_log (transparent-approve)"
 	fi
 
 	summary

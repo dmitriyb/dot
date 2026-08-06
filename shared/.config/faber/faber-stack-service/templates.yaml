@@ -14,7 +14,7 @@ templates:
     identity: implementer
     run:
       resources: {memory: 8g, cpus: 4}
-      env: {FABER_AGENT_CLI: claude, PORTITOR_HOST: portitor-test}  # PORTITOR_HOST: the gate container the pr/portitor client targets
+      env: {FABER_AGENT_CLI: claude, PORTITOR_HOST: portitor-faber-stack-service}  # PORTITOR_HOST: the gate container the pr/portitor client targets
     skill: implement
     model: claude-sonnet-5
     effort: high
@@ -42,7 +42,7 @@ templates:
     identity: implementer
     run:
       resources: {memory: 8g, cpus: 4}
-      env: {FABER_AGENT_CLI: claude, PORTITOR_HOST: portitor-test}  # PORTITOR_HOST: the gate container the pr/portitor client targets
+      env: {FABER_AGENT_CLI: claude, PORTITOR_HOST: portitor-faber-stack-service}  # PORTITOR_HOST: the gate container the pr/portitor client targets
     skill: implement
     model: claude-sonnet-5
     effort: high
@@ -64,7 +64,7 @@ templates:
     image: spex-box
     identity: reviewer             # the ONLY role permitted to close beads (portitor role rule)
     run:
-      env: {FABER_AGENT_CLI: claude, PORTITOR_HOST: portitor-test}  # PORTITOR_HOST: the gate container the pr/portitor client targets
+      env: {FABER_AGENT_CLI: claude, PORTITOR_HOST: portitor-faber-stack-service}  # PORTITOR_HOST: the gate container the pr/portitor client targets
     skill: review
     model: claude-opus-5
     effort: high
@@ -83,7 +83,7 @@ templates:
     image: spex-box
     identity: implementer          # fixes are authored by the implementer identity
     run:
-      env: {FABER_AGENT_CLI: claude, PORTITOR_HOST: portitor-test}  # PORTITOR_HOST: the gate container the pr/portitor client targets
+      env: {FABER_AGENT_CLI: claude, PORTITOR_HOST: portitor-faber-stack-service}  # PORTITOR_HOST: the gate container the pr/portitor client targets
     skill: fix
     model: claude-sonnet-5
     effort: high
@@ -102,7 +102,7 @@ templates:
     image: spex-box                # shares the toolset; only needs git/openssh + the portitor client
     identity: merger               # commit-less landing identity (portitor action policy gates merge)
     run:
-      env: {FABER_AGENT_CLI: claude, PORTITOR_HOST: portitor-test}  # PORTITOR_HOST: the gate container the pr/portitor client targets
+      env: {FABER_AGENT_CLI: claude, PORTITOR_HOST: portitor-faber-stack-service}  # PORTITOR_HOST: the gate container the pr/portitor client targets
     skill: merge
     model: claude-sonnet-5
     effort: low

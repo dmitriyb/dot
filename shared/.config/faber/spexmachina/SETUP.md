@@ -101,11 +101,13 @@ drop it — `docker rmi portitor` — and faber-stack rebuilds it on the next `u
 
 **Version floor for this config:** the review/fix postludes need a faber
 release with the postlude phase (> 0.1.5; older faber silently ignores the
-`postlude:` keys — the hooks simply don't run), and the seeded
-`merge_gate`/`reviews_log`/`reply`/`resolve` policy needs a portitor release
-with merge-gate v2 (> 0.1.3; an OLDER gate binary strict-refuses those keys
-at boot, so run `docker rmi portitor` and the next `up` in one step — the
-seed and the new image land together).
+`postlude:` keys — the hooks simply don't run), and the gate policy in
+`$PROJECT/portitor/policy.json` (transparent-approve: `merge_gate.review:none`
++ a `bead-closed` check, no `reviews_log`) needs a portitor release with
+merge-gate v2 transparent-approve (>= 0.1.5; an OLDER gate binary strict-refuses
+`review:none`/`checks` — or the retired `review:internal`/`reviews_log` — at
+boot, so run `docker rmi portitor` and the next `up` in one step — the policy
+and the new image land together).
 
 ### macOS host notes (skip on Linux)
 
@@ -235,7 +237,11 @@ security add-generic-password -s $PAT -a default -w '<CONTENTS+PR PAT>'
 
 The heart of the runbook. Pipe `role-keys --json` into `faber-stack up`. It
 validates the inputs, seeds the portitor config and builds the roles **host-side**
-(the `:ro` config mount must be complete before boot), writes the per-instance
+(the `:ro` config mount must be complete before boot). The **static gate policy**
+— `action_roles` / `merge_gate` / `content_rules` / `identity_only_roles` — comes
+from the declarative `$PROJECT/portitor/policy.json` (override with `--policy`);
+faber-stack overlays only the computed fields (roles map, signer path, slug,
+committer emails). It also writes the per-instance
 egress allow-list, brings up `portitor-$INSTANCE` + `$INSTANCE-egress` on
 `$INSTANCE-net`, mirrors the repo **in the container**, pins the gate host key
 into `$PROJECT/keys/`, and prints the orchestrator substrate it satisfies.

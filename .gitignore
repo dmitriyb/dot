@@ -5,6 +5,10 @@
 # macOS faber-box copy under ~/.local/libexec) — machine artifacts, never content.
 shared/.local/libexec/
 
+# faber run artifacts (journals/logs/box results). faber writes a .faber/ run dir
+# in its working dir; ignore it anywhere so a run from the repo root never commits it.
+.faber/
+
 # Claude Code (user's local config at repo root; NOT the tracked shared/.claude package)
 /.claude/
 

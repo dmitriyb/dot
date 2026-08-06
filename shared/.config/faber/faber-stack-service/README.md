@@ -1,7 +1,7 @@
-# merge-test faber project (playground / acceptance)
+# faber-stack-service faber project (playground / acceptance)
 
 The **acceptance playground** for the faber → portitor stack. It runs the
-disposable repo [`dmitriyb/merge-test`](https://github.com/dmitriyb/merge-test)
+disposable repo [`dvb-service/faber-stack-service`](https://github.com/dvb-service/faber-stack-service)
 through the same box chain spexmachina uses — implement / review / fix / merge —
 so the whole gate stack can be exercised end to end on cheap, throwaway work
 before it is trusted with a real repo.
@@ -11,22 +11,22 @@ skills, templates, and workflows are **identical on purpose** (same toolset hash
 ⇒ the already-built `faber/*:<hash>` images are reused, no rebuild). Only three
 things differ, all minimal:
 
-- **`orchestrator.yaml`** substrate points at this instance: network `test-net`,
-  egress `http://test-egress:8888`, gate `portitor-test`, remote
-  `ssh://git@portitor-test/srv/git`.
-- **`templates.yaml`** sets `PORTITOR_HOST: portitor-test` in every template env.
-- **`workflows.yaml`** defaults the `repo` param to `merge-test`.
+- **`orchestrator.yaml`** substrate points at this instance: network `faber-stack-service-net`,
+  egress `http://faber-stack-service-egress:8888`, gate `portitor-faber-stack-service`, remote
+  `ssh://git@portitor-faber-stack-service/srv/git`.
+- **`templates.yaml`** sets `PORTITOR_HOST: portitor-faber-stack-service` in every template env.
+- **`workflows.yaml`** defaults the `repo` param to `faber-stack-service`.
 
-## How it maps to the test instance
+## How it maps to the faber-stack-service instance
 
-One knob — `--instance test` — derives every object name, so the box side and the
+One knob — `--instance faber-stack-service` — derives every object name, so the box side and the
 gate side agree by construction:
 
 ```text
---instance test  ⇒  network test-net · egress test-egress · gate portitor-test · volume test-repos · project test
+--instance faber-stack-service  ⇒  network faber-stack-service-net · egress faber-stack-service-egress · gate portitor-faber-stack-service · volume faber-stack-service-repos · project faber-stack-service
 ```
 
-- slug `dmitriyb/merge-test`, PAT keychain service `portitor-test`;
+- slug `dvb-service/faber-stack-service`, PAT keychain service `service-bot` (account `dvb-service`);
 - the upstream repo carries the seed spec + beads and the `playground-seed` tag
   (the reset anchor);
 - the epic is `mt-oxm` with children `mt-oxm.1` (Mul), `mt-oxm.2` (Add),
@@ -35,13 +35,13 @@ gate side agree by construction:
 ## Layout
 
 ```
-orchestrator.yaml   substrate (test-net / test-egress / portitor-test) + include
+orchestrator.yaml   substrate (faber-stack-service-net / faber-stack-service-egress / portitor-faber-stack-service) + include
 images.yaml         spex-box — IDENTICAL to spexmachina (toolset hash reuse)
 overlay.nix         claude-code + spex + br derivations — IDENTICAL to spexmachina
 hooks.yaml/hooks/    gather-context / claim-bead / … — verbatim (project-agnostic)
 skills.yaml/skills/  implement / review / fix / merge / go-expert — verbatim
-templates.yaml      IDENTICAL except PORTITOR_HOST: portitor-test
-workflows.yaml      IDENTICAL except repo default = merge-test
+templates.yaml      IDENTICAL except PORTITOR_HOST: portitor-faber-stack-service
+workflows.yaml      IDENTICAL except repo default = faber-stack-service
 keys/               host-key pin lands here at `faber-stack up` (see keys/README.md)
 ```
 
