@@ -10,6 +10,7 @@
 
 - SSH keys unavailable (agent refused, key not loaded, signing/auth failure) = STOP IMMEDIATELY and report. Never proceed on an assumption, never retry around it, never continue with dependent work.
 - Announce BEFORE any operation that triggers a keychain prompt or YubiKey touch — name the item/service and the reason. Unannounced prompts get denied; a denial is policy, not an error to retry around.
+- Git network ops must never hit the macOS login keychain: run each as `git -c credential.helper= …` (the empty value resets homebrew's global osxkeychain helper), PAT fed from an env-var helper read via an announced `security` call on the scoped item. A `github.com` keychain popup means a git call slipped the guard — deny and fix.
 - Subagents NEVER touch the keychain or the YubiKey. Credential-requiring steps run only in the foreground main loop, immediately after the announcement, so every popup is attributable by timing.
 
 # Commits & signing
