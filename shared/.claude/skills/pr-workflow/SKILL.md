@@ -13,25 +13,32 @@ with no spec — these instructions don't apply there.
 
 1. **Spec first.** Change the relevant `spec/` documents before touching code; the
    code follows the spec, never the other way around.
-2. **Code changes** implementing the spec, plus tests.
-3. **PAUSE before committing.** Every commit is signed with a YubiKey touch, and
-   the user may not be at the keyboard. Say the commit is ready and wait for an
-   explicit go — never run `git commit` without it. This applies to *every* commit
-   in the session.
-4. **Commit**, then run an **independent review** of the change with a subagent
-   (fresh context, adversarial — correctness, spec alignment, tests).
-5. **Fix** anything the review surfaced.
-6. **PAUSE → commit** the fixes (same YubiKey rule), then **push** the branch.
-7. **Hand over a PR description**, interactively in the conversation:
-   - a short, precise title;
-   - one short paragraph: *why* the change is needed and *how* it is done in
-     general.
-   The user opens the PR themselves — never open a PR, never call `gh pr create`.
+2. **Code + tests** implementing the spec.
+3. **Independent review — before committing** (so no YubiKey touch is ever spent on
+   unreviewed work). Hand the whole diff to a **fresh-context subagent** with no stake
+   in it — any capable model; if the usual reviewer is rate-limited, substitute, don't
+   block. It must:
+   - read the **entire** diff, **including the test files**, not just production code;
+   - check correctness + edge cases, **spec alignment** (the leaf matches the code and
+     sits in the right module), and **test quality** — assertions strong and
+     non-tautological, and crucially *would the tests fail if the change were reverted*
+     (a test that still passes with the change removed proves nothing);
+   - return findings ranked blocker / should-fix / nit, each with file:line + a concrete
+     failure scenario, and a clear "safe to commit / needs fixes" verdict.
+   Its independence is the point — never a self-check by the author context.
+4. **Fix** what the review surfaced, folding it into the same change.
+5. **PAUSE → commit.** Every commit is a YubiKey touch and the user may be away: say the
+   commit is ready and wait for an explicit go — never `git commit` without it. Then
+   **push** the branch. (A second review→fix→commit round is fine if fixes were large.)
+6. **Hand over a PR description**, interactively: a short precise title, and one short
+   paragraph — *why* the change is needed and *how* it's done. The user opens the PR
+   themselves — never open a PR, never call `gh pr create`.
 
 ## Ground rules
 
-- The pauses are the point: commit = hardware touch. Batch work so pauses are few
-  and predictable (typically two: main change, review fixes).
-- Review is by a subagent with no stake in the diff — not a self-check.
-- If the repo's own conventions (CLAUDE.md, spec structure, release process)
-  conflict with anything here, the repo wins; flag the conflict to the user.
+- The touch is the point: commit = hardware touch. Batch work so pauses are few and
+  predictable — review-before-commit means the common case is a single commit.
+- The review is a fresh-context subagent with no stake in the diff, scrutinizing the
+  tests as hard as the code — not a self-check, and not tied to any one model.
+- If the repo's own conventions (CLAUDE.md, spec structure, release process) conflict
+  with anything here, the repo wins; flag the conflict to the user.
