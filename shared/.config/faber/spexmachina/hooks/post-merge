@@ -1,0 +1,41 @@
+#!/bin/bash
+# postlude (merge) — runs IN the box AFTER the merge agent, BEFORE result
+# extraction. Makes the landing deterministic and LAND-OR-FAIL: verify the PR
+# actually merged; if not, retry `portitor pr merge` a few times to absorb
+# GitHub's transient post-close mergeability lag; if it STILL hasn't landed,
+# FAIL the step (exit != 0) so the epic cycle fail-stops instead of the loop
+# silently advancing on an unlanded bead. The recorded output reflects reality.
+#
+# No judgement lives here: the merge DECISION was made upstream (a cycle only
+# reaches merge when review.verdict == approved), so this is pure execution —
+# a script's job, not an agent's.
+set -euo pipefail
+die() { echo "post-merge: $*" >&2; exit 1; }
+result="${FABER_RESULT_DIR:?FABER_RESULT_DIR is required}"
+pr="${FABER_INPUT_PR:?FABER_INPUT_PR is required}"
+
+# `portitor pr fetch` surfaces the GitHub PR `state` (OPEN|CLOSED|MERGED); a
+# landed PR reads MERGED. There is no boolean `.merged` field.
+is_merged() { portitor pr fetch --pr "$pr" 2>/dev/null | jq -e '.state == "MERGED"' >/dev/null 2>&1; }
+
+if is_merged; then
+  printf '{"merged":true}\n' > "$result/output.json"
+  echo "post-merge: PR #$pr is merged"
+  exit 0
+fi
+
+# Not landed yet — retry to absorb the transient not-mergeable-yet window
+# (GitHub recomputes mergeability after the reviewer's close-push). Bounded;
+# each attempt re-checks, so a peer landing it also ends the loop.
+for attempt in 1 2 3 4 5; do
+  portitor pr merge --pr "$pr" >/dev/null 2>&1 || true
+  if is_merged; then
+    printf '{"merged":true}\n' > "$result/output.json"
+    echo "post-merge: PR #$pr merged (attempt $attempt)"
+    exit 0
+  fi
+  sleep 3
+done
+
+printf '{"merged":false}\n' > "$result/output.json"
+die "PR #$pr did not merge after 5 attempts — fail-stopping the cycle (check gate/mergeability, then \`faber resume\`)"

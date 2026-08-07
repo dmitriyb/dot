@@ -48,7 +48,7 @@ The bundle's `MODE` is coarse. Refine it:
 
 ### Step 3: Act — one of four, no other paths
 
-You do NOT post the review yourself: write it to `$FABER_RESULT_DIR/review.json` and the **postlude** (`post-review`) submits it through the gate — which posts a comment-type review to GitHub, records your verdict against the PR's current head in the gate's reviews_log (**that record is what the merge gate consults**), and on approve auto-resolves the threads the gate's own reviews created.
+You do NOT post the review yourself: write it to `$FABER_RESULT_DIR/review.json` and the **postlude** (`post-review`) submits it as a **comment-type** GitHub review — feedback only, never a GitHub approve/request-changes (a single PAT account can't cast those on its own PR). Approval is **not** an internal verdict: it is your **signed bead close** below (portitor gates the close to the reviewer role), which the merge gate's `bead-closed` predicate reads off the PR head. On an `approve` verdict the postlude also resolves the threads your prior comment-reviews raised.
 
 ```json
 {"event": "approve" | "request-changes" | "comment",
@@ -56,10 +56,12 @@ You do NOT post the review yourself: write it to `$FABER_RESULT_DIR/review.json`
  "comments": [{"path": "<file>", "line": <n>, "body": "<blocker, as an inline thread>"}, ...]}
 ```
 
-- **CLEAN + REVIEW** → `event: approve`, body = LGTM summary, no comments; then close the bead.
-- **CLEAN + FOLLOWUP** → `event: approve`, short body; close the bead.
-- **ISSUES + REVIEW** → `event: request-changes`, body = the blocker summary, one `comments[]` entry per blocker at its `path:line` (these become real threads the fix step answers); do not close.
-- **ISSUES + FOLLOWUP** → `event: request-changes` with what's still wrong per unfixed item; do not close.
+**Keep `body` terse — a few lines, not an audit.** Its only readers are the fix agent (which needs the blockers) and a human glancing at the PR; neither wants a section-by-section pass. The substance of any blocker lives in `comments[]` (one inline thread per blocker at its `path:line`), NOT in the body. Never restate the spec, the diff, or every check you ran.
+
+- **CLEAN + REVIEW** → `event: approve`, `body` = one line (verdict + a one-clause reason, e.g. "LGTM — Mul is `a*b`, traces to its arch/test leaves, tests pass"), no comments; then close the bead.
+- **CLEAN + FOLLOWUP** → `event: approve`, one-line body; close the bead.
+- **ISSUES + REVIEW** → `event: request-changes`, `body` = one line naming the blockers at a high level, one `comments[]` entry per blocker at its `path:line` (real threads the fix step answers); do not close.
+- **ISSUES + FOLLOWUP** → `event: request-changes`, one line per still-unfixed item; do not close.
 
 The STOP case (author never responded) writes `event: comment` with a one-line body naming the wait.
 

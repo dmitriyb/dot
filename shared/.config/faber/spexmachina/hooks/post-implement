@@ -1,0 +1,33 @@
+#!/bin/bash
+# postlude (implement / implement-next) — runs IN the box AFTER the agent, BEFORE
+# result extraction. Sets the PR DESCRIPTION from the agent-prepared body,
+# deterministically: the agent writes the text to pr-body.md, this does the
+# GitHub side via `portitor pr describe` (the box has no gh). The gate's auto-open
+# already left a safe default description from the commit messages; this overwrites
+# it with the real summary — so a PR carries one description, never a summary comment.
+#
+# No-op on a done-cycle (implement-next found nothing ready → no PR). Absent/empty
+# body is a contract violation (the agent opened a PR but wrote no description).
+set -euo pipefail
+die() { echo "post-implement: $*" >&2; exit 1; }
+result="${FABER_RESULT_DIR:?FABER_RESULT_DIR is required}"
+out="$result/output.json"
+body="$result/pr-body.md"
+
+# No output.json ⇒ the agent never emitted its result; faber's output validation
+# will fail the step. Nothing to describe here.
+[ -f "$out" ] || { echo "post-implement: no output.json — nothing to describe"; exit 0; }
+
+# done-cycle: {done:true}, no PR was opened.
+if [ "$(jq -r '.done // false' "$out" 2>/dev/null || echo false)" = "true" ]; then
+  echo "post-implement: done-cycle — no PR to describe"
+  exit 0
+fi
+
+pr="$(jq -r '.pr // empty' "$out" 2>/dev/null || true)"
+[ -n "$pr" ] || die "output.json carries no PR number — implement contract broken"
+[ -f "$body" ] || die "pr-body.md is ABSENT — the agent opened PR #$pr but wrote no description"
+[ -s "$body" ] || die "pr-body.md is EMPTY — refusing to set an empty PR description"
+
+portitor pr describe --pr "$pr" < "$body" || die "the gate refused pr describe on PR #$pr (see error above)"
+echo "post-implement: set PR #$pr description ($(wc -c < "$body" | tr -d ' ') bytes)"

@@ -13,9 +13,6 @@ die() { echo "claim-bead: $*" >&2; exit 1; }
 bead="${FABER_INPUT_BEAD:?FABER_INPUT_BEAD is required}"
 bundle="${FABER_BUNDLE_DIR:?FABER_BUNDLE_DIR is required}"
 
-# slugify: stdin -> git-ref-safe kebab token, max 40 chars.
-slugify() { tr '[:upper:]' '[:lower:]' | sed -E 's/[^a-z0-9]+/-/g; s/^-+//; s/-+$//' | cut -c1-40 | sed -E 's/-+$//'; }
-
 default_branch() {
   local ref
   if ref="$(git symbolic-ref --quiet --short refs/remotes/origin/HEAD 2>/dev/null)"; then
@@ -40,11 +37,9 @@ case "$status" in
   *) die "bead $bead status is '$status', expected open or ready" ;;
 esac
 
-title="$(jq -r '.[0].title' <<<"$json")"
 record="$(jq -r '.[0].labels[]? | select(startswith("spex:")) | select(. != "spex:cleanup") | ltrimstr("spex:")' <<<"$json" | head -n1)"
 base="origin/$(default_branch)"
-branch="$(printf '%s' "$bead" | slugify)-$(printf '%s' "$title" | slugify)"
-branch="${branch%-}"
+branch="$bead"   # bead id verbatim (git allows the dot in refs); the id is already a safe ref token
 
 # Branch first, so the claim commit never lands on the default branch.
 git checkout -q -b "$branch" "$base" || die "branch $branch off $base failed"

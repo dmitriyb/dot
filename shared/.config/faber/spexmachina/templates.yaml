@@ -23,6 +23,7 @@ templates:
     hooks:
       context: gather-context      # bead + spec -> CONTEXT.md (read-only, default branch)
       prelude: claim-bead          # branch off origin/main + signed in_progress claim
+      postlude: post-implement     # pr-body.md -> portitor pr describe (sets the PR description, not a comment)
       on_failure: release-bead     # host-side: undo the claim if the step fails
     inputs:
       repo: {type: string, required: true}
@@ -51,6 +52,7 @@ templates:
     hooks:
       context: next-bead-context   # next ready epic bead (or done-cycle) -> CONTEXT.md
       prelude: claim-next-bead     # branch off origin/main + signed in_progress claim
+      postlude: post-implement     # pr-body.md -> portitor pr describe (sets the PR description, not a comment)
       on_failure: release-bead     # host-side: logging no-op (claim dies with the box clone)
     inputs:
       repo: {type: string, required: true}
@@ -108,6 +110,8 @@ templates:
     effort: low
     skills: [merge]
     skills_link: .claude/skills
+    hooks:
+      postlude: post-merge         # verify + retry + LAND-OR-FAIL; deterministic land, cycle fail-stops if unlanded
     inputs:
       repo: {type: string, required: true}
       pr:   {type: int,    required: true}
