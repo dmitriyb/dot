@@ -92,7 +92,8 @@ Flags:
   --slug <owner/repo>   GitHub slug for the mirror upstream + repo config           (up/restart, required)
   --pat <svc>[/acct]    keychain coordinates for the scoped GitHub PAT; no default  (up/restart, required)
   --project <dir>       faber orchestrator dir; host-key pin lands in <dir>/keys/   (up/restart, required)
-  --allow <host>        extra egress allow-list host (repeatable; default api.anthropic.com)
+  --allow <host>        extra egress host beyond api.anthropic.com, which is ALWAYS
+                        allowed (the agent's API lifeline); repeatable, converged per up
   --commit-email <e>    allowed committer email for the gate's email allowlist (repeatable;
                         CONVERGED like --allow: omitted on a later run = field dropped, check off;
                         requires a portitor release that knows allowed_committer_emails)
@@ -429,7 +430,11 @@ swap_signers_field "$CONTAINER_SIGNERS"
 # ---- (5) write the per-instance egress filter (atomic) ---------------------
 # Each --allow host becomes one anchored ^host$ line with '.' escaped; hosts are
 # validated first so a value can never widen into a wildcard / open proxy.
-[[ ${#ALLOW[@]} -gt 0 ]] || ALLOW=(api.anthropic.com)
+# api.anthropic.com is the agent's lifeline — EVERY box runs the agent, so it is
+# ALWAYS in the allow-list; --allow only ADDS extras (module proxy, etc.). The old
+# empty-default form dropped anthropic the moment any --allow was passed, silently
+# blocking the agent's API — a box with a --allow set could never reach Anthropic.
+ALLOW=(api.anthropic.com ${ALLOW[@]+"${ALLOW[@]}"})
 mktmp etmp "$CONFIG_DIR/.egress-filter"
 {
 	echo "# Per-instance egress allow-list for '$INSTANCE' (extended regex, FilterDefaultDeny=Yes)."
@@ -439,6 +444,11 @@ mktmp etmp "$CONFIG_DIR/.egress-filter"
 		printf '^%s$\n' "${h//./\\.}"
 	done
 } >"$etmp"
+# The egress-filter is bind-mounted and tinyproxy loads it at START; a plain
+# `compose up -d` won't restart it on a content-only change. Record whether the
+# allow-list actually changed so step 8 can force-recreate egress to apply it.
+EGRESS_FILTER_CHANGED=0
+cmp -s "$etmp" "$EGRESS_FILTER" 2>/dev/null || EGRESS_FILTER_CHANGED=1
 mv "$etmp" "$EGRESS_FILTER"
 
 # ---- (6) export the interpolation env for compose --------------------------
@@ -503,6 +513,12 @@ docker image inspect egress-proxy >/dev/null 2>&1 || docker build -t egress-prox
 # restart tears the containers down first (mirror volume persists).
 [[ "$VERB" == restart ]] && compose down >/dev/null 2>&1 || true
 compose up -d || die "docker compose up failed" 1
+# A changed egress allow-list only reaches tinyproxy on a restart: the filter is
+# bind-mounted (content isn't part of compose's recreate check) and read at start.
+# Recreate egress explicitly when it changed (harmless no-op on a fresh create).
+[[ "${EGRESS_FILTER_CHANGED:-0}" == 1 ]] \
+	&& { compose up -d --force-recreate egress \
+		|| die "failed to recreate egress to apply the new allow-list" 1; }
 
 # ---- (9) wait for the gate to be READY, pinning its host key as the probe --
 # `compose up -d` returns when the container is STARTED, not when its sshd is
