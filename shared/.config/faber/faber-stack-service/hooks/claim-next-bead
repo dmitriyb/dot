@@ -19,9 +19,6 @@ fi
 [ -s "$bundle/selected-bead" ] || die "no selected-bead and no epic-done marker — context hook contract broken"
 bead="$(cat "$bundle/selected-bead")"
 
-# slugify: stdin -> git-ref-safe kebab token, max 40 chars.
-slugify() { tr '[:upper:]' '[:lower:]' | sed -E 's/[^a-z0-9]+/-/g; s/^-+//; s/-+$//' | cut -c1-40 | sed -E 's/-+$//'; }
-
 default_branch() {
   local ref
   if ref="$(git symbolic-ref --quiet --short refs/remotes/origin/HEAD 2>/dev/null)"; then
@@ -46,11 +43,9 @@ case "$status" in
   *) die "bead $bead status is '$status', expected open or ready" ;;
 esac
 
-title="$(jq -r '.[0].title' <<<"$json")"
 record="$(jq -r '.[0].labels[]? | select(startswith("spex:")) | select(. != "spex:cleanup") | ltrimstr("spex:")' <<<"$json" | head -n1)"
 base="origin/$(default_branch)"
-branch="$(printf '%s' "$bead" | slugify)-$(printf '%s' "$title" | slugify)"
-branch="${branch%-}"
+branch="$bead"   # bead id verbatim (git allows the dot): e.g. mt-oxm.1, not mt-oxm-1-playground-mul
 
 # Branch first, so the claim commit never lands on the default branch.
 git checkout -q -b "$branch" "$base" || die "branch $branch off $base failed"

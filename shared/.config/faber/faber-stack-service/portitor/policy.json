@@ -5,6 +5,7 @@
     "comment": ["implementer", "reviewer", "merger"],
     "review":  ["reviewer"],
     "reply":   ["implementer"],
+    "describe": ["implementer"],
     "resolve": ["reviewer"],
     "merge":   ["merger"],
     "close":   ["merger"]

@@ -31,8 +31,7 @@ A doc-only edit to a component's `arch_*` leaf still changes its hash, so the pi
 6. **Run tests.** `go test ./...` and `go vet ./...` must pass. Fix the implementation, never weaken a test.
 7. **Completion gate** (below). Do NOT proceed until every item passes.
 8. Commit and push your feature branch. Commits must be signed; do NOT bypass signing (`--no-gpg-sign`, `-c commit.gpgsign=false`). Do NOT close the bead and do NOT push to the default branch. **The gate auto-opens the PR on an accepted push** — read the PR number from the push output (the `remote: portitor: PR #<n> <url>` line; a re-push reports the existing PR).
-9. Post the PR body onto that PR as a comment, built from `.github/pull_request_template.md`: fill in the bead ID (`$BEAD_ID`), spec references, and a changes summary. GitHub goes through `portitor pr <action>` (no `gh`); bodies are read from stdin:
-   `printf '%s' "<pr-body>" | portitor pr comment --pr <n>`
+9. Build the PR body from `.github/pull_request_template.md` (fill in the bead ID `$BEAD_ID`, spec references, and a changes summary) and write it to `$FABER_RESULT_DIR/pr-body.md`. Do NOT post it yourself — the **post-implement** postlude sets it as the PR **description** via `portitor pr describe` (the box has no `gh`). The gate's auto-open already left a safe default description from your commit messages; this overwrites it with the real summary. Write a non-empty body (an empty file is refused).
 10. Link the bead to the PR and commit it so the state is tracked in git:
     `br update <bead-id> --external-ref "PR#<number>"` then `git add .beads/issues.jsonl && git commit -S -m "<bead>: link PR#<number>" && git push`.
 
