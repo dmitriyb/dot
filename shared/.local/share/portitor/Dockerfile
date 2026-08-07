@@ -10,7 +10,11 @@
 #
 # faber-stack builds this automatically when the `portitor` image is missing.
 
-ARG ALPINE_VERSION=3.20
+# Alpine 3.23 ships gh 2.83. The gate's github-cli must be new enough that
+# `gh pr edit` (used by `portitor pr describe`) no longer queries GitHub's
+# deprecated Projects-classic `projectCards` field: gh 2.47 (3.20) and 2.72
+# (3.22) still do and fail the edit; 2.83 dropped it (verified on a live PR).
+ARG ALPINE_VERSION=3.23
 
 # --- fetch + verify the portitor release binary ------------------------------
 # Runs portitor's OWN signed install.sh: we verify install.sh with the shared

@@ -460,35 +460,40 @@ ensure_gate_image() {
 		return 0
 	fi
 	$BUILD || return 0   # only --build audits freshness; plain up trusts the cached image
-	local baked installed
-	baked="$(docker run --rm --entrypoint portitor "$PORTITOR_IMAGE" --version 2>/dev/null | awk 'NR==1{print $2}')"
-	installed="$("$PORTITOR_BIN" --version 2>/dev/null | awk 'NR==1{print $2}')"
-	if [[ -n "$baked" && "$baked" == "$installed" ]]; then
-		echo "faber-stack: gate image $PORTITOR_IMAGE is current (portitor $baked)" >&2; return 0
-	fi
-	echo "faber-stack: gate $PORTITOR_IMAGE bakes portitor '${baked:-unknown}' but installed is '${installed:-unknown}' — rebuild needed for current policy." >&2
-	local cs; cs="$(docker ps -a --filter "ancestor=$PORTITOR_IMAGE" --format '    {{.Names}}  [{{.State}}]')"
-	if [[ -n "$cs" ]]; then
-		echo "faber-stack: rebuild does 'rmi $PORTITOR_IMAGE'; these use it (torn down + recreated on up):" >&2
-		printf '%s\n' "$cs" >&2
-	else
-		echo "faber-stack: no containers currently use $PORTITOR_IMAGE." >&2
-	fi
+	# --force-portitor-rebuild rebuilds unconditionally — e.g. to pick up a gate
+	# Dockerfile change (new base/gh) that leaves the baked portitor version
+	# unchanged, which the version audit below would otherwise call "current".
 	if $FORCE_PORTITOR_REBUILD; then
-		echo "faber-stack: --force-portitor-rebuild set — rebuilding without prompt." >&2
-	elif [[ -r /dev/tty ]]; then
-		local ans; printf 'faber-stack: rmi + --no-cache rebuild the gate now? [Y/n] ' >&2
-		read -r ans </dev/tty || ans=n
-		case "$ans" in ""|[Yy]|[Yy][Ee][Ss]) : ;; *) die "aborted: gate image is stale and the rebuild was declined" 1 ;; esac
+		echo "faber-stack: --force-portitor-rebuild set — rebuilding $PORTITOR_IMAGE unconditionally (version match ignored)." >&2
 	else
-		die "gate image stale and no TTY to confirm — re-run with --force-portitor-rebuild (or without --build to use it as-is)" 1
+		local baked installed
+		baked="$(docker run --rm --entrypoint portitor "$PORTITOR_IMAGE" --version 2>/dev/null | awk 'NR==1{print $2}')"
+		installed="$("$PORTITOR_BIN" --version 2>/dev/null | awk 'NR==1{print $2}')"
+		if [[ -n "$baked" && "$baked" == "$installed" ]]; then
+			echo "faber-stack: gate image $PORTITOR_IMAGE is current (portitor $baked)" >&2; return 0
+		fi
+		echo "faber-stack: gate $PORTITOR_IMAGE bakes portitor '${baked:-unknown}' but installed is '${installed:-unknown}' — rebuild needed for current policy." >&2
+		local cs; cs="$(docker ps -a --filter "ancestor=$PORTITOR_IMAGE" --format '    {{.Names}}  [{{.State}}]')"
+		if [[ -n "$cs" ]]; then
+			echo "faber-stack: rebuild does 'rmi $PORTITOR_IMAGE'; these use it (torn down + recreated on up):" >&2
+			printf '%s\n' "$cs" >&2
+		else
+			echo "faber-stack: no containers currently use $PORTITOR_IMAGE." >&2
+		fi
+		if [[ -r /dev/tty ]]; then
+			local ans; printf 'faber-stack: rmi + --no-cache rebuild the gate now? [Y/n] ' >&2
+			read -r ans </dev/tty || ans=n
+			case "$ans" in ""|[Yy]|[Yy][Ee][Ss]) : ;; *) die "aborted: gate image is stale and the rebuild was declined" 1 ;; esac
+		else
+			die "gate image stale and no TTY to confirm — re-run with --force-portitor-rebuild (or without --build to use it as-is)" 1
+		fi
 	fi
 	compose down >/dev/null 2>&1 || true   # free the image — this instance only (-p $INSTANCE)
 	docker rmi "$PORTITOR_IMAGE" >/dev/null 2>&1 \
 		|| die "failed to rmi stale gate image $PORTITOR_IMAGE (a container still holds it — stop it and retry)" 1
 	docker build --no-cache -t "$PORTITOR_IMAGE" "$GATE_CTX" \
 		|| die "failed to rebuild gate image $PORTITOR_IMAGE from $GATE_CTX" 1
-	echo "faber-stack: rebuilt gate image $PORTITOR_IMAGE (portitor $installed)." >&2
+	echo "faber-stack: rebuilt gate image $PORTITOR_IMAGE." >&2
 }
 ensure_gate_image
 docker image inspect egress-proxy >/dev/null 2>&1 || docker build -t egress-proxy "$EGRESS_CTX" \
