@@ -1,2 +1,5 @@
 roles.json
 spexmachina/.faber/
+# per-instance host-local stack manifest (identity + PAT-by-reference); never
+# committed. Copy <instance>/stack.example.json -> <instance>/stack.json and fill in.
+*/stack.json

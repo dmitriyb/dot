@@ -1,0 +1,86 @@
+#!/usr/bin/env bash
+# faber-epic — run a faber epic against a gate instance from ONE per-instance
+# manifest, so the invocation is just: project + epic id.
+#
+#   faber-epic <project> <epic-id> [-- <extra faber-stack up flags>]
+#
+# <project> is a name under ~/.config/faber (e.g. spexmachina) or a path to a
+# project dir. It reads <project>/stack.json — a host-local, GITIGNORED file
+# (identity + PAT-by-REFERENCE, never the token) — then:
+#   1. converges the gate stack:  role-keys --json | faber-stack up ...
+#   2. runs the epic:             faber run epic --config <abs> --param epic=<id>
+#
+# The manifest is the single source of the --allow/--commit-email set that
+# faber-stack CONVERGES on every up (a flag omitted there is silently dropped),
+# so this can't half-specify it. Extra flags after `--` (e.g. --force-portitor-
+# rebuild) are forwarded to `faber-stack up`.
+set -euo pipefail
+
+die() { echo "faber-epic: $*" >&2; exit 1; }
+usage() { sed -n '2,16p' "$0" | sed 's/^# \{0,1\}//'; exit "${1:-2}"; }
+
+[ $# -ge 1 ] || usage 2
+case "$1" in -h|--help) usage 0 ;; esac
+[ $# -ge 2 ] || usage 2
+project_arg="$1"; epic="$2"; shift 2
+
+up_extra=()
+if [ $# -gt 0 ]; then
+	[ "$1" = "--" ] || die "unexpected arg '$1' — extra up-flags must follow a '--' separator"
+	shift; up_extra=("$@")
+fi
+
+for t in jq faber-stack faber role-keys; do
+	command -v "$t" >/dev/null || die "'$t' not found on PATH"
+done
+
+# resolve project dir: an explicit path, or a name under ~/.config/faber
+if [[ "$project_arg" == */* || -d "$project_arg" ]]; then
+	project="$project_arg"
+else
+	project="${XDG_CONFIG_HOME:-$HOME/.config}/faber/$project_arg"
+fi
+project="${project%/}"
+[ -d "$project" ] || die "project dir not found: $project"
+orch="$project/orchestrator.yaml"
+[ -f "$orch" ] || die "no orchestrator.yaml in $project"
+manifest="$project/stack.json"
+[ -f "$manifest" ] || die "no manifest at $manifest — copy stack.example.json to stack.json and fill it in"
+jq empty "$manifest" 2>/dev/null || die "manifest is not valid JSON: $manifest"
+
+# required scalars: present AND non-empty
+req() {
+	local v; v="$(jq -er --arg k "$1" '.[$k] // empty' "$manifest" 2>/dev/null)" \
+		|| die "manifest missing required field: $1"
+	[ -n "$v" ] || die "manifest field is empty: $1"
+	printf '%s' "$v"
+}
+instance="$(req instance)"
+slug="$(req slug)"
+pat_service="$(req pat_service)"   # keychain SERVICE name — never the token
+commit_email="$(req commit_email)"
+
+# allow[] -> repeated --allow flags (egress allow-list; converged on every up)
+allow_flags=()
+while IFS= read -r a; do [ -n "$a" ] && allow_flags+=(--allow "$a"); done \
+	< <(jq -r '.allow[]? // empty' "$manifest")
+[ ${#allow_flags[@]} -gt 0 ] || echo "faber-epic: note — manifest lists no 'allow' hosts; boxes reach only the default egress." >&2
+
+echo "faber-epic: instance=$instance slug=$slug epic=$epic" >&2
+echo "faber-epic: project=$project" >&2
+
+# 1) converge the gate stack (idempotent). role-keys --json feeds role material
+#    (local handles, no touch); faber-stack reads the scoped PAT from the
+#    keychain by service name. --build folds in validate+build (cheap when cached).
+role-keys --json \
+	| faber-stack up --instance "$instance" --slug "$slug" --pat "$pat_service" \
+		--project "$project" "${allow_flags[@]}" --commit-email "$commit_email" \
+		--build "${up_extra[@]}"
+
+# 2) run the epic. faber resolves the config's RELATIVE refs (host_key_file
+#    ./keys/..., the .faber/ run dir) against CWD, so cd into the project first —
+#    else the box launch dies "read host key file: open ./keys/...". --config
+#    stays ABSOLUTE so gated boxes also clear docker's bind-mount guard
+#    ("host path is relative").
+cd "$project" || die "cannot cd into project dir: $project"
+exec faber run epic --config "$orch" --param epic="$epic"

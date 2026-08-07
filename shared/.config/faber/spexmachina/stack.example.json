@@ -1,0 +1,7 @@
+{
+  "instance": "<instance, e.g. spex — derives network/egress/gate/volume names>",
+  "slug": "<owner>/<repo>",
+  "pat_service": "<keychain service holding this repo's scoped Contents+PR PAT — a NAME, never the token>",
+  "allow": ["proxy.golang.org", "sum.golang.org"],
+  "commit_email": "<verified account email registered for the role committers>"
+}
