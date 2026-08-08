@@ -1,7 +1,9 @@
 #!/usr/bin/env fish
 # Load mounted secrets into the env: /run/secrets/<lowercase_var> → <UPPERCASE_VAR>
-# (ANTHROPIC_API_KEY, ANTHROPIC_BASE_URL, GH_TOKEN — mounted read-only by docker-claude
-# instead of passing -e, so they never appear in `docker inspect`).
+# (ANTHROPIC_BASE_URL, GH_TOKEN — mounted read-only by docker-claude instead of
+# passing -e, so they never appear in `docker inspect`. ANTHROPIC_API_KEY is not a
+# secret here: the wire proxy authenticates by URL key, so docker-claude passes a
+# placeholder value via -e).
 if test -d /run/secrets
     for f in /run/secrets/*
         test -f "$f"; or continue

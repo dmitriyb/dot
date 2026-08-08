@@ -14,7 +14,7 @@ skills.yaml         implement / review / fix / merge / go-expert  → skills/<na
 hooks.yaml          gather-context / claim-bead / next-bead-context / claim-next-bead / fetch-pr / release-bead → hooks/<name>
 templates.yaml      implement / review / fix / merge  (named refs into the libraries)
 workflows.yaml      bead (auto-merge chain) / epic (the same chain per child, sequential)
-overlay.nix         claude-code + spex + br derivations (real hashes; br x86_64 hash TODO)
+overlay.nix         claude-code + spex + br derivations (real, verified hashes)
 skills/             the SKILL.md trees (implement / review / fix / merge / go-expert)
 hooks/              the hook executables (context runs before prelude; cwd = the clone)
 keys/               role + gateway keys — filled at the portitor step (see keys/README.md)
@@ -43,7 +43,7 @@ faber run epic --config orchestrator.yaml --param epic=<epic-id>
 ## Status
 
 - **Complete**: image (real hashes, incl. the in-box `pr`/`portitor` client), hooks, skills,
-  templates, workflows, the assembly. `faber-stack up` (see `SETUP.md`) stands up the gate:
+  templates, workflows, the assembly. `faber-stack up` (see `../SETUP.md`) stands up the gate:
   roles, mirror, host-key pin — everything `keys/README.md` describes.
 - `bead` is the primary, proven shape — trial it on the Batch-B bugs first.
   `epic` is a pull-loop of that same chain (implement → review loop → auto-merge):

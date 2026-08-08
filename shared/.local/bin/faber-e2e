@@ -54,7 +54,7 @@ Verbs (first positional arg):
   full     reset -> run -> assert (so `full` also COSTS REAL AGENT USAGE).
 
 Flags (all optional; defaults target the playground):
-  --instance <name>  gate instance; derives portitor-<name> etc.   (default: test)
+  --instance <name>  gate instance; derives portitor-<name> etc.   (default: faber-stack-service)
   --repo <name>      portitor repo id / mirror basename            (default: faber-stack-service)
   --slug <owner/repo> GitHub slug for the API + mirror upstream    (default: dvb-service/faber-stack-service)
   --pat <svc>[/acct] keychain coordinates for the scoped PAT       (default: service-bot/dvb-service)

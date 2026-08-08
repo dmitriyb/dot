@@ -50,6 +50,6 @@ identities:                             # resolved by role NAME via the faber re
 include:
   - images.yaml       # spex-box (pinned toolset + overlay)
   - skills.yaml       # implement / review / fix / merge / go-expert
-  - hooks.yaml        # gather-context / claim-bead / fetch-pr / release-bead / list-epic-beads
+  - hooks.yaml        # gather-context / claim-bead / next-bead-context / claim-next-bead / fetch-pr / post-* / release-bead
   - templates.yaml    # implement / review / fix / merge
   - workflows.yaml    # bead (Gate B) / epic (Gate A)

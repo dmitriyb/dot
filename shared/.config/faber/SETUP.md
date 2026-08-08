@@ -96,8 +96,9 @@ it inside the gate) — so no portitor checkout is needed at all.
 
 **Updating later:** `faber upgrade` moves `faber` + `faber-box` forward as a unit
 (they share a contract version); re-run portitor's `install.sh` (above) to move
-`portitor`. The gate image is cached, so to rebuild it against a newer portitor,
-drop it — `docker rmi portitor` — and faber-stack rebuilds it on the next `up`.
+`portitor`. The gate image is cached per instance, so to rebuild it against a newer
+portitor, drop it — `docker rmi portitor-<instance>` (e.g. `portitor-spex`) —
+and faber-stack rebuilds it on the next `up`.
 
 **Version floor for this config:** the review/fix postludes need a faber
 release with the postlude phase (> 0.1.5; older faber silently ignores the
@@ -106,8 +107,8 @@ release with the postlude phase (> 0.1.5; older faber silently ignores the
 + a `bead-closed` check, no `reviews_log`) needs a portitor release with
 merge-gate v2 transparent-approve (>= 0.1.5; an OLDER gate binary strict-refuses
 `review:none`/`checks` — or the retired `review:internal`/`reviews_log` — at
-boot, so run `docker rmi portitor` and the next `up` in one step — the policy
-and the new image land together).
+boot, so run `docker rmi portitor-<instance>` and the next `up` in one step —
+the policy and the new image land together).
 
 ### macOS host notes (skip on Linux)
 

@@ -33,4 +33,4 @@ via the registry.
 Steps 2–4 are what `faber-stack up` performs (roles, mirror, host-key pin). The
 in-box portitor/`pr` **client** is already part of the image toolset
 (`portitor-client` in `overlay.nix` + `images.yaml`) — no separate delivery.
-See `../SETUP.md` for the full ordered runbook.
+See `../../SETUP.md` for the full ordered runbook.

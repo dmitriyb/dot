@@ -58,10 +58,9 @@ Load your normal (touch) keys into the main agent with `ssh-load-keys`, which ex
 ```bash
 docker-claude personal             # Personal account (Max subscription via OAuth)
 docker-claude personal --agent     # Personal, agent mode: ephemeral no-touch signing agent
-docker-claude work                 # Work account (via wire proxy, default)
+docker-claude work                 # Work account (via wire proxy)
 docker-claude personal -r          # Rebuild images, then launch personal
 docker-claude personal --no-cache  # Full fresh rebuild (re-downloads everything)
-docker-claude personal --workspace ~/projects  # Custom workspace mount (personal only)
 ```
 
 Aliases: `dc` (docker-claude), `dcp` (personal), `dcw` (work).
@@ -127,8 +126,8 @@ to add — not more hashing.
 ## Architecture
 
 - **Three images**: `claude-dev-base` (shared), `claude-dev-personal`, `claude-dev-work`
-- **Separate auth**: personal uses `CLAUDE_CODE_OAUTH_TOKEN` (keychain), work uses wire proxy by default (`--direct` falls back to `ANTHROPIC_API_KEY` from keychain); `gh` CLI uses `GH_TOKEN` from keychain (optional)
-- **Persistent volumes**: `claude-personal-repos` / `claude-work-repos` (cloned repos; work on native ext4), `claude-fish-data` (fish history), `claude-tmux-data` (tmux resurrect). Neovim plugins and the Claude binary are baked into the image. Claude Code's own state piggybacks on the repo volume rather than a dedicated volume: session transcripts (`projects/`) and prompt history (`history.jsonl`) are symlinked from `~/.claude` into `/workspace/.claude-state` by the entrypoint, and per-project trust is regenerated into `~/.claude.json` from the `/workspace` subdirectories on every boot (so trust never re-prompts, with no stale entries or cached state).
+- **Separate auth**: personal uses `CLAUDE_CODE_OAUTH_TOKEN` (keychain), work uses the wire proxy (started host-side via the `jbcentral` CLI; the container reaches it through `host.docker.internal`); `gh` CLI uses `GH_TOKEN` from keychain (optional)
+- **Persistent volumes**: `claude-personal-repos` / `claude-work-repos` (cloned repos; work on native ext4), `claude-fish-data-personal` / `claude-fish-data-work` (fish history), `claude-tmux-data-personal` / `claude-tmux-data-work` (tmux resurrect). Neovim plugins and the Claude binary are baked into the image. Claude Code's own state piggybacks on the repo volume rather than a dedicated volume: session transcripts (`projects/`) and prompt history (`history.jsonl`) are symlinked from `~/.claude` into `/workspace/.claude-state` by the entrypoint, and per-project trust is regenerated into `~/.claude.json` from the `/workspace` subdirectories on every boot (so trust never re-prompts, with no stale entries or cached state).
 - **SSH agent forwarding**: by default the host agent is forwarded (YubiKey touch-signing works for git). With `--agent` (personal only), an ephemeral signing-only agent holding just a no-touch FIDO2 key is forwarded instead, and git transport switches to `GH_TOKEN` over HTTPS — so agents can sign commits without touch prompts but can't authenticate as you. The agent is torn down on container exit; the no-touch key is identified by hash in `~/.ssh/signing-key-hashes` (no key name in the repo).
 - **IDEA access**: dedicated ed25519 key for SSH, auto-generated per machine at build time
 - **MCP servers**: work entrypoint filters to only Docker-compatible servers (ijproxy via host IDE, Context7, PluginModelAnalyzer)

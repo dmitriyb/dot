@@ -17,19 +17,18 @@ docker-claude — single entrypoint for the containerized Claude cockpit.
   forwarding, and separate personal/work images.
 
 usage:
-  docker-claude personal [-a] [-r | --no-cache] [--workspace <path>]
+  docker-claude personal [-a] [-r | --no-cache]
   docker-claude work [-r | --no-cache]
 
 commands:
   personal           personal account, Anthropic OAuth token from the keychain
-  work               work account via the wire proxy (needs the `wire` CLI)
+  work               work account via the wire proxy (needs the `jbcentral` CLI)
 
 options:
   -a, --agent        personal only: forward an ephemeral no-touch SSH signing agent
                      (commits are signed; the key cannot auth)
   -r, --rebuild      rebuild the image(s) before running
   --no-cache         rebuild with no Docker cache (implies --rebuild)
-  --workspace <path> host dir to mount as the workspace (default: ~/Work, ~/work on macOS)
   -h, --help         show this help
 
 aliases: dc=docker-claude, dcp=personal, dcw=work.
@@ -100,10 +99,6 @@ while [[ $# -gt 0 ]]; do
   -a | --agent)
     AGENT_MODE=true
     shift
-    ;;
-  --workspace)
-    WORKSPACE="$2"
-    shift 2
     ;;
   *)
     echo "Unknown flag: $1" >&2
@@ -188,15 +183,6 @@ if [[ -z "$MODE" ]]; then
   echo "Error: specify an account mode (-p | -w)." >&2
   usage >&2
   exit 1
-fi
-
-# Platform-specific default workspace
-if [[ -z "${WORKSPACE:-}" ]]; then
-  if [[ "$(uname)" == "Darwin" ]]; then
-    WORKSPACE="$HOME/work"
-  else
-    WORKSPACE="$HOME/Work"
-  fi
 fi
 
 # Register the gh PAT (if stored for $1) as a /run/secrets/gh_token mount. The
