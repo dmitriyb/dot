@@ -21,7 +21,7 @@ workflows:
 
       - id: review-cycle
         loop:
-          max: 3                                    # bound; exhaustion = step failure
+          max: 5                                    # bound; exhaustion = step failure
           until: steps.review.verdict == "approved"
           steps:
             - id: review
@@ -69,7 +69,7 @@ workflows:
               with: {repo: "${params.repo}", epic: "${params.epic}"}
             - id: review-cycle
               loop:
-                max: 3
+                max: 5
                 until: steps.review.verdict == "approved"
                 steps:
                   - id: review

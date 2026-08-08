@@ -43,10 +43,23 @@ ncomments="$(jq '(.comments // []) | length' "$review")"
 
 # ALWAYS a comment-type review (feedback + inline threads). The approve/changes
 # distinction is carried by output.json + the bead close, NOT a GitHub event.
-jq '{body: .body, comments: (.comments // [])}' "$review" \
-  | portitor pr review --pr "$pr" --event comment --inline \
-  || die "the gate refused the review (see error above)"
-echo "post-review: posted comment review on PR #$pr ($ncomments inline comment(s); verdict=$verdict)"
+if jq '{body: .body, comments: (.comments // [])}' "$review" \
+     | portitor pr review --pr "$pr" --event comment --inline; then
+  echo "post-review: posted comment review on PR #$pr ($ncomments inline comment(s); verdict=$verdict)"
+elif [ "$ncomments" -gt 0 ]; then
+  # An inline comment anchored to a line NOT in the PR's diff makes GitHub 422 the
+  # whole review. Retry body-only, folding the inline notes into the body so the
+  # feedback still lands (as one review comment, not per-line threads).
+  echo "post-review: inline review rejected; retrying body-only (comments folded into the body)" >&2
+  jq '{body: (.body + "\n\n---\n**Inline notes** (could not anchor to the diff):\n"
+             + ([.comments[] | "- `\(.path):\(.line)` — \(.body)"] | join("\n"))),
+       comments: []}' "$review" \
+    | portitor pr review --pr "$pr" --event comment --inline \
+    || die "the gate refused the review even body-only (see error above)"
+  echo "post-review: posted body-only review on PR #$pr (folded $ncomments inline note(s); verdict=$verdict)"
+else
+  die "the gate refused the review (see error above)"
+fi
 
 # On approval every prior feedback thread is addressed — resolve the gate's own
 # threads so no open conversation rides into the merge. Non-fatal: a first-pass

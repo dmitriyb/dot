@@ -52,7 +52,7 @@ nthreads="$(jq 'length' "$bundle/threads.json")"
   if [ "$nthreads" -gt 0 ]; then
     echo
     echo "## Unresolved review threads ($nthreads) — address EVERY one"
-    jq -r '.[] | "- thread \(.id) — \(.path // \"(no file)\"):\(.line // \"-\")\n\(( [.comments[]?.body] | join(\"\n  > \")) as $c | \"  > \" + $c)"' "$bundle/threads.json"
+    jq -r '.[] | "- thread \(.id) — \(.path // "(no file)"):\(.line // "-")\n\(( [.comments[]?.body] | join("\n  > ")) as $c | "  > " + $c)"' "$bundle/threads.json"
     echo
     echo "(Full thread objects: \`threads.json\` in the bundle.)"
   fi
