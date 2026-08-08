@@ -34,14 +34,16 @@ for t in jq faber-stack faber role-keys; do
 	command -v "$t" >/dev/null || die "'$t' not found on PATH"
 done
 
-# resolve project dir: an explicit path, or a name under ~/.config/faber
-if [[ "$project_arg" == */* || -d "$project_arg" ]]; then
+# resolve project dir: an explicit PATH (contains a slash), else a NAME under
+# ~/.config/faber. A bare name NEVER resolves to a CWD-relative dir — else running
+# from a directory that happens to hold a <name>/ subdir would silently pick it.
+if [[ "$project_arg" == */* ]]; then
 	project="$project_arg"
 else
 	project="${XDG_CONFIG_HOME:-$HOME/.config}/faber/$project_arg"
 fi
-project="${project%/}"
 [ -d "$project" ] || die "project dir not found: $project"
+project="$(cd "$project" && pwd)"   # ABSOLUTE: --config + the cd below must not be relative (box bind-mount guard)
 orch="$project/orchestrator.yaml"
 [ -f "$orch" ] || die "no orchestrator.yaml in $project"
 manifest="$project/stack.json"
