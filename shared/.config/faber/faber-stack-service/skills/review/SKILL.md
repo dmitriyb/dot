@@ -86,3 +86,8 @@ printf '{"verdict":"%s"}\n' "<approved|changes>" > "$FABER_RESULT_DIR/output.jso
 ```
 
 `approved` iff you reached CLEAN, wrote `event: approve` into review.json, and closed the bead; `changes` in every other case (issues written, or the STOP case where the author hasn't responded).
+
+## Spec freeze and drift reports
+
+- **Any diff touching `spec/` is an unconditional REQUEST_CHANGES**, whatever else the PR contains. Spec truth moves only in the authoring loop; the gate denies such pushes structurally, so a spec-touching diff reaching you means something slipped — reject and say why.
+- **A PR carrying `drifts/drift-*.json` gets the report itself reviewed**: validate the shape against `schema/drift.schema.json`, then judge the substance — does the cited contradiction/hole actually exist in the named files? A drift-only PR (report + the bead's return to `open`, no code) is APPROVED when the claim is real and well-formed — and this is the one sanctioned exception to the approve⇔close contract: emit `event: approve` **without closing the bead**, since returning it to `open` is the PR's entire point (the merge gate's `bead-closed` predicate does not bind here; its corpus-wide grep is a recorded limitation); a report whose claim you can refute gets REQUEST_CHANGES with the refutation, exactly like wrong code.

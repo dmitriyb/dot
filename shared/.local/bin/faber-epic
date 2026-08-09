@@ -85,4 +85,10 @@ role-keys --json \
 #    stays ABSOLUTE so gated boxes also clear docker's bind-mount guard
 #    ("host path is relative").
 cd "$project" || die "cannot cd into project dir: $project"
-exec faber run epic --config "$orch" --param epic="$epic"
+rc=0
+faber run epic --config "$orch" --param epic="$epic" || rc=$?
+echo "faber-epic: run finished (exit $rc). If the final cycle's output carries" >&2
+echo "faber-epic: halt_reason=blocking_drift, the spec is disputed: triage the listed" >&2
+echo "faber-epic: drifts/ report(s) with /drift-fix in the repo, merge its PR, then" >&2
+echo "faber-epic: rerun this same command — the loop resumes from the tracker state." >&2
+exit "$rc"

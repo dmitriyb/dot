@@ -39,7 +39,7 @@ orchestrator.yaml   substrate (faber-stack-service-net / faber-stack-service-egr
 images.yaml         spex-box — IDENTICAL to spexmachina (toolset hash reuse)
 overlay.nix         claude-code + spex + br derivations — IDENTICAL to spexmachina
 hooks.yaml/hooks/    gather-context / claim-bead / … — verbatim (project-agnostic)
-skills.yaml/skills/  implement / review / fix / merge / go-expert — verbatim
+skills.yaml/skills/  implement / review / fix / merge / go-expert — verbatim (the drift-protocol references — schema/drift.schema.json, drifts/ — assume the target repo carries them; the playground seed repo may not, which is acceptable: a drift report there is judged without schema validation)
 templates.yaml      IDENTICAL except PORTITOR_HOST: portitor-faber-stack-service
 workflows.yaml      IDENTICAL except repo default = faber-stack-service
 keys/               host-key pin lands here at `faber-stack up` (see keys/README.md)

@@ -11,11 +11,35 @@
 #     CONTEXT.md is the normal implement prompt (claim-next-bead claims it).
 #   - nothing ready        -> $FABER_BUNDLE_DIR/epic-done exists; CONTEXT.md
 #     tells the agent to emit {"done":true} and stop (no branch, no claim).
+#   - blocking drift on main -> same epic-done marker; CONTEXT.md dictates the
+#     settle sentinel {"done":true,"halt_reason":"blocking_drift",...} instead.
 set -euo pipefail
 
 die() { echo "next-bead-context: $*" >&2; exit 1; }
 epic="${FABER_INPUT_EPIC:?FABER_INPUT_EPIC is required}"
 bundle="${FABER_BUNDLE_DIR:?FABER_BUNDLE_DIR is required}"
+
+# Blocking drift reports halt the epic before any bead is selected: the spec is
+# disputed, and the authoring loop (/drift-fix in the repo) must rule before
+# more work builds on the disputed contract. Non-blocking reports never gate.
+blocking="$(grep -l '"blocking"[[:space:]]*:[[:space:]]*true' drifts/drift-*.json 2>/dev/null || true)"
+if [ -n "$blocking" ]; then
+  files_csv="$(paste -sd, <<<"$blocking")"
+  : > "$bundle/epic-done"
+  {
+    echo "# Epic $epic: halted — blocking drift report(s) on main"
+    echo
+    echo "The spec is disputed by: $files_csv"
+    echo "No bead may be implemented until /drift-fix (authoring loop) rules on it."
+    echo "Do exactly one thing and stop:"
+    echo
+    printf '    printf %s > "$FABER_RESULT_DIR/output.json"\n' "'{\"done\":true,\"halt_reason\":\"blocking_drift\",\"drift_files\":\"$files_csv\"}'"
+    echo
+    echo "Do not create branches, do not commit, do not push, do not touch beads."
+  } > "$bundle/CONTEXT.md"
+  echo "next-bead-context: blocking drift ($files_csv); epic settles" >&2
+  exit 0
+fi
 
 # The db (.beads/beads.db) is gitignored and rebuilt from the committed jsonl;
 # a fresh clone has none, so import before querying.

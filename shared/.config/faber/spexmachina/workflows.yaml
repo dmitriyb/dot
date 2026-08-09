@@ -3,7 +3,7 @@
 # different project's templates. One landing gate, two scopes:
 #   bead: one given bead -> implement -> bounded review loop -> AUTO-merge.
 #   epic: a pull-loop of that same chain — each cycle picks the next ready
-#         epic bead in-box, lands it, and the loop ends when nothing is ready.
+#         epic bead in-box, lands it, and the loop ends when nothing is ready (or a blocking drift report halts it).
 
 workflows:
   # ---- Gate B: single bead, auto-merge -------------------------------------
@@ -48,7 +48,7 @@ workflows:
   # advances main and the gate's stale-base rule rejects branches claimed off
   # an older main.
   #
-  # A cycle that finds nothing ready reports {done:true}: its review/fix/merge
+  # A cycle that finds nothing ready — or that halts on a blocking drift report — reports {done:true}: its review/fix/merge
   # skip (guards below), the remaining cycles self-skip via the loop gate, and
   # the epic settles OK. If the epic holds more beads than `max`, the loop
   # exhausts as an explicit failure — bump max and `faber resume`. A failed

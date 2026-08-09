@@ -36,7 +36,7 @@ templates:
   # given bead id it takes the EPIC id and selects the next ready child bead
   # from INSIDE the box (next-bead-context; br + spex are in the image, so the
   # host needs neither). Output carries the done sentinel: {done:false, branch,
-  # pr} on a work cycle, {done:true} when no ready bead remains — the epic
+  # pr} on a work cycle, {done:true} when no ready bead remains, plus halt_reason/drift_files when a blocking drift halts the epic — the epic
   # workflow's outer loop settles on it.
   implement-next:
     image: spex-box
@@ -61,6 +61,8 @@ templates:
       done:   {type: bool,   required: true}
       branch: {type: string}
       pr:     {type: int}
+      halt_reason: {type: string}   # settle sentinel: e.g. blocking_drift (set by the context hook's done-cycle)
+      drift_files: {type: string}   # comma-joined drifts/ paths when halt_reason=blocking_drift
 
   review:
     image: spex-box

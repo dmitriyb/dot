@@ -34,3 +34,13 @@ Last step — faber records the fix outcome and re-enters review:
 ```bash
 printf '{"status":"%s"}\n' "<short summary, e.g. 'addressed 3 review items'>" > "$FABER_RESULT_DIR/output.json"
 ```
+
+## Spec defects: the drift protocol
+
+Applies here exactly as in the implement skill:
+
+`spec/` is read-only for you — the gate denies any push touching it, no exceptions. If you find a spec defect while working (a contradiction, an undecided case, a claim your dependency's leaf never promises), you file a **drift report**, never a spec edit:
+
+- Write `drifts/drift-<bead-id>.json` per `schema/drift.schema.json`: `bead`, `node` (the defective node's identity hash), `files`, `claim` (the defective statement, located), `authoritative_source`, `evidence`, `blocking`, optional `proposed_fix`.
+- **`blocking: false`** — the defect is in a neighbor and does not gate your own task: commit the report alongside your code in the same branch/PR and continue normally. It is triaged after the epic.
+- **`blocking: true`** — the defect is in YOUR bead's own contract (its leaf, its `implements` chain, a `uses` seam) and makes the task ambiguous or unimplementable: discard your fix changes, commit ONLY the drift report **plus the bead's return to `open`** (undo the claim: `br update <bead-id> --status open`, same signed commit), and push — this updates the SAME PR you were fixing; there is no new PR to open. Emit your normal `status` output. The review chain re-examines the PR, now carrying your claim; the merge lands it on main, and the next cycle halts the epic. Nothing fails; the authoring loop takes over.
