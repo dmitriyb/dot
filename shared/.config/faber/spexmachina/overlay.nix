@@ -24,17 +24,17 @@ let
   # Version from https://downloads.claude.ai/claude-code-releases/latest ; the
   # per-platform sha256 is manifest.json .platforms[<platform>].checksum (a real
   # sha256, no npm involved).
-  claudeVersion = "2.1.207";
+  claudeVersion = "2.1.220";
   claudeSha256 = {
-    "linux-x64"   = "85e7e988a392d859f90802ca21fb26e89d3c9ab527f5ed0b08df3955e34d5c83";
-    "linux-arm64" = "8bc14a284065383460f37981d724b8f7aa7ca93c9849d2fe367e08f03383f454";
+    "linux-x64"   = "674f61f20ff306f3100cf9200e4c36c4b70278b5bef2884549819b942a89c863";
+    "linux-arm64" = "159e4a51d796f3bf14677577100f7efb845611b1ceaf0c30cbd8d4650d942185";
   };
 
   # --- br (beads_rust) pin -----------------------------------------------------
-  brVersion = "0.2.16";
+  brVersion = "0.2.22";
   brSha256 = {
-    "arm64"  = "0lfch2p45cky01fakcrx2kwg6wl1lf1kwiqpwq0grsl3slqdrdc4";   # verified
-    "x86_64" = "19mirqrbcl2zzm3sm65rijms9glkjygnqk9kqzknd4gc9k2gn7j6";   # verified (nix-prefetch-url, arch host)
+    "arm64"  = "0kk5h96yg9iv1gch7l06vpqdysabgcr9h8h4cf757ifx2nxvghs1";   # nix-prefetch-url
+    "x86_64" = "0hdhp7wv1mlb6k1iknn9wvb1nlkxs7lvkklpfarxprxkn1vx6hgw";   # nix-prefetch-url
   };
 in
 {
@@ -89,8 +89,8 @@ in
     src = final.fetchFromGitHub {
       owner = "dmitriyb";
       repo = "spexmachina";
-      rev = "23b2db5082426b5c6ea1b562301c72389626e87c";   # post-task-journal-spec main (epic minted, bead-map model intact)
-      sha256 = "0xyy471i8b69z7qgkji97hvyflb9lfjwf5y64ivzdryhgsvsl99l";
+      rev = "d66dcc62584453a558878df2209a00e359ea5292";   # main post-#231: journal model live (bead-map deleted), ow43 epic minted
+      sha256 = "0m08qgyzxsgkdm4jl59k3cvssfl7j78igibsxdfwc9igczgy2788";
     };
     vendorHash = "sha256-hiE+LAr6gsCyMKq+Z3FkJitSW4GGTjyMCL5F6BbTVgs=";   # unchanged by the 23b2db5 bump (same go.mod deps)
     subPackages = [ "cmd/spex" ];
