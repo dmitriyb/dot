@@ -11,7 +11,7 @@ data-exfiltration and any REST/libgit2 bypass to arbitrary hosts.
 
 | File | Role |
 |------|------|
-| `Dockerfile` | builds `egress-proxy` from `alpine:3.20` + tinyproxy |
+| `egress-image.nix` | builds `egress-proxy` via Nix `dockerTools` (glibc) — tinyproxy + `ssh-keyscan`; pins nixpkgs from the shared `versions.json`. `nix-build egress-image.nix && docker load -i result` (faber-stack does this for you) |
 | `tinyproxy.conf` | proxy config: `CONNECT` to 443 only, private client ranges, `Filter "/etc/tinyproxy/filter"` with `FilterDefaultDeny Yes` + `FilterExtended On` + `FilterCaseSensitive Off` |
 | `filter` | the **baked default** allow-list (`api.anthropic.com` only) |
 

@@ -31,10 +31,10 @@ let
   };
 
   # --- br (beads_rust) pin -----------------------------------------------------
-  brVersion = "0.2.22";
+  brVersion = "0.2.16";
   brSha256 = {
-    "arm64"  = "0kk5h96yg9iv1gch7l06vpqdysabgcr9h8h4cf757ifx2nxvghs1";   # nix-prefetch-url
-    "x86_64" = "0hdhp7wv1mlb6k1iknn9wvb1nlkxs7lvkklpfarxprxkn1vx6hgw";   # nix-prefetch-url
+    "arm64"  = "0lfch2p45cky01fakcrx2kwg6wl1lf1kwiqpwq0grsl3slqdrdc4";   # verified
+    "x86_64" = "19mirqrbcl2zzm3sm65rijms9glkjygnqk9kqzknd4gc9k2gn7j6";   # verified (nix-prefetch-url, arch host)
   };
 in
 {

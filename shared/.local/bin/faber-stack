@@ -43,10 +43,10 @@ set -euo pipefail
 # via standard XDG — no repo path, no self-location, no env to set.
 DATA_HOME="${XDG_DATA_HOME:-$HOME/.local/share}"
 COMPOSE_FILE="$DATA_HOME/portitor/portitor-stack.yml"
-GATE_CTX="$DATA_HOME/portitor"      # self-contained gate image build context (Dockerfile + gate-entrypoint.sh)
-EGRESS_CTX="$DATA_HOME/egress"
-if [[ ! -f "$COMPOSE_FILE" || ! -f "$GATE_CTX/Dockerfile" || ! -f "$EGRESS_CTX/Dockerfile" ]]; then
-	echo "faber-stack: faber assets not found under $DATA_HOME (need portitor/{portitor-stack.yml,Dockerfile} + egress/Dockerfile) — install them (stow the dot repo so ~/.local/share/{portitor,egress} exist)" >&2
+GATE_CTX="$DATA_HOME/portitor"      # self-contained gate image build context (gate-image.nix + gate-entrypoint.sh)
+EGRESS_CTX="$DATA_HOME/egress"      # egress image build context (egress-image.nix + tinyproxy.conf + filter)
+if [[ ! -f "$COMPOSE_FILE" || ! -f "$GATE_CTX/gate-image.nix" || ! -f "$EGRESS_CTX/egress-image.nix" ]]; then
+	echo "faber-stack: faber assets not found under $DATA_HOME (need portitor/{portitor-stack.yml,gate-image.nix} + egress/egress-image.nix) — install them (stow the dot repo so ~/.local/share/{portitor,egress} exist)" >&2
 	exit 1
 fi
 
@@ -454,60 +454,53 @@ mv "$etmp" "$EGRESS_FILTER"
 # ---- (6) export the interpolation env for compose --------------------------
 export INSTANCE CONFIG_DIR GH_TOKEN AGENT_AUTHORIZED_KEY PORTITOR_IMAGE
 
-# ---- (7) build / refresh images --------------------------------------------
-# The gate image is SELF-CONTAINED (built from the dot context $GATE_CTX): its
-# Dockerfile fetches + SSHSIG-verifies the portitor release binary (the PORTITOR_VERSION
-# arg can pin one) and adds `br` — no portitor checkout. It is PER-INSTANCE
-# ($PORTITOR_IMAGE = portitor-$INSTANCE) so a rebuild for this repo can never disturb
-# another instance's gate. Built when missing; under --build it is ALSO audited for
-# staleness against the installed portitor and rebuilt --no-cache if it lags (a stale
-# gate silently runs old policy semantics), after warning which containers that removes.
-ensure_gate_image() {
-	# Missing → build it fresh (any verb).
-	if ! docker image inspect "$PORTITOR_IMAGE" >/dev/null 2>&1; then
-		docker build -t "$PORTITOR_IMAGE" "$GATE_CTX" \
-			|| die "failed to build gate image $PORTITOR_IMAGE from $GATE_CTX (needs network to fetch + verify portitor)" 1
-		return 0
-	fi
-	$BUILD || return 0   # only --build audits freshness; plain up trusts the cached image
-	# --force-portitor-rebuild rebuilds unconditionally — e.g. to pick up a gate
-	# Dockerfile change (new base/gh) that leaves the baked portitor version
-	# unchanged, which the version audit below would otherwise call "current".
-	if $FORCE_PORTITOR_REBUILD; then
-		echo "faber-stack: --force-portitor-rebuild set — rebuilding $PORTITOR_IMAGE unconditionally (version match ignored)." >&2
-	else
-		local baked installed
-		baked="$(docker run --rm --entrypoint portitor "$PORTITOR_IMAGE" --version 2>/dev/null | awk 'NR==1{print $2}')"
-		installed="$("$PORTITOR_BIN" --version 2>/dev/null | awk 'NR==1{print $2}')"
-		if [[ -n "$baked" && "$baked" == "$installed" ]]; then
-			echo "faber-stack: gate image $PORTITOR_IMAGE is current (portitor $baked)" >&2; return 0
-		fi
-		echo "faber-stack: gate $PORTITOR_IMAGE bakes portitor '${baked:-unknown}' but installed is '${installed:-unknown}' — rebuild needed for current policy." >&2
-		local cs; cs="$(docker ps -a --filter "ancestor=$PORTITOR_IMAGE" --format '    {{.Names}}  [{{.State}}]')"
-		if [[ -n "$cs" ]]; then
-			echo "faber-stack: rebuild does 'rmi $PORTITOR_IMAGE'; these use it (torn down + recreated on up):" >&2
-			printf '%s\n' "$cs" >&2
-		else
-			echo "faber-stack: no containers currently use $PORTITOR_IMAGE." >&2
-		fi
-		if [[ -r /dev/tty ]]; then
-			local ans; printf 'faber-stack: rmi + --no-cache rebuild the gate now? [Y/n] ' >&2
-			read -r ans </dev/tty || ans=n
-			case "$ans" in ""|[Yy]|[Yy][Ee][Ss]) : ;; *) die "aborted: gate image is stale and the rebuild was declined" 1 ;; esac
-		else
-			die "gate image stale and no TTY to confirm — re-run with --force-portitor-rebuild (or without --build to use it as-is)" 1
-		fi
-	fi
-	compose down >/dev/null 2>&1 || true   # free the image — this instance only (-p $INSTANCE)
-	docker rmi "$PORTITOR_IMAGE" >/dev/null 2>&1 \
-		|| die "failed to rmi stale gate image $PORTITOR_IMAGE (a container still holds it — stop it and retry)" 1
-	docker build --no-cache -t "$PORTITOR_IMAGE" "$GATE_CTX" \
-		|| die "failed to rebuild gate image $PORTITOR_IMAGE from $GATE_CTX" 1
-	echo "faber-stack: rebuilt gate image $PORTITOR_IMAGE." >&2
+# ---- (7) build / refresh the gate + egress images (Nix dockerTools) ---------
+# Both images are built by Nix from their .nix expressions (dockerTools), NOT
+# `docker build` of Alpine Dockerfiles. Each expression pins its tools via the
+# shared versions.json it reads, so "staleness" is just a changed input:
+# nix-build is content-addressed and near-free when nothing changed. We load the
+# result and retag it for docker. Build when the image is missing or under
+# --build; a running container applies a new image only on the next recreate
+# (restart, or up after down). Everything is glibc now — no musl/gcompat, and the
+# gate reuses the boxes' own `br` derivation.
+#
+# Resolve the *_CTX to their REAL paths: they are stow symlinks into the dot repo,
+# and nix resolves the expressions' relative imports (../versions.json,
+# ./gate-entrypoint.sh, ./tinyproxy.conf) against the LITERAL path — through the
+# symlink they would land in ~/.local/share (no versions.json there) and fail.
+# readlink -f is a no-op on a non-symlinked dir, so this is safe either way.
+command -v nix-build >/dev/null 2>&1 || die "nix-build not found on PATH — the gate + egress images are built with Nix" 1
+GATE_NIX="$(readlink -f "$GATE_CTX")/gate-image.nix"
+EGRESS_NIX="$(readlink -f "$EGRESS_CTX")/egress-image.nix"
+[[ -f "$GATE_NIX" ]]   || die "gate image expression not found at $GATE_NIX" 1
+[[ -f "$EGRESS_NIX" ]] || die "egress image expression not found at $EGRESS_NIX" 1
+
+# nix-build <expr> -> docker load -> retag to <target>. The expression names its
+# own image:tag; we parse that from `docker load` and retag it deterministically.
+nix_build_load_tag() {
+	local nix="$1" target="$2" tmp loaded
+	tmp="$(mktemp -d)"
+	nix-build "$nix" -o "$tmp/img" >/dev/null \
+		|| { rm -rf "$tmp"; die "nix-build failed for $nix — run it directly to see the error" 1; }
+	loaded="$(docker load -i "$(readlink -f "$tmp/img")" | sed -n 's/^Loaded image: //p' | head -1)"
+	rm -rf "$tmp"
+	[[ -n "$loaded" ]] || die "could not parse the loaded image ref from 'docker load' ($nix)" 1
+	docker tag "$loaded" "$target" || die "docker tag $loaded -> $target failed" 1
+	echo "faber-stack: image $target ready (from $loaded)" >&2
 }
-ensure_gate_image
-docker image inspect egress-proxy >/dev/null 2>&1 || docker build -t egress-proxy "$EGRESS_CTX" \
-	|| die "failed to build the egress-proxy image from $EGRESS_CTX" 1
+
+# Gate: per-instance ($PORTITOR_IMAGE = portitor-$INSTANCE). Missing or --build.
+if ! docker image inspect "$PORTITOR_IMAGE" >/dev/null 2>&1 || $BUILD; then
+	echo "faber-stack: building gate image via Nix ($GATE_NIX) — routes to the aarch64-linux linux-builder..." >&2
+	nix_build_load_tag "$GATE_NIX" "$PORTITOR_IMAGE"
+	echo "faber-stack: a running gate applies a new image only on the next recreate (restart / up-after-down)." >&2
+fi
+
+# Egress: generic image (egress-proxy), shared across instances. Missing or --build.
+if ! docker image inspect egress-proxy >/dev/null 2>&1 || $BUILD; then
+	echo "faber-stack: building egress image via Nix ($EGRESS_NIX)..." >&2
+	nix_build_load_tag "$EGRESS_NIX" egress-proxy
+fi
 
 # ---- (8) bring the stack up -------------------------------------------------
 # restart tears the containers down first (mirror volume persists).
