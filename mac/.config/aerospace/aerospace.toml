@@ -1,9 +1,8 @@
 # AeroSpace configuration. Stowed to ~/.config/aerospace/aerospace.toml by setup.sh.
 #
-# Workspace identity is NOT hand-written here. The blocks marked
-# `BEGIN generated:<name>` are rendered by `wm-sync` from
-# shared/.config/wm/workspaces.toml, which is also the source for Hyprland's
-# arch/.config/omarchy/custom-hyprland.lua. Edit the TOML, run wm-sync, commit both.
+# The letter workspaces, their chords and their auto-placement rules are mirrored in
+# arch/.config/omarchy/custom-hyprland.lua. Nothing generates either file -- when a
+# workspace is added or renamed, edit both by hand.
 #
 # Chords are chosen so macOS and Linux share one muscle memory: `option` here and
 # `SUPER` on the Linux box sit in the same physical position, so `alt-t` and `SUPER+T`
@@ -57,23 +56,23 @@ outer.bottom = 4
 outer.top = 4
 outer.right = 4
 
-# Monitor patterns, not indices. Indices reshuffle when a display is unplugged or
-# re-ordered; 'main' / 'secondary' / 'built-in' survive a replug. Swap either for a
-# monitor-name regex if the wrong display is ever picked.
-# BEGIN generated:monitors -- edit shared/.config/wm/workspaces.toml, then run wm-sync
+# Monitor sequence numbers, left to right. Deliberately indices and not AeroSpace's
+# 'main' / 'secondary' / 'built-in' patterns: the two work displays are the same model
+# and report the same name, so a name regex matches both, and 'secondary' is ambiguous
+# with three displays attached -- it does not pin this group to the second panel. A
+# position is the only thing that separates them.
 [workspace-to-monitor-force-assignment]
-E = 'main'      # scratch / main empty
-T = 'main'      # Telegram
-F = 'main'      # Firefox
-G = 'main'      # terminals
-Z = 'main'      # Zed
-C = 'secondary' # Chrome (work)
-S = 'secondary' # Slack
-I = 'secondary' # IntelliJ IDEA
-O = 'secondary' # CLion
-P = 'secondary' # PyCharm
-B = 'built-in'  # empty built-in display
-# END generated:monitors
+E = 1  # scratch / main empty
+T = 1  # Telegram
+F = 1  # Firefox
+G = 1  # terminals
+Z = 1  # Zed
+C = 2  # Chrome (work)
+S = 2  # Slack
+I = 2  # IntelliJ IDEA
+O = 2  # CLion
+P = 2  # PyCharm
+B = 3  # empty built-in display
 
 # 'main' binding mode declaration
 # See: https://nikitabobko.github.io/AeroSpace/guide#binding-modes
@@ -124,7 +123,6 @@ alt-equal = 'resize smart +50'
 # window there and follows it (--focus-follows-window), which is what Hyprland's
 # SUPER+SHIFT+<letter> does; without the flag the same chord would behave differently
 # on each machine.
-# BEGIN generated:bindings -- edit shared/.config/wm/workspaces.toml, then run wm-sync
 alt-e = 'workspace E'  # scratch / main empty
 alt-shift-e = 'move-node-to-workspace E --focus-follows-window'
 alt-t = 'workspace T'  # Telegram
@@ -147,7 +145,6 @@ alt-p = 'workspace P'  # PyCharm
 alt-shift-p = 'move-node-to-workspace P --focus-follows-window'
 alt-b = 'workspace B'  # empty built-in display
 alt-shift-b = 'move-node-to-workspace B --focus-follows-window'
-# END generated:bindings
 
 # Hyprland's SUPER+TAB is bound to the same back-and-forth, and SUPER+SHIFT+TAB to the
 # same move-to-next-monitor, so these two chords match on both machines.
@@ -181,9 +178,8 @@ down = 'volume down'
 up = 'volume up'
 shift-down = ['volume set 0', 'mode main']
 
-# Auto-placement. Mirrors the o.window() rules in custom-hyprland.lua, from the same
-# source, so the two platforms cannot drift the way they had (9 rules here vs 5 there).
-# BEGIN generated:window-rules -- edit shared/.config/wm/workspaces.toml, then run wm-sync
+# Auto-placement. Mirrors the o.window() rules in custom-hyprland.lua. The two lists
+# have drifted before (9 rules here against 5 there) -- when one changes, change both.
 [[on-window-detected]]
 if.app-id = 'com.tdesktop.Telegram'
 run = 'move-node-to-workspace T'  # Telegram
@@ -219,4 +215,3 @@ run = 'move-node-to-workspace O'  # CLion
 [[on-window-detected]]
 if.app-id = 'com.jetbrains.PyCharm'
 run = 'move-node-to-workspace P'  # PyCharm
-# END generated:window-rules

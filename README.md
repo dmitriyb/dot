@@ -14,12 +14,11 @@ Personal configuration files managed with [GNU Stow](https://www.gnu.org/softwar
 - **tuicr** - Terminal code review tool (config only; install via brew/cargo)
 - **starship.toml** - Starship prompt
 - **themes** - Portable theme system (Tokyo Night, Catppuccin, Gruvbox, Kanagawa)
-- **wm** - Single-source workspace definitions (`shared/.config/wm/workspaces.toml`), rendered by `wm-sync` into both window managers
-- **aerospace** - AeroSpace window manager (macOS); workspace blocks generated from **wm**
+- **aerospace** - AeroSpace window manager (macOS); its letter workspaces mirror the ones in `arch/.config/omarchy/custom-hyprland.lua`
 - **claude** - Claude Code user skills
 - **docker/claude** - [Dockerized Claude Code environment](docker/claude/README.md)
 - **faber** - [faber → portitor gate-stack configs and tooling](shared/.config/faber/README.md) (projects, `faber-stack`/`faber-epic`/`faber-e2e`/`portitor-branch`, gate + egress build contexts)
-- **bin** - helper scripts stowed to `~/.local/bin` (`docker-claude`, the faber tooling, `theme-*`, `wm-sync`, `role-keys`/`restore-role-keys`/`ssh-load-keys`)
+- **bin** - helper scripts stowed to `~/.local/bin` (`docker-claude`, the faber tooling, `theme-*`, `role-keys`/`restore-role-keys`/`ssh-load-keys`)
 
 ## Installation
 

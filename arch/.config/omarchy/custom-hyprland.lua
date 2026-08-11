@@ -42,7 +42,8 @@ hl.config({
 -- No workspace_rule persistence on purpose: a letter workspace is created by its chord
 -- and evaporates when the last window leaves, which is how AeroSpace behaves too.
 
--- BEGIN generated:workspaces -- edit shared/.config/wm/workspaces.toml, then run wm-sync
+-- Keep this list in step with [workspace-to-monitor-force-assignment], the alt-<letter>
+-- bindings and the [[on-window-detected]] rules in mac/.config/aerospace/aerospace.toml.
 local WORKSPACES = {
   { letter = "E", note = "scratch / main empty" },
   { letter = "T", note = "Telegram", classes = { [[^(org\.telegram\.desktop)$]] } },
@@ -56,7 +57,6 @@ local WORKSPACES = {
   { letter = "P", note = "PyCharm", classes = { [[^(jetbrains-pycharm)$]] } },
   { letter = "B", note = "empty built-in display" },
 }
--- END generated:workspaces
 
 for _, ws in ipairs(WORKSPACES) do
   local letter = ws.letter
