@@ -1,0 +1,171 @@
+#!/usr/bin/env bash
+# mkrelease — cut a release by pushing a signed semver tag.
+#
+# The Go tools here all release the same way: goreleaser builds on a pushed
+# `v*` tag and injects the version at link time (`main.version`, "dev" for a
+# local build). So the TAG is the single source of truth — there is no version
+# file to edit and no bump commit to make. This script is therefore just:
+# preconditions -> semver arithmetic -> signed tag -> push.
+#
+#   mkrelease --minor                 # in the repo: v0.1.7 -> v0.2.0
+#   mkrelease ../portitor --patch     # elsewhere: path first
+#   mkrelease --set 1.0.0 --dry-run   # explicit version, change nothing
+#
+# The tag is signed, so cutting a release prompts a YubiKey touch. Every
+# network step is announced on stderr first, so an unexpected prompt is always
+# attributable to the line above it. A signing failure is fatal here: the
+# script exits and does NOT retry or fall back to an unsigned tag.
+#
+# Repo-agnostic by construction: the default branch comes from origin/HEAD, the
+# version from the tag list, the name from the toplevel. Nothing about any
+# particular repo is baked in.
+set -euo pipefail
+
+die() { echo "mkrelease: $1" >&2; exit "${2:-1}"; }
+note() { echo "mkrelease: $1" >&2; }
+
+usage() {
+	cat >&2 <<'EOF'
+usage: mkrelease [<path>] (--major | --minor | --patch | --set <X.Y.Z>) [--dry-run] [--check-ci]
+
+  <path>        repo to release; defaults to the current directory
+  --major       X+1.0.0      --minor  X.Y+1.0      --patch  X.Y.Z+1
+  --set X.Y.Z   explicit version instead of an increment
+  --dry-run     report the computed tag and every check, then stop
+  --check-ci    refuse to tag unless GitHub checks are green on HEAD (needs gh)
+
+Preconditions (all enforced): inside a git repo, clean worktree, on the default
+branch, in sync with origin, and the computed tag does not already exist.
+EOF
+	exit "${1:-1}"
+}
+
+# ---- args -------------------------------------------------------------------
+path=""; bump=""; explicit=""; dry=0; check_ci=0
+while (( $# )); do
+	case "$1" in
+		--major|--minor|--patch)
+			[[ -n "$bump$explicit" ]] && die "pick exactly one of --major/--minor/--patch/--set"
+			bump="${1#--}" ;;
+		--set)
+			[[ -n "$bump$explicit" ]] && die "pick exactly one of --major/--minor/--patch/--set"
+			shift; [[ $# -gt 0 ]] || die "--set needs a version (X.Y.Z)"
+			# Shape-check here, not after the fetch: a typo should cost nothing.
+			[[ "${1#v}" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]] || die "--set wants X.Y.Z, got '$1'"
+			explicit="v${1#v}" ;;
+		--dry-run)  dry=1 ;;
+		--check-ci) check_ci=1 ;;
+		-h|--help)  usage 0 ;;
+		-*)         die "unknown flag: $1" ;;
+		*)          [[ -n "$path" ]] && die "unexpected argument: $1"; path="$1" ;;
+	esac
+	shift
+done
+[[ -n "$bump$explicit" ]] || usage
+
+# ---- repo -------------------------------------------------------------------
+cd "${path:-.}" 2>/dev/null || die "no such directory: $path"
+git rev-parse --is-inside-work-tree >/dev/null 2>&1 || die "not a git repository: $(pwd)"
+cd "$(git rev-parse --show-toplevel)"
+name="$(basename "$(pwd)")"
+
+# goreleaser is what turns a pushed tag into a release; without its config the
+# tag lands and nothing builds. Worth a warning, not a refusal — a repo may
+# release by some other workflow.
+[[ -f .goreleaser.yaml || -f .goreleaser.yml ]] \
+	|| note "WARNING — no .goreleaser.{yaml,yml} here; pushing a tag may not build anything"
+
+# Default branch from origin/HEAD rather than a hardcoded name, so this works
+# on main, master, or anything else. `git remote set-head origin -a` populates
+# it if a clone never did.
+default_branch="$(git symbolic-ref --quiet --short refs/remotes/origin/HEAD 2>/dev/null || true)"
+default_branch="${default_branch#origin/}"
+[[ -n "$default_branch" ]] || die "cannot resolve origin/HEAD; run: git remote set-head origin -a"
+
+branch="$(git branch --show-current)"
+[[ "$branch" == "$default_branch" ]] \
+	|| die "on branch '$branch', releases are cut from '$default_branch'"
+[[ -z "$(git status --porcelain)" ]] \
+	|| die "working tree is dirty; commit or stash first"
+
+# ---- sync with origin -------------------------------------------------------
+# credential.helper= resets any global helper so this can never reach the login
+# keychain; the remote's own transport (SSH) supplies auth.
+note "fetching origin (refs + tags) — may prompt for the SSH key"
+git -c credential.helper= fetch --quiet --tags --prune origin \
+	|| die "fetch failed; resolve that before releasing"
+
+counts="$(git rev-list --left-right --count "origin/$default_branch...HEAD")"
+behind="${counts%%	*}"; ahead="${counts##*	}"
+(( behind == 0 )) || die "$behind commit(s) behind origin/$default_branch; pull first"
+(( ahead  == 0 )) || die "$ahead unpushed commit(s); push before tagging (the tag must point at a commit origin has)"
+
+# ---- version ----------------------------------------------------------------
+latest="$(git tag --list 'v[0-9]*.[0-9]*.[0-9]*' --sort=-v:refname | head -1)"
+if [[ -z "$latest" ]]; then
+	note "no existing v* tag; treating the current version as v0.0.0"
+	latest="v0.0.0"
+fi
+[[ "$latest" =~ ^v([0-9]+)\.([0-9]+)\.([0-9]+)$ ]] || die "latest tag '$latest' is not vX.Y.Z"
+maj="${BASH_REMATCH[1]}"; min="${BASH_REMATCH[2]}"; pat="${BASH_REMATCH[3]}"
+
+if [[ -n "$explicit" ]]; then
+	next="$explicit"                     # shape already validated at parse time
+	# Refuse to go backwards: a lower tag confuses goreleaser's changelog and
+	# every consumer that resolves "latest". Retagging downward is a deliberate
+	# act and should be done by hand.
+	[[ "$(printf '%s\n%s\n' "$latest" "$next" | sort -V | tail -1)" == "$next" && "$next" != "$latest" ]] \
+		|| die "$next is not newer than $latest"
+else
+	case "$bump" in
+		major) next="v$((maj + 1)).0.0" ;;
+		minor) next="v$maj.$((min + 1)).0" ;;
+		patch) next="v$maj.$min.$((pat + 1))" ;;
+	esac
+fi
+
+git rev-parse --verify --quiet "refs/tags/$next" >/dev/null && die "tag $next already exists locally"
+git ls-remote --exit-code --tags origin "refs/tags/$next" >/dev/null 2>&1 \
+	&& die "tag $next already exists on origin"
+
+# ---- optional CI gate -------------------------------------------------------
+sha="$(git rev-parse HEAD)"
+ci="not checked (--check-ci off)"
+if (( check_ci )); then
+	command -v gh >/dev/null 2>&1 || die "--check-ci needs the gh CLI on PATH"
+	note "querying GitHub check runs for ${sha:0:12} — network call via gh"
+	runs="$(gh api "repos/{owner}/{repo}/commits/$sha/check-runs" \
+		--jq '.check_runs[] | "\(.name)\t\(.status)\t\(.conclusion // "")"' 2>/dev/null)" \
+		|| die "could not read check runs for $sha"
+	[[ -n "$runs" ]] || die "no check runs reported for ${sha:0:12}; nothing to verify"
+	bad="$(printf '%s\n' "$runs" | awk -F'\t' '
+		$2 != "completed" { print "  " $1 " — " $2; next }
+		$3 != "success" && $3 != "skipped" && $3 != "neutral" { print "  " $1 " — " $3 }')"
+	[[ -z "$bad" ]] || die "checks are not green on ${sha:0:12}:"$'\n'"$bad"
+	ci="green ($(printf '%s\n' "$runs" | wc -l | tr -d ' ') check(s))"
+fi
+
+# ---- report / act -----------------------------------------------------------
+cat >&2 <<EOF
+
+  repo      $name
+  branch    $branch (default)
+  commit    ${sha:0:12}
+  current   $latest
+  release   $next
+  checks    $ci
+
+EOF
+
+if (( dry )); then
+	note "dry run — no tag created, nothing pushed"
+	exit 0
+fi
+
+note "creating signed tag $next — expect a YubiKey touch"
+git tag -s "$next" -m "$name $next"
+
+note "pushing $next to origin — may prompt for the SSH key"
+git -c credential.helper= push origin "$next"
+
+note "released $next — goreleaser builds on the pushed tag; watch the run in Actions"
