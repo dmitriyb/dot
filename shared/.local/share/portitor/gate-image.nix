@@ -145,7 +145,11 @@ let
 in
 pkgs.dockerTools.buildLayeredImage {
   inherit name tag;
-  contents = [ runtime pkgs.dockerTools.binSh ];
+  # cacert lands /etc/ssl/certs/ca-bundle.crt as real files (not a buildEnv
+  # symlink farm), so it coexists with the writable /etc/ssh built below. Without
+  # it the image has no trust store at all and every TLS client fails closed:
+  # `gh auth login` in the entrypoint dies on x509, and `set -e` kills the boot.
+  contents = [ runtime pkgs.dockerTools.binSh pkgs.cacert ];
 
   # Filesystem the entrypoint hardcodes: FHS symlinks, the copied entrypoint, /etc
   # identity, sshd config, and the writable dirs (/etc/ssh for `ssh-keygen -A`,
@@ -169,6 +173,16 @@ pkgs.dockerTools.buildLayeredImage {
     chmod 0640 etc/shadow
 
     chmod 1777 tmp
+
+    # cacert (in contents) installs the bundle as ca-bundle.crt, but OpenSSL's
+    # compiled-in default CAfile — and Go's crypto/x509 search list — look for
+    # ca-certificates.crt. Alias it so trust needs NO env var: sshd builds a
+    # fresh environment per session (UsePAM no, no PermitUserEnvironment/
+    # AcceptEnv), so SSL_CERT_FILE never reaches the forced command, and the
+    # gate's serve-time `git fetch upstream` would fail x509 without this.
+    # Relative link: the target lives in the cacert layer, resolved at runtime.
+    mkdir -p etc/ssl/certs
+    ln -s ca-bundle.crt etc/ssl/certs/ca-certificates.crt
   '';
 
   # chown under fakeroot so the ownership lands in the image tar. git owns its home
@@ -181,7 +195,12 @@ pkgs.dockerTools.buildLayeredImage {
 
   config = {
     Entrypoint = [ "/usr/sbin/tini" "--" "/usr/local/bin/portitor-entrypoint" ];
-    Env = [ "PATH=/usr/local/bin:/usr/sbin:/bin" ];
+    # SSL_CERT_FILE is honoured by both OpenSSL (git) and Go's crypto/x509
+    # (gh, portitor), so one variable covers every TLS client in the image.
+    Env = [
+      "PATH=/usr/local/bin:/usr/sbin:/bin"
+      "SSL_CERT_FILE=/etc/ssl/certs/ca-bundle.crt"
+    ];
     Volumes = { "/srv/git" = { }; };
     ExposedPorts = { "22/tcp" = { }; };
   };

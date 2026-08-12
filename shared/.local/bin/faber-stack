@@ -530,8 +530,15 @@ PIN="$PROJECT/keys/portitor_host_key.pub"
 mktmp ptmp "$PROJECT/keys/.portitor_host_key.pub"
 pinned=""
 for _ in $(seq 1 30); do
+	# ssh-keyscan emits the server banner as a `# host:port SSH-2.0-...` comment on
+	# STDOUT (legal known_hosts syntax, so 2>/dev/null does not catch it), but the
+	# security bind wants a file holding exactly ONE host-key line. Keep the first
+	# non-comment, non-blank line. This also hardens the guard below: a scan that
+	# returned only the banner now yields an EMPTY file and correctly retries,
+	# where a bare `-s` test would have pinned the comment as if it were a key.
 	if docker run --rm --network "$NET" egress-proxy \
-			ssh-keyscan -t ed25519 "$GATE_CT" >"$ptmp" 2>/dev/null && [[ -s "$ptmp" ]]; then
+			ssh-keyscan -t ed25519 "$GATE_CT" 2>/dev/null \
+			| awk '$1 !~ /^#/ && NF { print; exit }' >"$ptmp" && [[ -s "$ptmp" ]]; then
 		mv "$ptmp" "$PIN"; pinned=1; break
 	fi
 	sleep 1
@@ -540,7 +547,7 @@ if [[ -n "$pinned" ]]; then
 	echo "faber-stack: pinned $GATE_CT host key -> $PIN" >&2
 else
 	echo "faber-stack: WARNING — gate $GATE_CT did not answer in 30s; host key unpinned (stack is up; re-pin any time):" >&2
-	echo "  docker run --rm --network $NET egress-proxy ssh-keyscan -t ed25519 $GATE_CT > $PIN" >&2
+	echo "  docker run --rm --network $NET egress-proxy ssh-keyscan -t ed25519 $GATE_CT 2>/dev/null | awk '\$1 !~ /^#/ && NF { print; exit }' > $PIN" >&2
 fi
 
 # ---- (10) mirror the repo IN the container (needs GitHub + rw /srv/git) -----
