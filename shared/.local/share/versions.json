@@ -39,13 +39,13 @@
 
   "portitor": {
     "track": "pinned",
-    "version": "0.1.7",
+    "version": "0.2.0",
     "anchor": "sha256",
     "source": "github:dmitriyb/portitor",
     "asset_template": "https://github.com/dmitriyb/portitor/releases/download/v${version}/portitor_${version}_linux_${arch}.tar.gz",
     "sha256": {
-      "linux_arm64": "14082b3eafbe4466ce16390fc7d48f5695c2d9af2979ad8bfa275d84cd869133",
-      "linux_amd64": "d448463fb357d8d0030056426eef8ed764ed06faae0516cdad165e5e03fed53d"
+      "linux_arm64": "2480825f039b74d215fc38b065081e3f4b96ec319c7275385e2d0b88acd989cf",
+      "linux_amd64": "78adc858b7f2ca64f5d7ef05df498ae5b92167c3784dcb0a3bec1b58da77fdf0"
     },
     "note": "Was latest+SSHSIG under the Alpine gate; the nix gate pins it by hash (nix builds can't fetch-latest+verify-sig purely). Bump version + refresh sha256 from the release .sha256 assets to move it.",
     "consumers": ["nix-gate"]

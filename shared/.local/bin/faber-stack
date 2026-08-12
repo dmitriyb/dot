@@ -178,6 +178,18 @@ if [[ "$VERB" == up || "$VERB" == restart ]]; then
 	       and has("merge_gate") and has("content_rules") and has("identity_only_roles")' \
 		"$POLICY" >/dev/null 2>&1 \
 		|| die "gate policy $POLICY malformed or missing keys (format_version, action_roles, merge_gate, content_rules, identity_only_roles)" 2
+	# merge_gate predicates may reference a script the gate reads from its config
+	# mount (/etc/portitor/checks/<name>, installed from $PROJECT/portitor/checks
+	# below). portitor cannot validate that path — a missing script makes the
+	# command exit non-zero, which the gate reports as "did not pass", i.e. a
+	# missing file is indistinguishable from a policy violation at merge time.
+	# Catch it here instead, while the operator is watching.
+	CHECKS_SRC="$PROJECT/portitor/checks"
+	while IFS= read -r ref; do
+		[[ -n "$ref" ]] || continue
+		[[ -f "$CHECKS_SRC/${ref##*/}" ]] \
+			|| die "gate policy references $ref but $CHECKS_SRC/${ref##*/} does not exist" 2
+	done < <(jq -r '.merge_gate.checks[]?.command[]? | select(startswith("/etc/portitor/checks/"))' "$POLICY")
 	# repo id defaults to the repo half of the slug.
 	[[ -n "$REPO" ]] || REPO="${SLUG#*/}"
 	# Match portitor config.ValidName exactly: [A-Za-z0-9._-]+ but never '.'/'..'
@@ -203,6 +215,13 @@ CONFIG_DIR="$(cd -- "$CONFIG_DIR" && pwd)"
 REPOS_D="$CONFIG_DIR/repos.d"
 SIGNERS_HOST="$CONFIG_DIR/allowed_signers"
 EGRESS_FILTER="$CONFIG_DIR/egress-filter"
+# merge_gate predicate scripts, installed from the project so the gate can read
+# them off its :ro config mount at /etc/portitor/checks. Kept as real files
+# rather than shell embedded in policy.json: they are lintable, testable against
+# a live mirror, and produce a readable diff. Invoked as `sh <path>`, so no exec
+# bit is needed (the mount is read-only, and the macOS->Linux permission
+# round-trip is not worth depending on).
+CHECKS_HOST="$CONFIG_DIR/checks"
 
 compose() { docker compose -p "$INSTANCE" -f "$COMPOSE_FILE" "$@"; }
 
@@ -391,10 +410,25 @@ jq --slurpfile pol "$POLICY" --argjson emails "$EMAILS_JSON" \
 	 | .content_rules       = $p.content_rules
 	 | .merge_gate          = $p.merge_gate
 	 | .identity_only_roles = $p.identity_only_roles
+	 | if ($p | has("checks")) then .checks = $p.checks else del(.checks) end
 	 | if ($emails | length) > 0 then .allowed_committer_emails=$emails
 	   else del(.allowed_committer_emails) end' "$CFG" >"$ptmp" \
 	|| die "failed to overlay the gate policy for $REPO" 1
 mv "$ptmp" "$CFG"
+
+# Install the project's merge_gate predicate scripts onto the gate's config
+# mount, re-copied every run so an edited script converges exactly like the
+# policy overlay above. Absent directory is fine: a policy with no script-backed
+# predicate needs none, and the reference check at startup already caught the
+# mismatched case.
+if [[ -d "$PROJECT/portitor/checks" ]]; then
+	mkdir -p "$CHECKS_HOST"
+	# `/.` copies the directory's CONTENTS and tolerates an empty one; a `*` glob
+	# would pass a literal asterisk to cp and fail the run.
+	cp -R "$PROJECT/portitor/checks/." "$CHECKS_HOST"/ \
+		|| die "failed to install merge_gate check scripts into $CHECKS_HOST" 1
+fi
+
 touch "$SIGNERS_HOST"
 
 # ---- swap allowed_signers field to the HOST path around the add-role loop ---

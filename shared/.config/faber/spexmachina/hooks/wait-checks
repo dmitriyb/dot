@@ -1,0 +1,165 @@
+#!/bin/bash
+# prelude hook (merge) — runs IN the box AFTER the context phase and BEFORE the
+# agent, with the delegated merger identity. Decides whether this step can land
+# deterministically, and if so SKIPS THE AGENT: the merge decision was made
+# upstream (a cycle only reaches merge when review approved), so a green PR needs
+# only the postlude. The agent runs solely on the exception branches below, where
+# something genuinely needs judgement.
+#
+# CI state comes from `portitor pr checks` — the box's only route to the Actions
+# API, since its egress reaches GitHub only through the gate. The box names the
+# PR; the gate resolves the run and returns each check's resolved stuck budget
+# (`budgetSeconds`) alongside its state, so stuck-detection here is a comparison.
+#
+# The attempt cap is NOT enforced here: `portitor pr rerun` refuses gate-side at
+# `checks.max_attempts` (and on a stale head, and on an all-FAILURE run when
+# `allow_rerun_failed` is false). A refusal is how this hook learns the cap was
+# reached — box-side limits would be advisory, so the gate owns them.
+#
+# Outcome, written to $FABER_BUNDLE_DIR:
+#   landable  -> FABER_SKIP_AGENT=1 in bundle.env; the postlude lands the PR
+#   otherwise -> BLOCKED_BY + CONTEXT.md for the agent, which decides whether to
+#                route the work back (output {merged:false}) or halt.
+set -euo pipefail
+
+die() { echo "wait-checks: $*" >&2; exit 1; }
+
+pr="${FABER_INPUT_PR:?FABER_INPUT_PR is required}"
+bundle="${FABER_BUNDLE_DIR:?FABER_BUNDLE_DIR is required}"
+
+# Client-side policy, supplied declaratively by the template's run.env (the
+# gate-side budgets live in the per-repo `checks` config). Seconds, so no
+# duration parser is needed in shell.
+ceiling="${CHECKS_CEILING_SECONDS:-720}"   # 12m: ~3 attempts of detect + re-run, with margin
+poll="${CHECKS_POLL_SECONDS:-10}"
+
+command -v portitor >/dev/null 2>&1 || die "the portitor client is not on PATH"
+
+# A check is only measurable once it has actually started: `startedAt` comes
+# straight from GitHub, so a QUEUED job waiting for a runner has no elapsed time
+# (the overall ceiling covers that case), and a not-yet-finished job reports the
+# zero time rather than an empty string.
+ZERO_TIME_PREFIX="0001-"
+
+started_epoch() {
+	local t="$1"
+	[ -n "$t" ] || return 1
+	case "$t" in "$ZERO_TIME_PREFIX"*) return 1 ;; esac
+	date -d "$t" +%s 2>/dev/null || return 1
+}
+
+# hand_to_agent <blocked_by> <summary...> — leave the agent enabled and tell it
+# what it is looking at. Deliberately NOT a halt: whether this is fixable or
+# hopeless is the agent's call, made with the logs in front of it.
+hand_to_agent() {
+	local why="$1"; shift
+	{
+		echo "PR=$pr"
+		echo "BLOCKED_BY=$why"
+	} > "$bundle/bundle.env"
+	{
+		echo "# PR #$pr — cannot land: $why"
+		echo
+		printf '%s\n' "$@"
+		echo
+		echo "Check state at the moment the prelude gave up:"
+		echo
+		echo '```'
+		jq -r '.checks[] | "\(.name)\t\(.status)\t\(.conclusion)\tattempt=\(.runAttempt)\tbudget=\(.budgetSeconds)s"' \
+			<<<"$last_json" 2>/dev/null || echo "(check state unavailable)"
+		echo '```'
+		echo
+		echo "mergeStateStatus: $(jq -r '.mergeStateStatus' <<<"$last_json" 2>/dev/null)"
+		echo
+		echo "## Your job"
+		echo "Follow the merge skill. Decide whether a fixer can resolve this."
+		echo "If it can: comment the diagnosis for the next agent and return"
+		echo "{\"merged\": false, \"blocked_by\": \"$why\"}. If nothing in the repo"
+		echo "can fix it, write halt.json instead — do NOT comment on a halt."
+	} > "$bundle/CONTEXT.md"
+	echo "wait-checks: PR #$pr not landable ($why); agent will triage" >&2
+	exit 0
+}
+
+start="$(date +%s)"
+last_json=""
+
+while :; do
+	last_json="$(portitor pr checks --pr "$pr")" || die "portitor pr checks --pr $pr failed"
+
+	mss="$(jq -r '.mergeStateStatus // "UNKNOWN"' <<<"$last_json")"
+
+	# A check counts as failed only when it COMPLETED with a conclusion outside
+	# the benign set; SKIPPED/NEUTRAL are not failures.
+	failed="$(jq -r '[.checks[]
+		| select(.status == "COMPLETED")
+		| select((.conclusion | ascii_upcase) as $c
+			| (["SUCCESS","SKIPPED","NEUTRAL"] | index($c)) | not)
+		| .name] | join(", ")' <<<"$last_json")"
+	pending="$(jq -r '[.checks[] | select(.status != "COMPLETED")] | length' <<<"$last_json")"
+
+	if [ -n "$failed" ]; then
+		hand_to_agent ci_red "Failing checks: $failed" \
+			"Pull their logs with: portitor pr logs --pr $pr"
+	fi
+
+	case "$mss" in
+		DIRTY)  hand_to_agent dirty "The PR conflicts with the base branch." \
+			"Resolving it means writing code no reviewer has seen, so it belongs to a fixer, not to this step." ;;
+		BEHIND) hand_to_agent behind "The PR is behind its base branch and must be updated." \
+			"This step's identity cannot commit, so a fixer has to move the branch." ;;
+	esac
+
+	if [ "$pending" -eq 0 ]; then
+		if [ "$mss" = "CLEAN" ]; then
+			{
+				echo "PR=$pr"
+				echo "FABER_SKIP_AGENT=1"
+			} > "$bundle/bundle.env"
+			# CONTEXT.md is still required even though no agent will read it:
+			# faber loads the bundle (and only then pops FABER_SKIP_AGENT, which
+			# lives in bundle.env) before it knows a skip was requested. Declaring
+			# a prelude also turns off faber's own bundle synthesis, so nothing
+			# else writes one. Only a HALTING prelude is excused.
+			{
+				echo "# PR #$pr — landable"
+				echo
+				echo "Every check passed and mergeStateStatus is CLEAN, so this step needs"
+				echo "no judgement: the prelude requested an agent skip and the postlude"
+				echo "lands the PR. If you are reading this, the skip did not take effect —"
+				echo "check that the merge template still declares \`agent_optional: true\`."
+			} > "$bundle/CONTEXT.md"
+			echo "wait-checks: PR #$pr is CLEAN and green; skipping the agent" >&2
+			exit 0
+		fi
+		# Everything settled green but the forge still will not merge. UNKNOWN is
+		# GitHub still recomputing — keep waiting; anything else needs judgement.
+		[ "$mss" = "UNKNOWN" ] || hand_to_agent "$(echo "$mss" | tr '[:upper:]' '[:lower:]')" \
+			"All checks are green but mergeStateStatus is $mss."
+	fi
+
+	# Stuck: a running check past its gate-resolved budget. Ask for a re-run and
+	# let the gate's refusal tell us the cap is spent.
+	stuck="$(jq -r '.checks[]
+		| select(.status != "COMPLETED")
+		| "\(.name)\t\(.startedAt)\t\(.budgetSeconds)"' <<<"$last_json")"
+	now="$(date +%s)"
+	while IFS=$'\t' read -r name startedAt budget; do
+		[ -n "$name" ] || continue
+		s="$(started_epoch "$startedAt")" || continue          # queued, not yet measurable
+		[ $(( now - s )) -gt "$budget" ] || continue
+		echo "wait-checks: $name exceeded ${budget}s; requesting a re-run" >&2
+		if ! rerun_err="$(portitor pr rerun --pr "$pr" 2>&1)"; then
+			hand_to_agent stuck "Check \"$name\" is stuck and the gate refused a re-run." \
+				"Gate said: $rerun_err"
+		fi
+		break                                                   # re-run is run-level; one call covers the run
+	done <<<"$stuck"
+
+	if [ $(( $(date +%s) - start )) -ge "$ceiling" ]; then
+		hand_to_agent stuck "Checks did not settle within ${ceiling}s." \
+			"Nothing failed — the run never finished, which usually means Actions itself is degraded."
+	fi
+
+	sleep "$poll"
+done

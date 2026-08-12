@@ -13,8 +13,17 @@ hooks:
   next-bead-context: {path: ./hooks/next-bead-context}  # context (implement-next): pick next ready epic bead in-box -> CONTEXT.md (or done-cycle)
   claim-next-bead:   {path: ./hooks/claim-next-bead}    # prelude (implement-next): claim the selected bead (no-op on a done-cycle)
   fetch-pr:       {path: ./hooks/fetch-pr}              # context (review/fix): PR state + threads -> CONTEXT.md, pr.json, threads.json
+  reopen-bead:    {path: ./hooks/reopen-bead}           # prelude (fix): reopen a closed bead so merge_gate forces a re-review (no-op when already open)
   post-answers:   {path: ./hooks/post-answers}          # postlude (fix): answers.json -> portitor pr reply per thread (deterministic; exact failure attribution)
   post-review:    {path: ./hooks/post-review}           # postlude (review): review.json -> portitor pr review --inline (gate records the verdict)
-  post-merge:     {path: ./hooks/post-merge}            # postlude (merge): verify + retry + land-or-fail (deterministic; cycle fail-stops if unlanded)
+  wait-checks:    {path: ./hooks/wait-checks}           # prelude (merge): wait/re-run CI, then skip the agent on a green PR or hand it the exception
+  post-merge:     {path: ./hooks/post-merge}            # postlude (merge): land when the prelude cleared it; otherwise pass the agent's verdict through
   post-implement: {path: ./hooks/post-implement}        # postlude (implement*): pr-body.md -> portitor pr describe (sets the PR description, not a comment)
   release-bead:   {path: ./hooks/release-bead}          # on_failure (implement*): host-side, logging no-op
+
+# NOTE: faber bind-mounts hooks ONE FILE PER ROLE (/faber/hooks/{context,prelude,
+# postlude}); nothing else from this directory reaches the box. A hook cannot
+# call a sibling helper — sharing logic between two postludes means either one
+# dispatching file or duplication. Learned the hard way: a helper invoked as
+# "$(dirname $0)/<name>" fails with exit 127 on EVERY step, not just the ones
+# that need it.

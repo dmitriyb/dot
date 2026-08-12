@@ -23,6 +23,19 @@
     "resolve": [
       "reviewer"
     ],
+    "checks": [
+      "implementer",
+      "reviewer",
+      "merger"
+    ],
+    "logs": [
+      "implementer",
+      "reviewer",
+      "merger"
+    ],
+    "rerun": [
+      "merger"
+    ],
     "merge": [
       "merger"
     ],
@@ -37,12 +50,34 @@
         "name": "bead-closed",
         "command": [
           "/bin/sh",
-          "-c",
-          "git show \"$2\":.beads/issues.jsonl 2>/dev/null | grep -q '\"status\":\"closed\"'",
-          "bead-closed"
+          "/etc/portitor/checks/bead-closed.sh"
         ]
       }
     ]
+  },
+  "checks": {
+    "default_budget": "3m",
+    "budgets": [
+      {
+        "name": "build",
+        "budget": "2m"
+      },
+      {
+        "name": "vet",
+        "budget": "2m"
+      },
+      {
+        "name": "spec-gate",
+        "budget": "2m"
+      },
+      {
+        "name": "test",
+        "budget": "3m"
+      }
+    ],
+    "max_attempts": 3,
+    "allow_rerun_failed": false,
+    "log_tail_bytes": 65536
   },
   "content_rules": {
     "version": 1,
@@ -53,6 +88,20 @@
           "paths": [
             "spec",
             "spec/**"
+          ],
+          "operations": [
+            "add",
+            "modify",
+            "delete",
+            "rename"
+          ],
+          "effect": "deny"
+        },
+        {
+          "name": "github-frozen-for-boxes",
+          "paths": [
+            ".github",
+            ".github/**"
           ],
           "operations": [
             "add",

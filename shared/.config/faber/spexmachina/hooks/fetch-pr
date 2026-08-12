@@ -29,6 +29,18 @@ mode=REVIEW
 
 printf '%s\n' "$prjson" > "$bundle/pr.json"
 
+# CI diagnosis left by the merge step. When a land attempt hits a red build, the
+# merge agent has already read the job logs and written its conclusion as a PR
+# comment — that analysis is the expensive part, so the fixer consumes it rather
+# than re-deriving it from raw logs. Plain comments only reach pr.json, so it is
+# surfaced into CONTEXT.md below; without this the fix skill would not see it.
+# Newest comment wins: a second land attempt supersedes the first.
+# Wire marker: post-merge prefixes every CI diagnosis it posts with this exact
+# line. Keep the two in sync — it is the whole contract between them.
+CI_COMMENT_MARKER="<!-- faber:ci-report -->"
+ci_comment="$(jq -r --arg m "$CI_COMMENT_MARKER" \
+  '[.comments[]? | select((.body // "") | startswith($m))] | last // empty | .body // empty' <<<"$prjson")"
+
 # Unresolved review threads (portitor >= 0.1.4 includes reviewThreads in fetch;
 # tolerate absence on an older gate). threads.json is the postlude's contract:
 # the post-answers hook validates the agent's replies against exactly these ids.
@@ -55,6 +67,16 @@ nthreads="$(jq 'length' "$bundle/threads.json")"
     jq -r '.[] | "- thread \(.id) — \(.path // "(no file)"):\(.line // "-")\n\(( [.comments[]?.body] | join("\n  > ")) as $c | "  > " + $c)"' "$bundle/threads.json"
     echo
     echo "(Full thread objects: \`threads.json\` in the bundle.)"
+  fi
+  if [ -n "$ci_comment" ]; then
+    echo
+    echo "## CI failure from the last land attempt — fix this"
+    echo
+    echo "The merge step could not land this PR because CI was red. It already read"
+    echo "the failing job's logs; this is its diagnosis. The bead has been reopened,"
+    echo "so a reviewer must approve again before the PR can land."
+    echo
+    printf '%s\n' "$ci_comment"
   fi
   echo
   echo "## Your job"
