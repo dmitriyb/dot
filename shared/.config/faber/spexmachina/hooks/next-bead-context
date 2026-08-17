@@ -60,12 +60,14 @@ members="$({
 } | sort -u)"
 
 # Ready beads in br's own order (deps satisfied, open work only); the next bead
-# is the first ready member that is not a cleanup bead.
+# is the first ready member. Cleanup beads are NOT skipped: they are epic members
+# and real work (delete the code of a node the spec removed), and the resolution
+# below serves them from the journal. Skipping them ended epics with `done=true`
+# while their cleanup set sat open forever, because nothing else consumes them.
 bead=""
 while read -r id; do
   [ -n "$id" ] || continue
   grep -qx "$id" <<<"$members" || continue
-  br show "$id" --json 2>/dev/null | jq -e '.[0].labels | index("spex:cleanup")' >/dev/null && continue
   bead="$id"; break
 done < <(br ready --json 2>/dev/null | jq -r '(.issues? // .) | .[]?.id')
 
@@ -90,47 +92,102 @@ printf '%s\n' "$bead" > "$bundle/selected-bead"
 json="$(br show "$bead" --json)" || die "br show $bead failed"
 title="$(jq -r '.[0].title' <<<"$json")"
 status="$(jq -r '.[0].status' <<<"$json")"
-record="$(jq -r '.[0].labels[]? | select(startswith("spex:")) | select(. != "spex:cleanup") | ltrimstr("spex:")' <<<"$json" | head -n1)"
+# ---- resolve the spec context ----------------------------------------------
+# THE BEAD ID IS THE KEY. `spex map context` folds the journal itself — "if the
+# key is not a 12-hex hash, fold the journal and map the task id to its node's
+# hash" (spec/map/arch_context_resolver.md). The bead's `spex:` label is NOT a
+# key: it is the create op's idempotency label, and since event-keyed linkage
+# (spec/proposals/2026-08-11-event-keyed-linkage.md) "the journal is the sole
+# source of linkage truth". Passing the label resolved nothing and, because the
+# old branch only warned, produced an EMPTY spec-files.txt and a cycle that
+# implemented blind. Hence `die` below: no spec context is not a degraded run,
+# it is a broken one, and it must stop the step rather than reach an agent.
+JOURNAL="spec/.history.jsonl"
+key="$bead"
 
-# Resolve the spec leaves for the record (spex map context: arch/impl/test/flow/module files).
+mapjson="$(spex map context "$key")" \
+  || die "spex map context $key failed for bead $bead — the box cannot implement without spec context"
+
+# The resolver, not the bead's label, says which kind of cycle this is: a bead
+# whose node left the spec resolves to {"removed": true, ...} — a biography, no
+# spec files. That is the cleanup case, and it is authoritative in a way the
+# `spex:cleanup` label is not.
+removed="$(jq -r '.removed // false' <<<"$mapjson")"
 specs=""
-if [ -n "$record" ]; then
-  if mapjson="$(spex map context "$record" 2>/dev/null)"; then
-    specs="$(jq -r '[.arch_file] + (.impl_files//[]) + (.test_files//[]) + (.flow_files//[]) + [.module_file]
-                    | .[] | select(. != null and . != "")' <<<"$mapjson")"
-  else
-    echo "next-bead-context: warning: spex map context $record failed" >&2
+leaf_path=""
+if [ "$removed" = "true" ]; then
+  # The retired leaf's path, read off the journal because `spex map context` does
+  # not emit it — arch_context_resolver.md says the removed shape carries it ("the
+  # leaf path comes off the event's `path` field") and the event does, but the
+  # result does not. It is what makes `git show <before_head>:<path>` runnable, so
+  # the agent can read the contract the deleted code was written against.
+  if [ -f "$JOURNAL" ]; then
+    leaf_path="$(jq -r --arg e "$(jq -r '.eid' <<<"$mapjson")" \
+      'select(.eid==$e and .event=="removed") | .path // ""' "$JOURNAL" | head -n1)"
   fi
+else
+  specs="$(jq -r '[.arch_file] + (.impl_files//[]) + (.test_files//[]) + (.flow_files//[]) + [.module_file]
+                  | .[] | select(. != null and . != "")' <<<"$mapjson")"
+  [ -n "$specs" ] || die "bead $bead resolved to a live node with no spec leaves — key $key"
 fi
 
 printf '%s\n' "$specs" | sed '/^$/d' > "$bundle/spec-files.txt"
+# The key that actually resolved, for claim-next-bead to publish as RECORD_ID.
+# Derived here so one hook owns resolution: the label is not a key and must never
+# be handed to an agent as one.
+printf '%s\n' "$key" > "$bundle/context-key"
 
 {
   echo "# Implement bead $bead (next ready in epic $epic)"
   echo
   echo "- title: $title"
   echo "- status: $status (the prelude claims it in_progress on your feature branch)"
-  [ -n "$record" ] && echo "- spec record: $record"
+  echo "- context key: $key"
   echo
   echo "You are on your feature branch (see \$BRANCH in your environment); the bead"
   echo "is claimed. Do NOT push to the default branch and do NOT close the bead —"
   echo "review closes it."
   echo
-  echo "## Spec context — read these first (this is the source of truth)"
-  if [ -s "$bundle/spec-files.txt" ]; then
-    sed 's/^/- /' "$bundle/spec-files.txt"
+  if [ "$removed" = "true" ]; then
+    # REMOVAL cycle. There is no arch leaf to implement against — the node left the
+    # spec — so the contract is the journal's biography plus the retired leaf as it
+    # stood at before_head. The work is deletion, not construction.
+    echo "## This is a CLEANUP bead — the spec node it names was REMOVED"
+    echo
+    jq -r '"- node: \(.name) (\(.node_type)) in module \(.module)\n- removed by proposal: \(.proposal)\n- removal event: \(.eid)\n- before_head: \(.before_head)\n- after_head: \(.after_head)"' <<<"$mapjson"
+    [ -n "${leaf_path:-}" ] && echo "- retired spec leaf: $leaf_path"
+    echo
+    echo "There are no spec files to read: the node's leaves were deleted with it."
+    if [ -n "${leaf_path:-}" ]; then
+      echo "To read the contract the code was written against, run:"
+      echo
+      jq -r --arg p "$leaf_path" '"    git show \(.before_head):\($p)"' <<<"$mapjson"
+      echo
+    fi
+    echo "## Your job"
+    echo "DELETE the code that implemented this node, and nothing else. Remove its"
+    echo "tests with it, drop now-dead references and imports, and leave the tree"
+    echo "building green. Do NOT reimplement it, do NOT preserve it behind a flag,"
+    echo "and do NOT touch spec/ — the removal is already decided and recorded."
+    echo "If the code cannot be removed (something live still depends on it), file"
+    echo "a drift report instead of forcing it; that dependency contradicts the spec."
   else
-    echo "- (none resolved; consult the bead + proposal for spec references)"
+    echo "## Spec context — read these first (this is the source of truth)"
+    sed 's/^/- /' "$bundle/spec-files.txt"
+    echo
+    echo "## Your job"
+    echo "Implement the single component this bead covers against its spec leaves,"
+    echo "write/adjust the tests its test_* leaves define, run the completion gate"
+    echo "(\`go build/vet/test ./...\`), then commit (signed), push the branch, open"
+    echo "the PR, and link the bead. Full workflow: your \`implement\` skill."
   fi
-  echo
-  echo "## Your job"
-  echo "Implement the single component this bead covers against its spec leaves,"
-  echo "write/adjust the tests its test_* leaves define, run the completion gate"
-  echo "(\`go build/vet/test ./...\`), then commit (signed), push the branch, open"
-  echo "the PR, and link the bead. Full workflow: your \`implement\` skill."
   echo
   echo "This is one cycle of an epic run: emit \`\"done\":false\` in your output"
   echo "(see the skill's emit step) so the next cycle follows."
 } > "$bundle/CONTEXT.md"
 
-echo "next-bead-context: selected $bead ($record); $(wc -l < "$bundle/spec-files.txt") spec files"
+if [ "$removed" = "true" ]; then
+  echo "next-bead-context: selected $bead (cleanup; $(jq -r '"removed \(.name) from module \(.module)"' <<<"$mapjson"))"
+else
+  echo "next-bead-context: selected $bead (key $key); $(wc -l < "$bundle/spec-files.txt") spec files"
+fi

@@ -89,10 +89,10 @@ in
     src = final.fetchFromGitHub {
       owner = "dmitriyb";
       repo = "spexmachina";
-      rev = "d66dcc62584453a558878df2209a00e359ea5292";   # main post-#231: journal model live (bead-map deleted), ow43 epic minted
-      sha256 = "0m08qgyzxsgkdm4jl59k3cvssfl7j78igibsxdfwc9igczgy2788";
+      rev = "5854f7fa4f4bb1b3120590deaa6950b41d41c94b";   # main post-#309: `registered` event parses, cleanup task id reaches its removed node
+      sha256 = "0gzy24xbj5k46qgjd2246gffvgh6kypdd9b54al1zi02mrjl84nw";
     };
-    vendorHash = "sha256-hiE+LAr6gsCyMKq+Z3FkJitSW4GGTjyMCL5F6BbTVgs=";   # unchanged by the 23b2db5 bump (same go.mod deps)
+    vendorHash = "sha256-hiE+LAr6gsCyMKq+Z3FkJitSW4GGTjyMCL5F6BbTVgs=";   # unchanged by the 5854f7f bump (go.mod/go.sum identical)
     subPackages = [ "cmd/spex" ];
     meta.description = "Spex Machina structural spec CLI";
   };

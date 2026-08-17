@@ -13,7 +13,7 @@ The **context** hook (`fetch-pr`) has run: it fetched the PR's review state via 
 
 1. The PR diff (you are on its branch) and `pr.json` (`.title`, `.body`, `.reviews[]`, `.comments[]`, `.commits[]`).
 2. The linked bead: extract the bead ID from the PR body/commits (the claim commit subject is `<bead-id>: start implement …`), then `br show <bead-id>`.
-3. The spec for the bead: `spex map context <record-id>` (from the bead's `spex:<n>` label) → read `arch_*.md`, `test_*.md`, `flow_*.md`, `module.json`. There are no `impl_*.md` leaves — the arch leaf IS the contract. No spec label → fall back to spec references in the bead/PR.
+3. The spec for the bead: `spex map context <bead-id>` → read `arch_*.md`, `test_*.md`, `flow_*.md`, `module.json`. There are no `impl_*.md` leaves — the arch leaf IS the contract. The bead id IS the key: `map context` folds the journal to the node itself. Do NOT pass the bead's `spex:` label — that is the create op's idempotency label, not a lookup key, and the journal is the sole source of linkage truth. A **cleanup** bead resolves to `{"removed": true, ...}` — a biography, not spec files; its contract is the retired leaf at `before_head` (`git show <before_head>:<path>`), and the work under review is deletion.
 
 ## Review flow
 

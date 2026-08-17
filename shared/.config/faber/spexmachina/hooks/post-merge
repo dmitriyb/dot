@@ -69,8 +69,34 @@ if is_merged; then
 	exit 0
 fi
 
-portitor pr merge --pr "$pr" \
-	|| die "PR #$pr: portitor pr merge failed after the prelude cleared it — the gate's refusal is above"
+# A refusal here is recoverable, not fatal, so it routes back instead of dying:
+# the land loop (workflows.yaml) re-reviews and tries again, bounded at 2 merge
+# attempts, whereas a non-zero exit fails the STEP and skips every remaining
+# cycle of the epic. The prelude has already sent the permanent conditions —
+# DIRTY, BEHIND, red CI — to the agent before any merge is attempted, so what
+# reaches this line is a state that changed in the seconds since the prelude
+# cleared the PR.
+#
+# The reason is deliberately NOT recovered from the gate's message: that refusal
+# is prose (portitor's UnmetMergePreconditions), not an interface, and matching
+# on it would break the moment the wording changes. Every refusal routes back the
+# same way; the loop bound is what stops it from cycling.
+if ! merge_err="$(portitor pr merge --pr "$pr" 2>&1)"; then
+	printf '%s\n' "$merge_err" >&2
+	{
+		printf '%s\n\n' "$CI_COMMENT_MARKER"
+		printf '**Landing blocked: `merge_state`**\n\n'
+		printf 'The prelude cleared this PR, then the gate refused the merge:\n\n'
+		printf '```\n%s\n```\n\n' "$merge_err"
+		printf 'The merge state moved between the two — nothing in the diff is known\n'
+		printf 'to be wrong. Re-check the PR before changing any code.\n'
+	} | portitor pr comment --pr "$pr" \
+		|| die "posting the merge-refusal diagnosis for PR #$pr failed"
+
+	jq -n '{merged: false, blocked_by: "merge_state"}' > "$result/output.json"
+	echo "post-merge: PR #$pr not landed (the gate refused, see above); routed back to the land loop"
+	exit 0
+fi
 is_merged || die "PR #$pr: merge reported success but the PR is not MERGED"
 
 printf '{"merged":true}\n' > "$result/output.json"

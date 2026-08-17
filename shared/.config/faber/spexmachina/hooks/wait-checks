@@ -32,6 +32,7 @@ bundle="${FABER_BUNDLE_DIR:?FABER_BUNDLE_DIR is required}"
 # duration parser is needed in shell.
 ceiling="${CHECKS_CEILING_SECONDS:-720}"   # 12m: ~3 attempts of detect + re-run, with margin
 poll="${CHECKS_POLL_SECONDS:-10}"
+appear="${CHECKS_APPEAR_SECONDS:-60}"      # how long an EMPTY rollup means "not registered yet" (see the loop)
 
 command -v portitor >/dev/null 2>&1 || die "the portitor client is not on PATH"
 
@@ -109,6 +110,30 @@ while :; do
 		BEHIND) hand_to_agent behind "The PR is behind its base branch and must be updated." \
 			"This step's identity cannot commit, so a fixer has to move the branch." ;;
 	esac
+
+	# An EMPTY rollup is not "everything finished" — it is "GitHub has not
+	# registered this head's workflow runs yet", and `pending` cannot tell the two
+	# apart because both count zero. The distinction is load-bearing here: every
+	# merge lands on the reviewer's bead-close commit (skills/review closes the
+	# bead, commits .beads/issues.jsonl and pushes), and a pull_request's path
+	# filters are evaluated against the PR's whole diff, so that push re-triggers
+	# `pr` like any other. Polling inside the window between the push and the run
+	# appearing yields an empty rollup and a CLEAN state, i.e. "landable" for a
+	# head whose checks have not started — which is how a merge came to be
+	# attempted seconds before the checks registered, and (correctly) refused by
+	# the gate as UNSTABLE.
+	#
+	# Empty is not ALWAYS transient: a drift-only PR touches nothing outside
+	# drifts/ and .beads/ (the shape bead-closed.sh sanctions), matches no path
+	# filter, and so never gets a check at all. Hence a bounded grace rather than
+	# a wait — past it, an empty rollup is taken at face value and the CLEAN test
+	# below decides.
+	if [ "$(jq -r '.checks | length' <<<"$last_json")" -eq 0 ] \
+		&& [ $(( $(date +%s) - start )) -lt "$appear" ]; then
+		echo "wait-checks: PR #$pr has no checks yet; waiting up to ${appear}s for them to register" >&2
+		sleep "$poll"
+		continue
+	fi
 
 	if [ "$pending" -eq 0 ]; then
 		if [ "$mss" = "CLEAN" ]; then
