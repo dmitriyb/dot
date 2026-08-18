@@ -54,6 +54,32 @@ RUN curl -fsSL https://claude.ai/install.sh | bash
 RUN GOPATH=/home/dev/go go install github.com/jesseduffield/lazygit@latest \
     && GOPATH=/home/dev/go go clean -modcache
 
+# --- spec-driven workflow trio: br, bv, spex (both variants use them) ---------
+
+# Install beads_rust (pre-built binary). Not script-pinned — see README "Installer trust".
+RUN curl -fsSL https://raw.githubusercontent.com/Dicklesworthstone/beads_rust/main/install.sh | bash
+
+# Install beads_viewer (bv) — graph-aware TUI for the Beads issue tracker. Same
+# transparency-log integrity as lazygit above (sum.golang.org); modcache dropped in-layer.
+RUN GOPATH=/home/dev/go go install github.com/Dicklesworthstone/beads_viewer/cmd/bv@latest \
+    && GOPATH=/home/dev/go go clean -modcache
+
+# Install spex (structural spec CLI), always the latest release, into ~/.local/bin.
+# Genuinely signature-verified, unlike the curl|sh installers here: the release-signing
+# Ed25519 key below is pre-distributed and long-lived (one key for spex, faber and
+# portitor; the same line is in shared/.config/faber/SETUP.md), so `ssh-keygen -Y verify`
+# over install.sh.sig survives an origin compromise — no TOFU, no re-hash churn.
+# install.sh additionally verifies the release archive against the same key it carries;
+# the check here is the one that catches a SUBSTITUTED installer, which that cannot.
+# Build fails closed: an unverifiable script never reaches bash.
+RUN printf '%s\n' 'dvbozhko@gmail.com ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIIhmCWVDP/Tcm3CqXNjTQTChbKxr223xMob9zc56Uuny' > /tmp/spex-signers \
+    && curl -fsSLO https://github.com/dmitriyb/spexmachina/releases/latest/download/install.sh \
+    && curl -fsSLO https://github.com/dmitriyb/spexmachina/releases/latest/download/install.sh.sig \
+    && ssh-keygen -Y verify -f /tmp/spex-signers -I dvbozhko@gmail.com -n file \
+         -s install.sh.sig < install.sh \
+    && bash install.sh \
+    && rm -f install.sh install.sh.sig /tmp/spex-signers
+
 # Clone and stow dotfiles. DOT_PROFILE=headless → setup.sh stows shared + headless
 # and skips host-only ssh-agent activation (no init system here; the agent is
 # forwarded from the host via -e SSH_AUTH_SOCK at run time).

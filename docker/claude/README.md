@@ -4,9 +4,9 @@ Isolated Claude Code environments running in Fedora containers with full dotfile
 
 ## What's inside
 
-**Base** (shared): Fish, tmux, neovim (with plugins), starship, eza, bat, fzf, zoxide, lazygit, direnv, glow, Nix (single-user, flakes enabled, with nix-direnv), and Claude Code (native binary).
+**Base** (shared): Fish, tmux, neovim (with plugins), starship, eza, bat, fzf, zoxide, lazygit, direnv, glow, Nix (single-user, flakes enabled, with nix-direnv), Claude Code (native binary), and the spec-driven trio — [beads_rust](https://github.com/Dicklesworthstone/beads_rust) (`br`), [beads_viewer](https://github.com/Dicklesworthstone/beads_viewer) (`bv`) and [spex](https://github.com/dmitriyb/spexmachina).
 
-**Personal**: + Zig, Rust, [beads_rust](https://github.com/Dicklesworthstone/beads_rust) (`br`), and [beads_viewer](https://github.com/Dicklesworthstone/beads_viewer) (`bv`). No MCP servers. Fast startup.
+**Personal**: + Zig and Rust. No MCP servers. Fast startup.
 
 **Work**: + Bun (for MCP servers), SSH server for IDEA Remote Development, timeout tuning for large repos. Repos live on a native ext4 volume (not VirtioFS) for performance.
 
@@ -76,8 +76,8 @@ backstopped by the touch key (anything that slips still needs a physical touch).
 
 ## Installer trust (supply chain)
 
-The `curl … | sh` installers in these Dockerfiles (`starship`, `nix`, `claude` in base;
-`beads_rust`, `rustup` in personal; `bun` in work) are **not script-pinned**. TLS is the trust
+The `curl … | sh` installers in these Dockerfiles (`starship`, `nix`, `claude`, `beads_rust` in
+base; `rustup` in personal; `bun` in work) are **not script-pinned**. TLS is the trust
 boundary, and that is stated honestly rather than dressed up.
 
 **Why not pin the installer script?** A committed `sha256sum -c` of the installer script is
@@ -103,6 +103,14 @@ stronger), or **transparency-log attestation** (Sigstore/cosign, SLSA).
   in git). This survives an origin/CDN compromise, unlike a same-origin checksum; the build also
   asserts the signed trusted-comment names the exact tarball (downgrade guard). This replaced the
   earlier `index.json` shasum, which was same-origin (weak).
+- **`spex` — signature-verified (implemented).** `Dockerfile.base` fetches `install.sh` plus its
+  detached `install.sh.sig` and runs `ssh-keygen -Y verify` against the release-signing Ed25519
+  key baked into the Dockerfile — one long-lived key shared by spex, faber and portitor, and the
+  same allowed_signers line committed in `shared/.config/faber/SETUP.md`. A pre-distributed key
+  is not TOFU and does not churn per release, so this is the real thing rather than a script-hash
+  pin. `install.sh` then verifies the downloaded archive against the identical key it carries; the
+  build-time check adds what the self-check structurally cannot — detection of a *substituted*
+  installer. Failure is fail-closed: the script never reaches `bash`.
 - **`lazygit` (and `bv`) — transparency-log verified (implemented).** Installed with `go install`,
   not a `curl … | sh`: the Go toolchain checks every module against `sum.golang.org`, a public
   append-only transparency log that is independent of the download origin, and refuses a mismatch.
