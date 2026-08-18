@@ -10,11 +10,17 @@
 #   mkrelease --minor                 # in the repo: v0.1.7 -> v0.2.0
 #   mkrelease ../portitor --patch     # elsewhere: path first
 #   mkrelease --set 1.0.0 --dry-run   # explicit version, change nothing
+#   mkrelease --set 0.2.0-rc.1        # a prerelease is a version like any other
 #
 # The tag is signed, so cutting a release prompts a YubiKey touch. Every
 # network step is announced on stderr first, so an unexpected prompt is always
 # attributable to the line above it. A signing failure is fatal here: the
 # script exits and does NOT retry or fall back to an unsigned tag.
+#
+# Versions are semver (semver.org), which is also what Go module resolution
+# uses: prereleases are ordered BELOW the release they precede, so v0.1.0-rc.1
+# < v0.1.0. Neither `git --sort=v:refname` nor `sort -V` implements that rule,
+# so this script carries its own comparator and uses it everywhere.
 #
 # Repo-agnostic by construction: the default branch comes from origin/HEAD, the
 # version from the tag list, the name from the toplevel. Nothing about any
@@ -26,11 +32,13 @@ note() { echo "mkrelease: $1" >&2; }
 
 usage() {
 	cat >&2 <<'EOF'
-usage: mkrelease [<path>] (--major | --minor | --patch | --set <X.Y.Z>) [--dry-run] [--check-ci]
+usage: mkrelease [<path>] (--major | --minor | --patch | --set <VERSION>) [--dry-run] [--check-ci]
 
   <path>        repo to release; defaults to the current directory
   --major       X+1.0.0      --minor  X.Y+1.0      --patch  X.Y.Z+1
-  --set X.Y.Z   explicit version instead of an increment
+                from a prerelease, a bump that targets its own version just
+                drops the suffix: v0.1.0-rc.1 --patch is v0.1.0
+  --set VER     explicit X.Y.Z or X.Y.Z-prerelease, instead of an increment
   --dry-run     report the computed tag and every check, then stop
   --check-ci    refuse to tag unless GitHub checks are green on HEAD (needs gh)
 
@@ -38,6 +46,57 @@ Preconditions (all enforced): inside a git repo, clean worktree, on the default
 branch, in sync with origin, and the computed tag does not already exist.
 EOF
 	exit "${1:-1}"
+}
+
+# ---- semver ------------------------------------------------------------------
+# Ordering is ours, not git's and not sort -V's: both of those place a
+# prerelease ABOVE the release it precedes (v0.1.0-rc.2 > v0.1.0), which is the
+# opposite of semver rule 11 and of what Go's module resolver does. One
+# comparator serves both "which tag is latest" and "is --set going backwards",
+# so the two can never disagree.
+
+# semver_parse <tag> -> sv_maj sv_min sv_pat sv_pre; non-zero if not semver.
+semver_parse() {
+	[[ "$1" =~ ^v(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)(-([0-9A-Za-z.-]+))?$ ]] || return 1
+	sv_maj="${BASH_REMATCH[1]}"; sv_min="${BASH_REMATCH[2]}"
+	sv_pat="${BASH_REMATCH[3]}"; sv_pre="${BASH_REMATCH[5]}"
+	return 0
+}
+
+# semver_cmp <a> <b> -> prints -1 / 0 / 1. Build metadata is not accepted at
+# all (Go rejects it on module tags), so precedence is core then prerelease.
+semver_cmp() {
+	local LC_COLLATE=C i x y
+	local am an ap apre bm bn bp bpre
+	semver_parse "$1" || die "internal: '$1' is not a semver version"
+	am=$sv_maj an=$sv_min ap=$sv_pat apre=$sv_pre
+	semver_parse "$2" || die "internal: '$2' is not a semver version"
+	bm=$sv_maj bn=$sv_min bp=$sv_pat bpre=$sv_pre
+	for x in "$am:$bm" "$an:$bn" "$ap:$bp"; do
+		(( ${x%%:*} < ${x##*:} )) && { echo -1; return 0; }
+		(( ${x%%:*} > ${x##*:} )) && { echo 1; return 0; }
+	done
+	# Rule 11.3: a version WITH a prerelease precedes the one without.
+	[[ -z "$apre" && -z "$bpre" ]] && { echo 0; return 0; }
+	[[ -z "$apre" ]] && { echo 1; return 0; }
+	[[ -z "$bpre" ]] && { echo -1; return 0; }
+	local A B; IFS=. read -ra A <<<"$apre"; IFS=. read -ra B <<<"$bpre"
+	local max=$(( ${#A[@]} > ${#B[@]} ? ${#A[@]} : ${#B[@]} ))
+	for (( i = 0; i < max; i++ )); do
+		x="${A[i]-}"; y="${B[i]-}"
+		[[ -z "$x" ]] && { echo -1; return 0; }   # fewer fields sorts lower
+		[[ -z "$y" ]] && { echo 1; return 0; }
+		if [[ "$x" =~ ^[0-9]+$ && "$y" =~ ^[0-9]+$ ]]; then
+			(( 10#$x < 10#$y )) && { echo -1; return 0; }
+			(( 10#$x > 10#$y )) && { echo 1; return 0; }
+		elif [[ "$x" =~ ^[0-9]+$ ]]; then echo -1; return 0    # numeric < alnum
+		elif [[ "$y" =~ ^[0-9]+$ ]]; then echo 1; return 0
+		else
+			[[ "$x" < "$y" ]] && { echo -1; return 0; }
+			[[ "$x" > "$y" ]] && { echo 1; return 0; }
+		fi
+	done
+	echo 0
 }
 
 # ---- args -------------------------------------------------------------------
@@ -49,9 +108,9 @@ while (( $# )); do
 			bump="${1#--}" ;;
 		--set)
 			[[ -n "$bump$explicit" ]] && die "pick exactly one of --major/--minor/--patch/--set"
-			shift; [[ $# -gt 0 ]] || die "--set needs a version (X.Y.Z)"
+			shift; [[ $# -gt 0 ]] || die "--set needs a version (X.Y.Z[-prerelease])"
 			# Shape-check here, not after the fetch: a typo should cost nothing.
-			[[ "${1#v}" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]] || die "--set wants X.Y.Z, got '$1'"
+			semver_parse "v${1#v}" || die "--set wants X.Y.Z[-prerelease], got '$1'"
 			explicit="v${1#v}" ;;
 		--dry-run)  dry=1 ;;
 		--check-ci) check_ci=1 ;;
@@ -101,26 +160,35 @@ behind="${counts%%	*}"; ahead="${counts##*	}"
 (( ahead  == 0 )) || die "$ahead unpushed commit(s); push before tagging (the tag must point at a commit origin has)"
 
 # ---- version ----------------------------------------------------------------
-latest="$(git tag --list 'v[0-9]*.[0-9]*.[0-9]*' --sort=-v:refname | head -1)"
+latest=""
+while IFS= read -r tag; do
+	semver_parse "$tag" || continue          # skip anything that is not a release tag
+	if [[ -z "$latest" ]] || (( $(semver_cmp "$tag" "$latest") > 0 )); then latest="$tag"; fi
+done < <(git tag --list 'v[0-9]*')
 if [[ -z "$latest" ]]; then
-	note "no existing v* tag; treating the current version as v0.0.0"
+	note "no existing semver tag; treating the current version as v0.0.0"
 	latest="v0.0.0"
 fi
-[[ "$latest" =~ ^v([0-9]+)\.([0-9]+)\.([0-9]+)$ ]] || die "latest tag '$latest' is not vX.Y.Z"
-maj="${BASH_REMATCH[1]}"; min="${BASH_REMATCH[2]}"; pat="${BASH_REMATCH[3]}"
+semver_parse "$latest"
+maj="$sv_maj"; min="$sv_min"; pat="$sv_pat"; pre="$sv_pre"
 
 if [[ -n "$explicit" ]]; then
 	next="$explicit"                     # shape already validated at parse time
 	# Refuse to go backwards: a lower tag confuses goreleaser's changelog and
 	# every consumer that resolves "latest". Retagging downward is a deliberate
 	# act and should be done by hand.
-	[[ "$(printf '%s\n%s\n' "$latest" "$next" | sort -V | tail -1)" == "$next" && "$next" != "$latest" ]] \
-		|| die "$next is not newer than $latest"
+	(( $(semver_cmp "$next" "$latest") > 0 )) || die "$next is not newer than $latest"
 else
+	# From a prerelease, a bump whose target is the version that prerelease is a
+	# candidate for just drops the suffix: v0.1.0-rc.1 --patch (or --minor) is
+	# v0.1.0, not v0.1.1. Same rule as semver.inc / `npm version`.
 	case "$bump" in
-		major) next="v$((maj + 1)).0.0" ;;
-		minor) next="v$maj.$((min + 1)).0" ;;
-		patch) next="v$maj.$min.$((pat + 1))" ;;
+		major) if [[ -n "$pre" && "$min$pat" == 00 ]]; then next="v$maj.0.0"
+		       else next="v$((maj + 1)).0.0"; fi ;;
+		minor) if [[ -n "$pre" && "$pat" == 0 ]]; then next="v$maj.$min.0"
+		       else next="v$maj.$((min + 1)).0"; fi ;;
+		patch) if [[ -n "$pre" ]]; then next="v$maj.$min.$pat"
+		       else next="v$maj.$min.$((pat + 1))"; fi ;;
 	esac
 fi
 
@@ -146,6 +214,10 @@ if (( check_ci )); then
 fi
 
 # ---- report / act -----------------------------------------------------------
+semver_parse "$next"
+kind="release"
+[[ -z "$sv_pre" ]] || kind="prerelease ($sv_pre)"
+
 cat >&2 <<EOF
 
   repo      $name
@@ -154,6 +226,7 @@ cat >&2 <<EOF
   current   $latest
   release   $next
   checks    $ci
+  kind      $kind
 
 EOF
 
