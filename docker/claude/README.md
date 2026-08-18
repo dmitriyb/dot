@@ -97,12 +97,18 @@ value to zero while imposing ongoing maintenance. That is theater, and it is rem
 gpg — the distro key is the out-of-band root, which is why `dnf install …` is categorically
 stronger), or **transparency-log attestation** (Sigstore/cosign, SLSA).
 
-**Per-tool audit (2026)** — of the installers here, only one clears that bar cheaply:
+**Per-tool audit (2026)** — of the installers here, two clear that bar cheaply:
 - **`zig` — signature-verified (implemented).** The tarball is checked with `minisign` against the
   Zig Software Foundation's long-lived public key, baked into `Dockerfile.personal` (reviewed once
   in git). This survives an origin/CDN compromise, unlike a same-origin checksum; the build also
   asserts the signed trusted-comment names the exact tarball (downgrade guard). This replaced the
   earlier `index.json` shasum, which was same-origin (weak).
+- **`lazygit` (and `bv`) — transparency-log verified (implemented).** Installed with `go install`,
+  not a `curl … | sh`: the Go toolchain checks every module against `sum.golang.org`, a public
+  append-only transparency log that is independent of the download origin, and refuses a mismatch.
+  This replaced the `atim/lazygit` COPR, which upstream marked unmaintained and which has no
+  successful `fedora-44` build (a signed rpm repo would have been stronger still, but Fedora does
+  not package lazygit).
 - **`bun` — PGP signature available, not wired in.** Oven signs `SHASUMS256.txt.asc` with a key
   published on keyservers and pinned in Bun's own repo. Genuinely verifiable, but manual (needs
   `gpg` + keyserver/baked key in the work image) and low-value for an MCP-only tool. Left on TLS.

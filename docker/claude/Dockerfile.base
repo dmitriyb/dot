@@ -30,9 +30,6 @@ RUN set -e; \
 # README "Installer trust"). The tool version it fetches floats to latest.
 RUN curl -fsSL https://starship.rs/install.sh | sh -s -- -y
 
-# Install lazygit (not in Fedora repos)
-RUN dnf copr enable -y atim/lazygit && dnf install -y lazygit && dnf clean all
-
 # Install TPM (tmux plugin manager)
 RUN git clone https://github.com/tmux-plugins/tpm /usr/share/tmux-plugin-manager
 
@@ -48,6 +45,14 @@ WORKDIR /home/dev
 # the downloaded binary against Anthropic's manifest checksum (see README
 # "Installer trust").
 RUN curl -fsSL https://claude.ai/install.sh | bash
+
+# Install lazygit (not in Fedora repos; the atim/lazygit COPR is unmaintained and has
+# no successful fedora-44 build). Built from source — golang is installed above, and
+# module integrity is verified against the Go checksum DB (sum.golang.org), a
+# transparency log independent of the download origin. Floats to latest, as the other
+# non-repo tools do. The module cache is dropped in-layer; only the binary is kept.
+RUN GOPATH=/home/dev/go go install github.com/jesseduffield/lazygit@latest \
+    && GOPATH=/home/dev/go go clean -modcache
 
 # Clone and stow dotfiles. DOT_PROFILE=headless → setup.sh stows shared + headless
 # and skips host-only ssh-agent activation (no init system here; the agent is
