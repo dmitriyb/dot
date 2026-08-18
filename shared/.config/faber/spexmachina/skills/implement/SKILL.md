@@ -10,7 +10,7 @@ Implement the bead described in your bundle. Use @~/.claude/skills/go-expert/SKI
 The box's deterministic hooks have run before this skill — you never run them yourself:
 
 - the **context** hook resolved the bead's spec and wrote your prompt to `$FABER_BUNDLE_DIR/CONTEXT.md` and the spec file list to `$FABER_BUNDLE_DIR/spec-files.txt`,
-- the **prelude** hook created your feature branch off `origin/<default>`, guarded the bead (status `open`/`ready`, not `spex:cleanup`), and claimed it (`status in_progress`) with a **signed** commit on the branch,
+- the **prelude** hook created your feature branch off `origin/<default>`, guarded the bead (status `open`/`ready`, and its spec node still live — a bead whose node was removed is a cleanup cycle, not this one), and claimed it (`status in_progress`) with a **signed** commit on the branch,
 - `$FABER_BUNDLE_DIR/bundle.env` carries `BEAD_ID`, `BRANCH`, `BASE`, `RECORD_ID`; these are also in your environment.
 
 **Start by reading `$FABER_BUNDLE_DIR/CONTEXT.md`, then every file in `$FABER_BUNDLE_DIR/spec-files.txt`** (`arch_*`, `test_*`, `flow_*`, `module.json` — there are no `impl_*` leaves; the arch leaf is the contract). That is your spec — do not re-derive it. Beads carry empty descriptions by design; the spec leaves are the source of truth. If `spec-files.txt` is empty, fall back to the spec references in the bead.
@@ -35,7 +35,7 @@ A doc-only edit to a component's `arch_*` leaf still changes its hash, so the pi
    - **Test-section scope guard**: the `test_files` in your bundle ARE your test-section ownership boundary. Write test cases ONLY for scenarios in those files. A shared `*_test.go` may host cases owned by several beads — write only yours. If a test would cover another `test_*.md`'s scenario, STOP: it belongs to that bead.
 4. **Write unit tests** for internal functions and edge cases from the impl spec. They also fail initially.
 5. **Write the implementation** — only the single component this bead covers, tracing to the spec. Follow existing patterns; no unrelated changes.
-   - **Scope boundary**: only modify this component's logic/tests. If your change breaks compilation in a file owned by another component, comment it out with `// TODO(bead:<other-bead-id>): fix after <your-bead-id> changed <what>` (look up the owner via its `spex:<spec_node_id>` label: `spex map get <hash>`). Do NOT rewrite the other component.
+   - **Scope boundary**: only modify this component's logic/tests. If your change breaks compilation in a file owned by another component, comment it out with `// TODO(bead:<other-bead-id>): fix after <your-bead-id> changed <what>` (look up the owner with `spex map get <other-bead-id>` — the bead id is the key; its `spex:` label is the create op's idempotency label and resolves nothing). Do NOT rewrite the other component.
 6. **Run tests.** `go test ./...` and `go vet ./...` must pass. Fix the implementation, never weaken a test.
 7. **Completion gate** (below). Do NOT proceed until every item passes.
 8. Commit and push your feature branch. Commits must be signed; do NOT bypass signing (`--no-gpg-sign`, `-c commit.gpgsign=false`). Do NOT close the bead and do NOT push to the default branch. **The gate auto-opens the PR on an accepted push** — read the PR number from the push output (the `remote: portitor: PR #<n> <url>` line; a re-push reports the existing PR).

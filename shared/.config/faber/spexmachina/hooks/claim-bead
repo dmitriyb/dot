@@ -28,16 +28,21 @@ br sync --import-only >/dev/null 2>&1 || true
 
 json="$(br show "$bead" --json)" || die "br show $bead failed"
 [ "$(jq 'length' <<<"$json")" -gt 0 ] || die "bead $bead not found"
-if jq -e '.[0].labels | index("spex:cleanup")' <<<"$json" >/dev/null; then
-  die "bead $bead is a cleanup bead (spex:cleanup); not an implement bead"
-fi
+# No cleanup guard here: the context hook already refused this bead if its node
+# is removed, and it decided that on the resolver's {"removed": true}, not on
+# the retired `spex:cleanup` label the plan-era builder no longer emits. A guard
+# keyed on that label would pass every new cleanup bead while looking like it
+# checked something.
 status="$(jq -r '.[0].status' <<<"$json")"
 case "$status" in
   open|ready) ;;
   *) die "bead $bead status is '$status', expected open or ready" ;;
 esac
 
-record="$(jq -r '.[0].labels[]? | select(startswith("spex:")) | select(. != "spex:cleanup") | ltrimstr("spex:")' <<<"$json" | head -n1)"
+# The context key gather-context actually resolved with — the bead id. NOT the
+# `spex:` label: that is the create op's idempotency label and `spex map context`
+# rejects it.
+record="$(cat "$bundle/context-key" 2>/dev/null || true)"
 base="origin/$(default_branch)"
 branch="$bead"   # bead id verbatim (git allows the dot in refs); the id is already a safe ref token
 

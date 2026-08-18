@@ -5,9 +5,9 @@
 # CONTEXT.md into $FABER_BUNDLE_DIR (and, here, spec-files.txt) and exit 0, or
 # the step aborts before the agent starts.
 #
-# Grounding follows spexmachina's rule: the bead's title + its spex:<record_id>
-# label are the entry point; `spex map context <record>` resolves the spec
-# leaves that ARE the source of truth. Beads carry empty descriptions by design.
+# Grounding follows spexmachina's rule: the bead's title plus `spex map context
+# <bead-id>` resolve the spec leaves that ARE the source of truth. Beads carry
+# empty descriptions by design.
 set -euo pipefail
 
 die() { echo "gather-context: $*" >&2; exit 1; }
@@ -22,47 +22,63 @@ br sync --import-only >/dev/null 2>&1 || true
 json="$(br show "$bead" --json)" || die "br show $bead failed"
 [ "$(jq 'length' <<<"$json")" -gt 0 ] || die "bead $bead not found"
 
-# A cleanup bead (spex:cleanup) has no map record — it does not belong to this
-# spec-driven implement path.
-if jq -e '.[0].labels | index("spex:cleanup")' <<<"$json" >/dev/null; then
-  die "bead $bead is a cleanup bead (spex:cleanup); not an implement bead"
-fi
-
 title="$(jq -r '.[0].title' <<<"$json")"
 status="$(jq -r '.[0].status' <<<"$json")"
-record="$(jq -r '.[0].labels[]? | select(startswith("spex:")) | select(. != "spex:cleanup") | ltrimstr("spex:")' <<<"$json" | head -n1)"
 
-# Resolve the spec leaves for the record. spex map context returns the record
-# plus arch_file / impl_files / test_files / flow_files / module_file.
-specs=""
-if [ -n "$record" ]; then
-  if mapjson="$(spex map context "$record" 2>/dev/null)"; then
-    specs="$(jq -r '[.arch_file] + (.impl_files//[]) + (.test_files//[]) + (.flow_files//[]) + [.module_file]
-                    | .[] | select(. != null and . != "")' <<<"$mapjson")"
-  else
-    echo "gather-context: warning: spex map context $record failed" >&2
+# ---- resolve the spec context ----------------------------------------------
+# THE BEAD ID IS THE KEY. `spex map context` folds the journal itself — "if the
+# key is not a 12-hex hash, fold the journal and map the task id to its node's
+# hash" (spec/map/arch_context_resolver.md). The bead's `spex:` label is NOT a
+# key: since event-keyed linkage it reads `spex:<git_head>:<op_id>`, the create
+# op's idempotency label, which `spex map context` rejects as not-found. This
+# hook used to pass it and only warn, producing an EMPTY spec-files.txt and a
+# cycle that implemented blind — the same defect next-bead-context already
+# fixed. Hence `die`: no spec context is not a degraded run, it is a broken one.
+key="$bead"
+if ! mapjson="$(spex map context "$key" 2>&1)"; then
+  # A legacy cleanup bead (minted before the removal was paired with its task)
+  # answers only to the hash inside its own `spex:cleanup-<hash>` label. This
+  # path refuses cleanup beads either way, so the label is read here purely to
+  # explain the refusal — never as a lookup key for work this hook would do.
+  if jq -e '.[0].labels[]? | select(startswith("spex:cleanup"))' <<<"$json" >/dev/null; then
+    die "bead $bead is a cleanup bead; not an implement bead"
   fi
+  die "spex map context $key failed for bead $bead — the box cannot implement without spec context: $mapjson"
 fi
 
+# The resolver, not a label, says whether this bead's node still exists. A bead
+# whose node left the spec resolves to {"removed": true, ...} — a biography, no
+# spec leaves. That is the cleanup case, and it is authoritative in a way the
+# retired `spex:cleanup` label is not: the plan-era ChangesetBuilder no longer
+# emits that label, so a check keyed on it silently stops guarding. This path
+# implements a live node; cleanup cycles belong to implement-next.
+if [ "$(jq -r '.removed // false' <<<"$mapjson")" = "true" ]; then
+  die "bead $bead names a REMOVED spec node (cleanup bead); not an implement bead"
+fi
+
+specs="$(jq -r '[.arch_file] + (.impl_files//[]) + (.test_files//[]) + (.flow_files//[]) + [.module_file]
+                | .[] | select(. != null and . != "")' <<<"$mapjson")"
+[ -n "$specs" ] || die "bead $bead resolved to a live node with no spec leaves — key $key"
+
 printf '%s\n' "$specs" | sed '/^$/d' > "$bundle/spec-files.txt"
+# The key that actually resolved, for claim-bead to publish as RECORD_ID. One
+# hook owns resolution: the label is not a key and must never reach an agent as
+# one.
+printf '%s\n' "$key" > "$bundle/context-key"
 
 {
   echo "# Implement bead $bead"
   echo
   echo "- title: $title"
   echo "- status: $status (the prelude claims it in_progress on your feature branch)"
-  [ -n "$record" ] && echo "- spec record: $record"
+  echo "- context key: $key"
   echo
   echo "You are on your feature branch (see \$BRANCH in your environment); the bead"
   echo "is claimed. Do NOT push to the default branch and do NOT close the bead —"
   echo "review closes it."
   echo
   echo "## Spec context — read these first (this is the source of truth)"
-  if [ -s "$bundle/spec-files.txt" ]; then
-    sed 's/^/- /' "$bundle/spec-files.txt"
-  else
-    echo "- (none resolved; consult the bead + proposal for spec references)"
-  fi
+  sed 's/^/- /' "$bundle/spec-files.txt"
   echo
   echo "## Your job"
   echo "Implement the single component this bead covers against its spec leaves,"
@@ -71,4 +87,4 @@ printf '%s\n' "$specs" | sed '/^$/d' > "$bundle/spec-files.txt"
   echo "the PR, and link the bead. Full workflow: your \`implement\` skill."
 } > "$bundle/CONTEXT.md"
 
-echo "gather-context: bead $bead ($record); $(wc -l < "$bundle/spec-files.txt") spec files"
+echo "gather-context: bead $bead (key $key); $(wc -l < "$bundle/spec-files.txt") spec files"
