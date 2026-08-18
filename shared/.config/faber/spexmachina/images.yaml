@@ -25,7 +25,8 @@ images:
     # uid drop) — replaces the old per-host bind mounts, no host paths involved.
     packages: [git, openssh, go, gopls, coreutils, gnused, gnugrep, gawk, diffutils, findutils, bash, jq, cacert, spex, br, claude-code, portitor-client, box-etc]
     overlay: ./overlay.nix
-    # nixos-25.11 (Go 1.25.10) — spex's go.mod requires go >= 1.25.0, newer than
+    # nixos-25.11 (Go 1.25.10) — the spexmachina checkout the box compiles requires
+    # go >= 1.25.0 (spex itself is a prebuilt release now), newer than
     # faber's compiled-in default pin ships. Reproducible commit-pinned snapshot.
     pin:
       rev: b6018f87da91d19d0ab4cf979885689b469cdd41

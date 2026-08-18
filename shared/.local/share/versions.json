@@ -29,25 +29,29 @@
 
   "spex": {
     "track": "pinned",
-    "rev": "d66dcc62584453a558878df2209a00e359ea5292",
-    "anchor": "nix-vendorHash",
+    "version": "0.1.0",
+    "anchor": "sha256",
     "source": "github:dmitriyb/spexmachina",
-    "src_sha256": "0m08qgyzxsgkdm4jl59k3cvssfl7j78igibsxdfwc9igczgy2788",
-    "vendor_hash": "sha256-hiE+LAr6gsCyMKq+Z3FkJitSW4GGTjyMCL5F6BbTVgs=",
+    "asset_template": "https://github.com/dmitriyb/spexmachina/releases/download/v${version}/spex_${version}_linux_${arch}.tar.gz",
+    "note": "Was a buildGoModule rev pin (pre-release main); v0.1.0 is spexmachina's first tagged release, so the box overlays install the prebuilt signed asset (statically linked Go ELF, no autopatchelf). Bump version + both sha256 from the release manifest.json — and mirror them into BOTH faber overlays (spexmachina/, faber-stack-service/), which hard-code the values rather than reading this file.",
+    "sha256": {
+      "linux_arm64": "f087a817e10f8612bf1b6daf207b6f9d327aad62fcee1427ce248004c3e5a9c5",
+      "linux_amd64": "2bf0ed718ebe6d04eba2b4e5677f561c05f733b991be37e1e2996a5de5d7c173"
+    },
     "consumers": ["nix-overlay"]
   },
 
   "portitor": {
     "track": "pinned",
-    "version": "0.2.0",
+    "version": "0.3.0",
     "anchor": "sha256",
     "source": "github:dmitriyb/portitor",
     "asset_template": "https://github.com/dmitriyb/portitor/releases/download/v${version}/portitor_${version}_linux_${arch}.tar.gz",
     "sha256": {
-      "linux_arm64": "2480825f039b74d215fc38b065081e3f4b96ec319c7275385e2d0b88acd989cf",
-      "linux_amd64": "78adc858b7f2ca64f5d7ef05df498ae5b92167c3784dcb0a3bec1b58da77fdf0"
+      "linux_arm64": "ec3110ca2ecb8aeb6c79592334937b3f4ee960f2c5bf97227e77e123c810ebe5",
+      "linux_amd64": "70c41addb530a584b3b0f0a1759f9c6dfc3d3afc3368fe9b66141579d9a8c0b5"
     },
-    "note": "Was latest+SSHSIG under the Alpine gate; the nix gate pins it by hash (nix builds can't fetch-latest+verify-sig purely). Bump version + refresh sha256 from the release .sha256 assets to move it.",
+    "note": "Was latest+SSHSIG under the Alpine gate; the nix gate pins it by hash (nix builds can't fetch-latest+verify-sig purely). Bump version + refresh sha256 from the release .sha256 assets to move it. 0.3.0 also publishes a separate portitor-mcp binary; the gate installs only portitor.",
     "consumers": ["nix-gate"]
   },
 

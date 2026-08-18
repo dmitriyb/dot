@@ -1,14 +1,16 @@
 # faber build overlay for spexmachina development boxes.
 # Merged into the PINNED nixpkgs set (see images.yaml: pin -> nixos-25.11, which
-# ships Go 1.25.10 — spex's go.mod requires go >= 1.25.0) as an overlay:
+# ships Go 1.25.10 — the spexmachina checkout the box COMPILES needs go >= 1.25.0;
+# spex itself is no longer built here) as an overlay:
 #   final: prev: { <name> = ...; }
 # Provides the three tools NOT in nixpkgs — proven via `faber validate`:
 #   claude-code, br, spex   (git/openssh/go/gopls/coreutils/bash resolve natively).
 #
-# All three hashes below are REAL (verified: spex builds AND runs under go 1.25.10;
-# claude-code round-trips a smoke; br is the v0.2.16 glibc release). The only stub
-# is br's linux_x86_64 hash — this box targets arm64 (the macOS Docker VM); fill
-# the x86_64 hash from the release if you ever build the image on an x86_64 host.
+# All three hashes below are REAL (spex is the v0.1.0 signed release, both arch
+# hashes off its manifest.json; claude-code round-trips a smoke; br is the v0.2.16
+# glibc release). The only stub is br's linux_x86_64 hash — this box targets arm64
+# (the macOS Docker VM); fill the x86_64 hash from the release if you ever build
+# the image on an x86_64 host.
 
 final: prev:
 
@@ -20,6 +22,9 @@ let
   # beads_rust release arch token (its assets use arm64 / x86_64).
   brArch = if prev.stdenv.hostPlatform.isAarch64 then "arm64" else "x86_64";
 
+  # spex release arch token (its assets use arm64 / amd64 — goreleaser naming).
+  spexArch = if prev.stdenv.hostPlatform.isAarch64 then "arm64" else "amd64";
+
   # --- claude-code pin ---------------------------------------------------------
   # Version from https://downloads.claude.ai/claude-code-releases/latest ; the
   # per-platform sha256 is manifest.json .platforms[<platform>].checksum (a real
@@ -28,6 +33,15 @@ let
   claudeSha256 = {
     "linux-x64"   = "674f61f20ff306f3100cf9200e4c36c4b70278b5bef2884549819b942a89c863";
     "linux-arm64" = "159e4a51d796f3bf14677577100f7efb845611b1ceaf0c30cbd8d4650d942185";
+  };
+
+  # --- spex pin ----------------------------------------------------------------
+  # spexmachina's first tagged release. Version + per-arch sha256 come from the
+  # release's manifest.json (the .sha256 sidecar assets carry the same values).
+  spexVersion = "0.1.0";
+  spexSha256 = {
+    "arm64" = "f087a817e10f8612bf1b6daf207b6f9d327aad62fcee1427ce248004c3e5a9c5";
+    "amd64" = "2bf0ed718ebe6d04eba2b4e5677f561c05f733b991be37e1e2996a5de5d7c173";
   };
 
   # --- br (beads_rust) pin -----------------------------------------------------
@@ -79,22 +93,24 @@ in
     meta.description = "Claude Code native CLI (pinned Anthropic release, Bun single-file executable)";
   };
 
-  # --- spex: built from the public spexmachina repo ----------------------------
-  # buildGoModule under the pinned nixpkgs (25.11 -> go 1.25.10). rev is main's
-  # HEAD at pin time; bump rev + src sha256 (and re-derive vendorHash) to ship a
-  # newer spex. Verified: builds AND `spex --help` runs under go 1.25.10.
-  spex = final.buildGoModule {
+  # --- spex: prebuilt signed release from the spexmachina repo ------------------
+  # v0.1.0 is spexmachina's first tagged release, so the box installs the published
+  # binary instead of building the repo at a rev. The asset is a STATICALLY linked
+  # Go ELF (no interpreter, no NEEDED libs), so unlike br it needs no
+  # autoPatchelfHook and no buildInputs — unpack and install.
+  # To ship a newer spex: bump spexVersion + BOTH hashes above from the release's
+  # manifest.json, and mirror the same values into ~/.local/share/versions.json
+  # (the manifest of record — nothing reads it automatically; see its spex note).
+  spex = final.stdenv.mkDerivation {
     pname = "spex";
-    version = "0-unstable";
-    src = final.fetchFromGitHub {
-      owner = "dmitriyb";
-      repo = "spexmachina";
-      rev = "5854f7fa4f4bb1b3120590deaa6950b41d41c94b";   # main post-#309: `registered` event parses, cleanup task id reaches its removed node
-      sha256 = "0gzy24xbj5k46qgjd2246gffvgh6kypdd9b54al1zi02mrjl84nw";
+    version = spexVersion;
+    src = final.fetchurl {
+      url = "https://github.com/dmitriyb/spexmachina/releases/download/v${spexVersion}/spex_${spexVersion}_linux_${spexArch}.tar.gz";
+      sha256 = spexSha256.${spexArch};
     };
-    vendorHash = "sha256-hiE+LAr6gsCyMKq+Z3FkJitSW4GGTjyMCL5F6BbTVgs=";   # unchanged by the 5854f7f bump (go.mod/go.sum identical)
-    subPackages = [ "cmd/spex" ];
-    meta.description = "Spex Machina structural spec CLI";
+    sourceRoot = ".";                               # tarball holds LICENSE/README.md/spex at the root
+    installPhase = ''install -Dm755 spex "$out/bin/spex"'';
+    meta.description = "Spex Machina structural spec CLI (pinned signed release)";
   };
 
   # --- br (beads_rust): prebuilt glibc release, ELF autopatched ----------------
