@@ -1,0 +1,7 @@
+# hooks library — declared in an include (not inline in orchestrator.yaml)
+# deliberately: paths here resolve relative to THIS file at include time;
+# declared inline they reach docker unresolved and the bind mount fails with
+# "host path is relative".
+hooks:
+  task-context: {path: ./hooks/task-context}   # context: FABER_INPUT_TASK -> CONTEXT.md
+  setup-goose:  {path: ./hooks/setup-goose}    # prelude: write ~/.config/goose/config.yaml (runtime home; image content does not survive)

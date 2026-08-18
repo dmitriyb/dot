@@ -36,3 +36,6 @@ __pycache__/
 # nix-build default output symlinks (gate-image.nix / egress-image.nix)
 result
 result-*
+
+# goose-local scratch: runtime workspace mounted into the container
+docker/goose-local/workspace/

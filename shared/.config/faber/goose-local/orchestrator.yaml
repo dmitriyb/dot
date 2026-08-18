@@ -1,0 +1,72 @@
+version: 1
+
+# goose-local — scratch faber project: a goose box against a local-model
+# endpoint on the container host (LM Studio serving qwen/qwen3.8-27b). Phase B
+# of the local-agents test: proves faber 0.3.0's declarative invoke profile
+# drives a non-Claude harness end to end. Single-file assembly on purpose —
+# this is a playground, not a component library (see spexmachina/ for that).
+#
+# Run from THIS directory:
+#   faber validate --config orchestrator.yaml [--emit-ir]
+#   faber build    --config orchestrator.yaml
+#   faber run hello-flow --config orchestrator.yaml --param task='...'
+#
+# Deliberately NO network/remote/credentials/identities substrate: the box runs
+# on docker's default bridge so host.docker.internal reaches the inference
+# server, and the API key is a dummy (LM Studio ignores it). None of the
+# spexmachina egress/portitor invariants apply here.
+
+invoke_profiles:
+  goose:
+    subcommand: [run]
+    prompt_flag: "-t"
+    skill_mode: prefix
+    prompt_template: "{skill}\n\n{body}{extra}"
+    # --no-session: ephemeral box, no session DB to keep. --max-turns: a local
+    # model that talks itself into a corner must stop, not loop (first trial
+    # run tried to hand-compile a C downloader for a missing interpreter).
+    fixed_flags: ["--no-session", "--max-turns", "25"]
+    # goose has no effort flag; an empty effort_flag means "engine default"
+    # (claude's --effort, which goose rejects with exit 2). Route the mandatory
+    # template effort through goose's --system as an advisory instruction.
+    effort_flag: "--system"
+
+templates:
+  hello:
+    image: goose-box
+    run:
+      resources: {memory: 2g, cpus: 2}
+      env:
+        FABER_AGENT_CLI: goose
+        GOOSE_PROVIDER: openai
+        GOOSE_MODEL: qwen/qwen3.8-27b
+        GOOSE_MODE: auto
+        OPENAI_HOST: http://host.docker.internal:1234
+        OPENAI_BASE_PATH: v1/chat/completions
+        OPENAI_API_KEY: lm-studio        # dummy; LM Studio does not check it
+        GOOSE_DISABLE_KEYRING: "1"
+    skill: hello
+    model: qwen/qwen3.8-27b
+    effort: "Reasoning effort: low."
+    invoke:
+      profile: goose
+    hooks:
+      context: task-context
+      prelude: setup-goose
+    inputs:
+      task: {type: string, required: true}
+    output:
+      result: {type: string, required: true}
+
+include:
+  - images.yaml   # goose-box (overlay path resolves relative to the include file)
+  - hooks.yaml    # task-context (paths resolve relative to the include file)
+
+workflows:
+  hello-flow:
+    params:
+      task: {type: string, required: true}
+    steps:
+      - id: hello
+        use: hello
+        with: {task: "${params.task}"}

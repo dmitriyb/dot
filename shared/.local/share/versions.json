@@ -61,6 +61,6 @@
     "sha256": "0ln4yw7z3g9lb0x081hc0pd2j1wsx2qqf6bgmwwvdbkcl4bcy1dp",
     "channel": "nixos-25.11",
     "note": "fetchTarball hash (base32) for the nix-built gate + egress images. Mirrors the box pin in the faber images.yaml files — keep them in sync (that one is read by faber, not this manifest).",
-    "consumers": ["nix-gate", "nix-egress"]
+    "consumers": ["nix-gate", "nix-egress", "nix-goose-scratch"]
   }
 }

@@ -1,0 +1,14 @@
+# images library — declared in an include (not inline in orchestrator.yaml)
+# deliberately: ./overlay.nix resolves relative to THIS file at include time;
+# declared inline it is opened relative to the caller's CWD and preflight fails.
+images:
+  goose-box:
+    # goose-cli resolves natively in the pin (1.13.1). python3: the agent's
+    # working interpreter — without one the model improvises destructively
+    # rather than reporting the gap. box-etc: getpwuid after the uid drop.
+    packages: [goose-cli, git, bash, coreutils, gnused, gnugrep, gawk, findutils, diffutils, jq, cacert, python3, box-etc]
+    overlay: ./overlay.nix
+    # Same pin as spexmachina images.yaml and versions.json — keep in sync.
+    pin:
+      rev: b6018f87da91d19d0ab4cf979885689b469cdd41
+      sha256: sha256:0ln4yw7z3g9lb0x081hc0pd2j1wsx2qqf6bgmwwvdbkcl4bcy1dp
