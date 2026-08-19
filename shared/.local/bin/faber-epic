@@ -2,7 +2,7 @@
 # faber-epic — run a faber epic against a gate instance from ONE per-instance
 # manifest, so the invocation is just: project + epic id.
 #
-#   faber-epic <project> <epic-id> [-- <extra faber-stack up flags>]
+#   faber-epic <project> <epic-id> [--no-local] [-- <extra faber-stack up flags>]
 #
 # <project> is a name under ~/.config/faber (e.g. spexmachina) or a path to a
 # project dir. It reads <project>/stack.json — a host-local, GITIGNORED file
@@ -14,15 +14,23 @@
 # faber-stack CONVERGES on every up (a flag omitted there is silently dropped),
 # so this can't half-specify it. Extra flags after `--` (e.g. --force-portitor-
 # rebuild) are forwarded to `faber-stack up`.
+#
+# Local models: when <project>/local-llm.json exists, the declared model is
+# stood up via `llm-local up` (LM Studio load + serve + tool-calling preflight
+# + the <instance>-llm sidecar) between steps 1 and 2 — the project data
+# decides; --no-local skips it.
 set -euo pipefail
 
 die() { echo "faber-epic: $*" >&2; exit 1; }
-usage() { sed -n '2,16p' "$0" | sed 's/^# \{0,1\}//'; exit "${1:-2}"; }
+usage() { sed -n '2,21p' "$0" | sed 's/^# \{0,1\}//'; exit "${1:-2}"; }
 
 [ $# -ge 1 ] || usage 2
 case "$1" in -h|--help) usage 0 ;; esac
 [ $# -ge 2 ] || usage 2
 project_arg="$1"; epic="$2"; shift 2
+
+no_local=false
+if [ "${1:-}" = "--no-local" ]; then no_local=true; shift; fi
 
 up_extra=()
 if [ $# -gt 0 ]; then
@@ -78,6 +86,16 @@ role-keys --json \
 	| faber-stack up --instance "$instance" --slug "$slug" --pat "$pat_service" \
 		--project "$project" "${allow_flags[@]}" --commit-email "$commit_email" \
 		--build "${up_extra[@]}"
+
+# 1b) local-model bring-up — the PROJECT decides. A -li project carries
+#     local-llm.json; llm-local loads/serves the model, gates on a tool-calling
+#     preflight (fail here, before any paid boxes), and joins the sidecar to
+#     the instance network faber-stack just converged.
+if [ -f "$project/local-llm.json" ] && ! $no_local; then
+	command -v llm-local >/dev/null || die "project declares local-llm.json but llm-local is not on PATH"
+	echo "faber-epic: local model bring-up (llm-local up)" >&2
+	llm-local up --project "$project" --instance "$instance"
+fi
 
 # 2) run the epic. faber resolves the config's RELATIVE refs (host_key_file
 #    ./keys/..., the .faber/ run dir) against CWD, so cd into the project first —

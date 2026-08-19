@@ -1,0 +1,97 @@
+#!/usr/bin/env bash
+# llm-local — stand up the host-side local model a faber -li project declares.
+#
+#   llm-local up --project <dir> --instance <name>
+#
+# Reads <project>/local-llm.json (committed project data, not host state):
+#   {"model": "qwen/qwen3.8-27b", "port": 1234, "context_length": 32768, "sidecar": true}
+#
+# Steps, all idempotent:
+#   1. lms server start (LM Studio daemon on the declared port)
+#   2. lms load <model> --context-length <n>  — skipped when already loaded
+#   3. wait until GET /v1/models lists the model id
+#   4. tool-calling preflight: one chat/completions call with a dummy tool MUST
+#      return non-null tool_calls — an agent is useless against this endpoint
+#      otherwise, so fail HERE, before any paid boxes launch
+#   5. sidecar==true: llm-sidecar up --instance <name> --port <port>
+#      (requires the <name>-net network, i.e. run AFTER faber-stack up)
+#
+# Callers: faber-e2e and faber-epic auto-invoke this when the project carries
+# local-llm.json (their --no-local skips it).
+set -euo pipefail
+
+die() { echo "llm-local: $1" >&2; exit "${2:-1}"; }
+usage() { sed -n '2,20p' "$0" | sed 's/^# \{0,1\}//' >&2; exit "${1:-0}"; }
+
+[[ $# -gt 0 ]] || usage 2
+case "$1" in -h|--help) usage 0 ;; esac
+VERB="$1"; shift
+[[ "$VERB" == up ]] || die "unknown verb: $VERB (want up)" 2
+
+PROJECT=""; INSTANCE=""
+need_val() { [[ $# -ge 2 ]] || die "$1 needs a value" 2; }
+while [[ $# -gt 0 ]]; do
+	case "$1" in
+		--project)  need_val "$@"; PROJECT="$2"; shift 2 ;;
+		--instance) need_val "$@"; INSTANCE="$2"; shift 2 ;;
+		-h|--help)  usage 0 ;;
+		*)          die "unknown flag: $1 (see --help)" 2 ;;
+	esac
+done
+[[ -d "$PROJECT" ]] || die "missing or invalid --project dir: '$PROJECT'" 2
+
+MANIFEST="$PROJECT/local-llm.json"
+[[ -f "$MANIFEST" ]] || die "no local-llm.json in $PROJECT" 1
+for t in jq curl lms; do command -v "$t" >/dev/null || die "'$t' not found on PATH" 1; done
+jq empty "$MANIFEST" 2>/dev/null || die "not valid JSON: $MANIFEST" 1
+
+MODEL="$(jq -er '.model // empty' "$MANIFEST")" || die "manifest missing 'model'" 1
+# No -e on the defaulted fields: jq -e exits 1 when the OUTPUT is false/null,
+# which a legitimate "sidecar": false would trip under set -e.
+PORT="$(jq -r '.port // 1234' "$MANIFEST")"
+CTX="$(jq -r '.context_length // 32768' "$MANIFEST")"
+SIDECAR="$(jq -r '.sidecar // false' "$MANIFEST")"
+BASE="http://localhost:${PORT}"
+
+echo "llm-local: model=$MODEL port=$PORT context=$CTX sidecar=$SIDECAR" >&2
+
+# 1) server (idempotent; lms prints its own already-running notice)
+lms server start >/dev/null 2>&1 || die "lms server start failed" 1
+
+# 2) load unless already resident
+if lms ps 2>/dev/null | grep -qF "$MODEL"; then
+	echo "llm-local: $MODEL already loaded" >&2
+else
+	echo "llm-local: loading $MODEL (--context-length $CTX)" >&2
+	lms load "$MODEL" --context-length "$CTX" -y >/dev/null 2>&1 || die "lms load $MODEL failed" 1
+fi
+
+# 3) the API must list it
+for _ in $(seq 1 30); do
+	curl -sf -m 5 "$BASE/v1/models" 2>/dev/null | jq -er --arg m "$MODEL" \
+		'.data[]? | select(.id == $m) | .id' >/dev/null && break
+	sleep 2
+done
+curl -sf -m 5 "$BASE/v1/models" | jq -er --arg m "$MODEL" \
+	'.data[]? | select(.id == $m) | .id' >/dev/null \
+	|| die "$MODEL not served on $BASE after load" 1
+
+# 4) tool-calling preflight (one real generation; seconds on a warm model)
+echo "llm-local: tool-calling preflight" >&2
+TC="$(curl -sf -m 180 "$BASE/v1/chat/completions" -H 'Content-Type: application/json' -d "$(jq -cn --arg m "$MODEL" '{
+	model: $m,
+	messages: [{role: "user", content: "What is the weather in Paris? Use the tool."}],
+	tools: [{type: "function", "function": {name: "get_weather",
+		parameters: {type: "object", properties: {city: {type: "string"}}, required: ["city"]}}}]
+}')" | jq -r '.choices[0].message.tool_calls // empty')"
+[[ -n "$TC" ]] || die "preflight FAILED: $MODEL emitted no tool_calls — fix quant/template/runtime before spending agent runs" 1
+echo "llm-local: preflight ok — $MODEL emits tool_calls" >&2
+
+# 5) sidecar (needs the instance network -> run after faber-stack up)
+if [[ "$SIDECAR" == true ]]; then
+	[[ -n "$INSTANCE" ]] || die "manifest wants a sidecar but no --instance given" 2
+	command -v llm-sidecar >/dev/null || die "'llm-sidecar' not found on PATH" 1
+	llm-sidecar up --instance "$INSTANCE" --port "$PORT"
+fi
+
+echo "llm-local: up complete" >&2

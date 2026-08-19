@@ -67,7 +67,14 @@ Flags (all optional; defaults target the playground):
                      the playground module is stdlib-only, so no go proxy is needed)
   --force-portitor-rebuild  auto-confirm the gate-image rebuild if it lags the installed
                      portitor (forwarded to `faber-stack up`; for non-interactive runs)
+  --no-local         skip the local-model bring-up even when the --project dir
+                     carries a local-llm.json (see below)
   -h, --help         this help
+
+Local models: when the --project dir contains local-llm.json, `run` stands the
+declared model up via `llm-local up` (LM Studio load + serve + tool-calling
+preflight + the <instance>-llm sidecar) after `faber-stack up` and before
+`faber run` — the project data decides, no flag needed.
 
 Exit: 0 ok, 1 runtime, 2 usage.
 EOF
@@ -90,6 +97,7 @@ TAG="playground-seed"
 COMMIT_EMAIL="dvbozhko@gmail.com"
 ALLOW=()
 FORCE_REBUILD=false
+NO_LOCAL=false
 
 need_val() { [[ $# -ge 2 ]] || die "$1 needs a value" 2; }
 while [[ $# -gt 0 ]]; do
@@ -104,6 +112,7 @@ while [[ $# -gt 0 ]]; do
 		--commit-email) need_val "$@"; COMMIT_EMAIL="$2"; shift 2 ;;
 		--allow)        need_val "$@"; ALLOW+=("$2"); shift 2 ;;
 		--force-portitor-rebuild) FORCE_REBUILD=true; shift ;;
+		--no-local)     NO_LOCAL=true; shift ;;
 		-h|--help)      usage 0 ;;
 		*)              die "unknown flag: $1 (see --help)" 2 ;;
 	esac
@@ -241,6 +250,16 @@ do_run() {
 		| faber-stack up --instance "$INSTANCE" --slug "$SLUG" --pat "$PAT" --project "$PROJECT" \
 			--commit-email "$COMMIT_EMAIL" ${allow_flags[@]+"${allow_flags[@]}"} ${force_flag[@]+"${force_flag[@]}"} --build \
 		|| die "faber-stack up failed" 1
+
+	# Local-model bring-up: the PROJECT decides. A -li project carries
+	# local-llm.json; llm-local loads/serves the model, gates on a tool-calling
+	# preflight (fail here, before any paid boxes), and joins the sidecar to the
+	# instance network faber-stack just converged.
+	if [[ -f "$PROJECT/local-llm.json" ]] && ! $NO_LOCAL; then
+		command -v llm-local >/dev/null 2>&1 || die "project declares local-llm.json but llm-local is not on PATH" 1
+		echo "faber-e2e: run — local model bring-up (llm-local up)"
+		llm-local up --project "$PROJECT" --instance "$INSTANCE" || die "llm-local up failed" 1
+	fi
 
 	echo "faber-e2e: run — faber run epic (epic=${EPIC}); this costs real agent usage"
 	# Run faber FROM the project dir: orchestrator.yaml's relative paths — notably

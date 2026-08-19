@@ -10,25 +10,15 @@ sonnet/low, deterministic postlude-only).
 Design rationale (sidecar, goose-agent wrapper, skill delivery, open items):
 see ../spexmachina-li/README.md — identical apart from instance names.
 
-## Run (COSTS real usage on the claude side; local model must be serving)
+## Run (COSTS real usage on the claude side)
 
 ```sh
-lms load qwen/qwen3.8-27b --context-length 32768 && lms server start
-faber-e2e reset
-faber-e2e run --project ~/.config/faber/faber-stack-service-li   # runs faber-stack up first
-llm-sidecar up --instance faber-stack-service                    # after the stack exists
-faber-e2e assert
-```
-
-NOTE the ordering wrinkle: `llm-sidecar up` needs the instance network, which
-`faber-e2e run` creates via `faber-stack up` — on a FIRST run, either run
-`faber-stack up` once beforehand and then the sidecar, or accept that the
-implement boxes fail until the sidecar is up. Cleanest first run:
-
-```sh
-role-keys --json | faber-stack up --instance faber-stack-service \
-  --slug dvb-service/faber-stack-service --pat service-bot/dvb-service \
-  --project ~/.config/faber/faber-stack-service-li --commit-email <email> --build
-llm-sidecar up --instance faber-stack-service
 faber-e2e full --project ~/.config/faber/faber-stack-service-li
 ```
+
+That is the whole sequence: `run` sees this project's `local-llm.json` and
+stands the model up itself via `llm-local up` — LM Studio load + serve, a
+tool-calling preflight that fails BEFORE any paid boxes launch, and the
+`faber-stack-service-llm` sidecar joined to the instance network right after
+`faber-stack up` creates it. `--no-local` skips the bring-up (e.g. model
+already serving and verified).

@@ -1,0 +1,6 @@
+{
+  "model": "qwen/qwen3.8-27b",
+  "port": 1234,
+  "context_length": 32768,
+  "sidecar": true
+}

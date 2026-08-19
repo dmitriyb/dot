@@ -9,11 +9,15 @@ images and the templates.
 
 ## Moving parts on top of the base stack
 
-1. LM Studio serving the model on host :1234
-   (`lms load qwen/qwen3.8-27b --context-length 32768`, `lms server start`).
-2. `llm-sidecar up --instance spex` — a socat bridge on spex-net + the docker
-   bridge; boxes reach the endpoint as `http://spex-llm:1234` (the internal net
-   cannot reach the host, and the egress proxy is CONNECT-to-443-only).
+1. LM Studio serving the model on host :1234 — declared in ./local-llm.json
+   and stood up automatically by `faber-epic` / `faber-e2e` via `llm-local up`
+   (load + serve + a tool-calling preflight that fails before any paid boxes
+   launch); `--no-local` skips it, manual equivalent:
+   `llm-local up --project . --instance spex`.
+2. `llm-sidecar up --instance spex` (part of the same bring-up) — a socat
+   bridge on spex-net + the docker bridge; boxes reach the endpoint as
+   `http://spex-llm:1234` (the internal net cannot reach the host, and the
+   egress proxy is CONNECT-to-443-only).
 3. The `goose-agent` wrapper in ./overlay.nix — writes the goose config
    (developer extension on, `dynamic_task` OFF) at exec time, because faber-box
    creates the home fresh and the base preludes are single-file mounts that
@@ -26,10 +30,20 @@ images and the templates.
 
 ## Run
 
+Epic, one command (needs a gitignored ./stack.json — copy
+../spexmachina/stack.example.json; same instance `spex`):
+
+```sh
+faber-epic spexmachina-li <epic-id>
+```
+
+Single bead, manual:
+
 ```sh
 cd ~/.config/faber/spexmachina-li     # substrate paths are CWD-anchored
 faber validate --config "$PWD/orchestrator.yaml"
 faber build    --config "$PWD/orchestrator.yaml"
+llm-local up --project "$PWD" --instance spex   # model + preflight + sidecar
 faber run bead --config "$PWD/orchestrator.yaml" --param repo=spexmachina --param bead=<id>
 ```
 
