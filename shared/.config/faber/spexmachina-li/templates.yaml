@@ -1,0 +1,158 @@
+# templates library — the spexmachina-li divergence point. Hooks, skills and
+# workflows are the base project's (referenced from orchestrator.yaml); only
+# the agent bindings change:
+#   implement / implement-next / fix  ->  goose + local qwen (goose-spex-box)
+#   review / merge                    ->  claude opus, high effort (spex-box,
+#                                         unchanged from ../spexmachina)
+#
+# The goose env block: PORTITOR_HOST as in the base; GOOSE_*/OPENAI_* wire the
+# OpenAI-compatible endpoint published on spex-net by `llm-sidecar up
+# --instance spex` (OPENAI_API_KEY is a dummy — LM Studio does not check it);
+# GOOSE_DISABLE_KEYRING because the box has no keyring. The goose config file
+# itself (extensions; dynamic_task off) is pinned by the goose-agent wrapper in
+# ./overlay.nix, not by env.
+
+templates:
+  implement:
+    image: goose-spex-box
+    identity: implementer
+    run:
+      resources: {memory: 8g, cpus: 4}
+      env:
+        FABER_AGENT_CLI: goose
+        PORTITOR_HOST: portitor-spex
+        GOOSE_PROVIDER: openai
+        GOOSE_MODEL: qwen/qwen3.8-27b
+        GOOSE_MODE: auto
+        OPENAI_HOST: http://spex-llm:1234
+        OPENAI_BASE_PATH: v1/chat/completions
+        OPENAI_API_KEY: lm-studio
+        GOOSE_DISABLE_KEYRING: "1"
+    skill: implement
+    model: qwen/qwen3.8-27b
+    effort: "Reasoning effort: high."
+    invoke:
+      profile: goose
+    skills: [implement, go-expert]
+    skills_link: .claude/skills          # kept: the skill texts reference ~/.claude/skills/... paths
+    hooks:
+      context: gather-context
+      prelude: claim-bead
+      postlude: post-implement
+      on_failure: release-bead
+    inputs:
+      repo: {type: string, required: true}
+      bead: {type: string, required: true}
+    output:
+      branch: {type: string, required: true}
+      pr:     {type: int,    required: true}
+
+  implement-next:
+    image: goose-spex-box
+    identity: implementer
+    run:
+      resources: {memory: 8g, cpus: 4}
+      env:
+        FABER_AGENT_CLI: goose
+        PORTITOR_HOST: portitor-spex
+        GOOSE_PROVIDER: openai
+        GOOSE_MODEL: qwen/qwen3.8-27b
+        GOOSE_MODE: auto
+        OPENAI_HOST: http://spex-llm:1234
+        OPENAI_BASE_PATH: v1/chat/completions
+        OPENAI_API_KEY: lm-studio
+        GOOSE_DISABLE_KEYRING: "1"
+    skill: implement
+    model: qwen/qwen3.8-27b
+    effort: "Reasoning effort: high."
+    invoke:
+      profile: goose
+    skills: [implement, go-expert]
+    skills_link: .claude/skills
+    hooks:
+      context: next-bead-context
+      prelude: claim-next-bead
+      postlude: post-implement
+      on_failure: release-bead
+    inputs:
+      repo: {type: string, required: true}
+      epic: {type: string, required: true}
+    output:
+      done:   {type: bool,   required: true}
+      branch: {type: string}
+      pr:     {type: int}
+      halt_reason: {type: string}
+      drift_files: {type: string}
+
+  review:
+    image: spex-box
+    identity: reviewer
+    run:
+      env: {FABER_AGENT_CLI: claude, PORTITOR_HOST: portitor-spex}
+    skill: review
+    model: claude-opus-5
+    effort: high
+    skills: [review, go-expert]
+    skills_link: .claude/skills
+    hooks:
+      context: fetch-pr
+      postlude: post-review
+    inputs:
+      repo: {type: string, required: true}
+      pr:   {type: int,    required: true}
+    output:
+      verdict: {type: string, enum: [approved, changes], required: true}
+
+  fix:
+    image: goose-spex-box
+    identity: implementer
+    run:
+      env:
+        FABER_AGENT_CLI: goose
+        PORTITOR_HOST: portitor-spex
+        GOOSE_PROVIDER: openai
+        GOOSE_MODEL: qwen/qwen3.8-27b
+        GOOSE_MODE: auto
+        OPENAI_HOST: http://spex-llm:1234
+        OPENAI_BASE_PATH: v1/chat/completions
+        OPENAI_API_KEY: lm-studio
+        GOOSE_DISABLE_KEYRING: "1"
+    skill: fix
+    model: qwen/qwen3.8-27b
+    effort: "Reasoning effort: high."
+    invoke:
+      profile: goose
+    skills: [fix, go-expert]
+    skills_link: .claude/skills
+    hooks:
+      context: fetch-pr
+      prelude: reopen-bead
+      postlude: post-answers
+    inputs:
+      repo: {type: string, required: true}
+      pr:   {type: int,    required: true}
+    output:
+      status: {type: string, required: true}
+
+  merge:
+    image: spex-box
+    identity: merger
+    run:
+      env: {FABER_AGENT_CLI: claude, PORTITOR_HOST: portitor-spex,
+            CHECKS_CEILING_SECONDS: "720", CHECKS_POLL_SECONDS: "10",
+            CHECKS_APPEAR_SECONDS: "60"}
+    skill: merge
+    model: claude-opus-5
+    effort: high
+    agent_optional: true
+    skills: [merge]
+    skills_link: .claude/skills
+    hooks:
+      prelude: wait-checks
+      postlude: post-merge
+    inputs:
+      repo: {type: string, required: true}
+      pr:   {type: int,    required: true}
+    output:
+      merged: {type: bool, required: true}
+      blocked_by: {type: string}

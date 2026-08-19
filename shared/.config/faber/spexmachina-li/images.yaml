@@ -1,0 +1,24 @@
+# images library — two boxes, one per agent CLI.
+#
+# spex-box is byte-identical to ../spexmachina's (same packages, same pin, and
+# the overlay REFERENCED from there): identical toolset hash means the
+# already-built faber/review + faber/merge images are reused, not rebuilt.
+#
+# goose-spex-box swaps claude-code for goose-agent (a wrapper around the
+# nixpkgs goose-cli, see ./overlay.nix) — everything else matches so the two
+# boxes see the same repo toolchain.
+
+images:
+  spex-box:
+    packages: [git, openssh, go, gopls, coreutils, gnused, gnugrep, gawk, diffutils, findutils, bash, jq, cacert, spex, br, claude-code, portitor-client, box-etc]
+    overlay: ../spexmachina/overlay.nix
+    pin:
+      rev: b6018f87da91d19d0ab4cf979885689b469cdd41
+      sha256: sha256:0ln4yw7z3g9lb0x081hc0pd2j1wsx2qqf6bgmwwvdbkcl4bcy1dp
+
+  goose-spex-box:
+    packages: [git, openssh, go, gopls, coreutils, gnused, gnugrep, gawk, diffutils, findutils, bash, jq, cacert, spex, br, goose-agent, portitor-client, box-etc]
+    overlay: ./overlay.nix
+    pin:
+      rev: b6018f87da91d19d0ab4cf979885689b469cdd41
+      sha256: sha256:0ln4yw7z3g9lb0x081hc0pd2j1wsx2qqf6bgmwwvdbkcl4bcy1dp

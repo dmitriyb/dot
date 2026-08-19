@@ -1,0 +1,61 @@
+version: 1
+
+# faber-stack-service-li ("local implementer") playground assembly — the
+# faber-e2e acceptance target for the goose+local-model box chain BEFORE it
+# touches a real project. Same disposable repo, same gate instance, same
+# skills/hooks/workflows as ../faber-stack-service (referenced, not copied);
+# the writing roles (implement / implement-next / fix) run goose against the
+# local model, the judging roles (review / merge) stay on Claude Code exactly
+# as the base playground has them.
+#
+# Drive it with faber-e2e pointed at THIS project:
+#   llm-sidecar up --instance faber-stack-service          # after faber-stack up
+#   faber-e2e run --project ~/.config/faber/faber-stack-service-li
+#
+# (faber-e2e already runs faber from the --project dir, which the CWD-anchored
+# substrate paths below require.)
+
+# --- substrate (mirrors ../faber-stack-service, plus the llm sidecar) --------
+
+network:
+  name: faber-stack-service-net
+  proxy: http://faber-stack-service-egress:8888
+  # faber-stack-service-llm: the llm-sidecar container — goose's plain-HTTP
+  # endpoint must not be routed into the CONNECT-only egress proxy.
+  no_proxy: [portitor-faber-stack-service, faber-stack-service-llm, localhost, 127.0.0.1]
+
+remote:
+  url: ssh://git@portitor-faber-stack-service/srv/git
+  host_key_file: ../faber-stack-service/keys/portitor_host_key.pub
+
+credentials:
+  resolver: ../faber-stack-service/hooks/get-token
+  services:
+    claude_code_oauth_token:             # still needed: review + merge run Claude Code
+      mode: file
+
+identities:
+  implementer: {}
+  reviewer:    {}
+  merger:      {}
+
+# --- goose invocation profile (identical to spexmachina-li's; see the
+# --- goose-local scratch findings in ../goose-local/README.md) ---------------
+
+invoke_profiles:
+  goose:
+    subcommand: [run]
+    prompt_flag: "-t"
+    skill_mode: prefix
+    prompt_template: "Read the file /faber/skills/{skill}/SKILL.md and follow it as your operating instructions for this task.\n\n{body}{extra}"
+    fixed_flags: ["--no-session", "--max-turns", "50"]
+    effort_flag: "--system"
+
+# --- component libraries -----------------------------------------------------
+
+include:
+  - ../faber-stack-service/skills.yaml
+  - ../faber-stack-service/hooks.yaml
+  - ../faber-stack-service/workflows.yaml
+  - images.yaml
+  - templates.yaml

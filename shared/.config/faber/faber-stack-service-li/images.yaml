@@ -1,0 +1,22 @@
+# images library — two boxes, one per agent CLI.
+#
+# spex-box: byte-identical toolset to ../faber-stack-service (which itself
+# matches spexmachina on purpose) — same hash, already-built claude images are
+# reused. goose-spex-box: the overlay is REFERENCED from spexmachina-li so the
+# goose toolset hash — and thus the built image — is shared between the two li
+# projects, and the spex/br pin copy stays a third copy, not a fourth.
+
+images:
+  spex-box:
+    packages: [git, openssh, go, gopls, coreutils, gnused, gnugrep, gawk, diffutils, findutils, bash, jq, cacert, spex, br, claude-code, portitor-client, box-etc]
+    overlay: ../faber-stack-service/overlay.nix
+    pin:
+      rev: b6018f87da91d19d0ab4cf979885689b469cdd41
+      sha256: sha256:0ln4yw7z3g9lb0x081hc0pd2j1wsx2qqf6bgmwwvdbkcl4bcy1dp
+
+  goose-spex-box:
+    packages: [git, openssh, go, gopls, coreutils, gnused, gnugrep, gawk, diffutils, findutils, bash, jq, cacert, spex, br, goose-agent, portitor-client, box-etc]
+    overlay: ../spexmachina-li/overlay.nix
+    pin:
+      rev: b6018f87da91d19d0ab4cf979885689b469cdd41
+      sha256: sha256:0ln4yw7z3g9lb0x081hc0pd2j1wsx2qqf6bgmwwvdbkcl4bcy1dp

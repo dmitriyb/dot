@@ -1,0 +1,73 @@
+version: 1
+
+# spexmachina-li ("local implementer") project assembly. Same repo, same gate
+# instance, same skills/hooks/workflows as ../spexmachina — REFERENCED, not
+# copied — but the writing roles (implement / implement-next / fix) run goose
+# against a local model served on the host, while the judging roles (review /
+# merge) stay on Claude Code opus. Only the substrate, the invoke profile, the
+# images, and the templates live here.
+#
+# Prerequisites beyond the spexmachina stack (faber-stack up, same instance):
+#   - LM Studio serving qwen/qwen3.8-27b on host :1234 (lms load + lms server start)
+#   - llm-sidecar up --instance spex     # bridges spex-net -> host :1234
+#
+# Run from THIS directory (substrate paths below resolve against the process
+# CWD, not the --config dir — the same constraint faber-e2e documents):
+#   faber validate --config "$PWD/orchestrator.yaml" [--emit-ir]
+#   faber build    --config "$PWD/orchestrator.yaml"
+#   faber run bead --config "$PWD/orchestrator.yaml" --param repo=spexmachina --param bead=<id>
+
+# --- substrate (mirrors ../spexmachina, plus the llm sidecar) ----------------
+
+network:
+  name: spex-net                         # SAME stack instance as spexmachina
+  proxy: http://spex-egress:8888         # allow-list egress (api.anthropic.com only)
+  # spex-llm: the llm-sidecar container — goose's OpenAI-compatible endpoint
+  # must NOT be routed into the egress proxy (plain HTTP, CONNECT-only proxy).
+  no_proxy: [portitor-spex, spex-llm, localhost, 127.0.0.1]
+
+remote:
+  url: ssh://git@portitor-spex/srv/git
+  host_key_file: ../spexmachina/keys/portitor_host_key.pub   # single source: the base project's pin
+
+credentials:
+  resolver: ../spexmachina/hooks/get-token
+  services:
+    claude_code_oauth_token:             # still needed: review + merge run Claude Code
+      mode: file
+
+identities:
+  implementer: {}
+  reviewer:    {}
+  merger:      {}
+
+# --- goose invocation profile (probed against faber 0.3.0; see the goose-local
+# --- scratch findings in ../goose-local/README.md) ---------------------------
+
+invoke_profiles:
+  goose:
+    subcommand: [run]
+    prompt_flag: "-t"
+    skill_mode: prefix
+    # goose has no skill/slash-command mechanism; the skill rides as a read
+    # instruction against the read-only /faber/skills mount (the "prompt
+    # injection via the skills mount" route from the invoke-profile plan).
+    prompt_template: "Read the file /faber/skills/{skill}/SKILL.md and follow it as your operating instructions for this task.\n\n{body}{extra}"
+    # --no-session: ephemeral box. --max-turns: a local model that talks itself
+    # into a corner must stop, not loop.
+    fixed_flags: ["--no-session", "--max-turns", "50"]
+    # goose has no effort flag and an empty effort_flag falls back to the
+    # engine default (--effort, which goose rejects); route the mandatory
+    # template effort through --system as an advisory instruction.
+    effort_flag: "--system"
+
+# --- component libraries -----------------------------------------------------
+# skills / hooks / workflows are the base project's, by reference; their
+# internal paths resolve relative to the declaring file, i.e. ../spexmachina.
+
+include:
+  - ../spexmachina/skills.yaml
+  - ../spexmachina/hooks.yaml
+  - ../spexmachina/workflows.yaml
+  - images.yaml       # spex-box (base overlay) + goose-spex-box (local overlay)
+  - templates.yaml    # implement*/fix on goose+qwen; review/merge on claude opus
