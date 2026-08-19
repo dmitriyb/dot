@@ -51,19 +51,63 @@ MODEL="$(jq -er '.model // empty' "$MANIFEST")" || die "manifest missing 'model'
 PORT="$(jq -r '.port // 1234' "$MANIFEST")"
 CTX="$(jq -r '.context_length // 32768' "$MANIFEST")"
 SIDECAR="$(jq -r '.sidecar // false' "$MANIFEST")"
+PARALLEL="$(jq -r '.parallel // empty' "$MANIFEST")"
+MTP="$(jq -r '.speculative_mtp // false' "$MANIFEST")"
+MODEL_CONFIG="$(jq -r '.model_config // empty' "$MANIFEST")"
 BASE="http://localhost:${PORT}"
 
 echo "llm-local: model=$MODEL port=$PORT context=$CTX sidecar=$SIDECAR" >&2
 
+# 0) converge the LM Studio per-model config (template, sampling caps, draft
+#    settings). The manifest's model_config names a JSON under
+#    llm-local/model-configs/ — resolved via the stowed XDG path first, then
+#    relative to the manifest's real location in the repo (works pre-stow).
+#    Schema is LM Studio-internal (reverse-engineered 2026-08-19; the GUI
+#    rewrites the installed file if those settings are touched there — this
+#    convergence writes it back on the next run). A change forces a model
+#    reload below so it actually binds.
+NEED_RELOAD=false
+if [[ -n "$MODEL_CONFIG" ]]; then
+	src="${XDG_DATA_HOME:-$HOME/.local/share}/llm-local/model-configs/${MODEL_CONFIG}.json"
+	if [[ ! -f "$src" ]]; then
+		src="$(cd "$(dirname "$(realpath "$MANIFEST")")/../../.." && pwd)/.local/share/llm-local/model-configs/${MODEL_CONFIG}.json"
+	fi
+	[[ -f "$src" ]] || die "model_config '$MODEL_CONFIG' not found under llm-local/model-configs/" 1
+	jq empty "$src" 2>/dev/null || die "model_config is not valid JSON: $src" 1
+	lms_internal=""
+	for d in "$HOME/.cache/lm-studio/.internal" "$HOME/.lmstudio/.internal"; do
+		[[ -d "$d" ]] && { lms_internal="$d"; break; }
+	done
+	[[ -n "$lms_internal" ]] || die "no LM Studio internal dir found (.cache/lm-studio or .lmstudio)" 1
+	dst="$lms_internal/user-concrete-model-default-config/${MODEL}.json"
+	if ! cmp -s "$src" "$dst" 2>/dev/null; then
+		mkdir -p "$(dirname "$dst")"
+		[[ -f "$dst" ]] && cp "$dst" "$dst.bak"
+		cp "$src" "$dst"
+		NEED_RELOAD=true
+		echo "llm-local: installed model config '$MODEL_CONFIG' -> $dst (reload forced)" >&2
+	fi
+fi
+
 # 1) server (idempotent; lms prints its own already-running notice)
 lms server start >/dev/null 2>&1 || die "lms server start failed" 1
 
-# 2) load unless already resident
+# 2) load unless already resident. Known limit: a resident model keeps the
+# parameters it was loaded with — after changing context_length/parallel in the
+# manifest, `lms unload` once so the next run reloads with the new values.
+# A converged model_config DOES force the reload.
+if $NEED_RELOAD && lms ps 2>/dev/null | grep -qF "$MODEL"; then
+	echo "llm-local: unloading $MODEL to apply the new model config" >&2
+	lms unload "$MODEL" >/dev/null 2>&1 || die "lms unload $MODEL failed" 1
+fi
 if lms ps 2>/dev/null | grep -qF "$MODEL"; then
-	echo "llm-local: $MODEL already loaded" >&2
+	echo "llm-local: $MODEL already loaded (params from its original load)" >&2
 else
-	echo "llm-local: loading $MODEL (--context-length $CTX)" >&2
-	lms load "$MODEL" --context-length "$CTX" -y >/dev/null 2>&1 || die "lms load $MODEL failed" 1
+	load_args=(--context-length "$CTX")
+	[[ -n "$PARALLEL" ]] && load_args+=(--parallel "$PARALLEL")
+	[[ "$MTP" == true ]] && load_args+=(--speculative-draft-mtp)
+	echo "llm-local: loading $MODEL (${load_args[*]})" >&2
+	lms load "$MODEL" "${load_args[@]}" -y >/dev/null 2>&1 || die "lms load $MODEL failed" 1
 fi
 
 # 3) the API must list it

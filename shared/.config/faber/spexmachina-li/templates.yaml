@@ -30,7 +30,9 @@ templates:
         GOOSE_DISABLE_KEYRING: "1"
     skill: implement
     model: qwen/qwen3.8-27b
-    effort: "Reasoning effort: high."
+    # <|think_low|>: froggeric fixed-template reasoning level; needs that
+    # template + the GGUF variant (llama.cpp engine) — see faber-stack-service-li.
+    effort: "Follow the operating instructions exactly. Batch independent shell commands into a single call instead of one command per turn. <|think_low|>"
     invoke:
       profile: goose
     skills: [implement, go-expert]
@@ -64,9 +66,16 @@ templates:
         GOOSE_DISABLE_KEYRING: "1"
     skill: implement
     model: qwen/qwen3.8-27b
-    effort: "Reasoning effort: high."
+    # <|think_low|>: froggeric fixed-template reasoning level; needs that
+    # template + the GGUF variant (llama.cpp engine) — see faber-stack-service-li.
+    effort: "Follow the operating instructions exactly. Batch independent shell commands into a single call instead of one command per turn. <|think_low|>"
     invoke:
       profile: goose
+      # The epic-cycle output contract is the one instruction the local model
+      # kept missing while it lived only in the skill prose — pin it in the
+      # prompt. An inline override REPLACES the profile's prompt_template, so
+      # the skill-read instruction is repeated here.
+      prompt_template: "Read the file /faber/skills/{skill}/SKILL.md and follow it as your operating instructions for this task.\n\n{body}{extra}\n\nMANDATORY: your $FABER_RESULT_DIR/output.json must contain the key \"done\" (boolean; false on a work cycle, true only when CONTEXT.md declares a done-cycle) and, on a work cycle, also \"branch\" (string) and \"pr\" (number)."
     skills: [implement, go-expert]
     skills_link: .claude/skills
     hooks:
@@ -119,7 +128,9 @@ templates:
         GOOSE_DISABLE_KEYRING: "1"
     skill: fix
     model: qwen/qwen3.8-27b
-    effort: "Reasoning effort: high."
+    # <|think_low|>: froggeric fixed-template reasoning level; needs that
+    # template + the GGUF variant (llama.cpp engine) — see faber-stack-service-li.
+    effort: "Follow the operating instructions exactly. Batch independent shell commands into a single call instead of one command per turn. <|think_low|>"
     invoke:
       profile: goose
     skills: [fix, go-expert]

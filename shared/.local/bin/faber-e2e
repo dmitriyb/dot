@@ -69,6 +69,9 @@ Flags (all optional; defaults target the playground):
                      portitor (forwarded to `faber-stack up`; for non-interactive runs)
   --no-local         skip the local-model bring-up even when the --project dir
                      carries a local-llm.json (see below)
+  --sessions         forward --sessions to `faber run`: capture each box's
+                     harness transcript under the run dir (templates whose
+                     invocation profile names a session_dir)
   -h, --help         this help
 
 Local models: when the --project dir contains local-llm.json, `run` stands the
@@ -98,6 +101,7 @@ COMMIT_EMAIL="dvbozhko@gmail.com"
 ALLOW=()
 FORCE_REBUILD=false
 NO_LOCAL=false
+SESSIONS=false
 
 need_val() { [[ $# -ge 2 ]] || die "$1 needs a value" 2; }
 while [[ $# -gt 0 ]]; do
@@ -113,6 +117,7 @@ while [[ $# -gt 0 ]]; do
 		--allow)        need_val "$@"; ALLOW+=("$2"); shift 2 ;;
 		--force-portitor-rebuild) FORCE_REBUILD=true; shift ;;
 		--no-local)     NO_LOCAL=true; shift ;;
+		--sessions)     SESSIONS=true; shift ;;
 		-h|--help)      usage 0 ;;
 		*)              die "unknown flag: $1 (see --help)" 2 ;;
 	esac
@@ -267,7 +272,8 @@ do_run() {
 	# process CWD, not the (absolute) --config's dir. Without this cd the security
 	# module can't find the host-key pin and every gated box dies at launch. Also
 	# keeps faber's .faber/ run dir inside the (gitignored) project, not the CWD.
-	(cd "$PROJECT" && faber run epic --config "$cfg" --param repo="$REPO" --param epic="$EPIC") \
+	local sessions_flag=(); $SESSIONS && sessions_flag=(--sessions)
+	(cd "$PROJECT" && faber run epic --config "$cfg" --param repo="$REPO" --param epic="$EPIC" ${sessions_flag[@]+"${sessions_flag[@]}"}) \
 		|| die "faber run epic failed" 1
 	echo "faber-e2e: run complete — assert with: faber-e2e assert --instance $INSTANCE"
 }

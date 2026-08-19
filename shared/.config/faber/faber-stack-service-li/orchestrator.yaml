@@ -48,8 +48,13 @@ invoke_profiles:
     prompt_flag: "-t"
     skill_mode: prefix
     prompt_template: "Read the file /faber/skills/{skill}/SKILL.md and follow it as your operating instructions for this task.\n\n{body}{extra}"
-    fixed_flags: ["--no-session", "--max-turns", "50"]
+    # No --no-session: with `faber run --sessions` the transcript goose writes
+    # under session_dir is bind-captured per attempt on the host.
+    # --max-tool-repetitions: cut identical-call loops at the harness.
+    fixed_flags: ["--max-turns", "50", "--max-tool-repetitions", "3"]
     effort_flag: "--system"
+    session_dir: .local/share/goose/sessions
+    resume_argv: ["goose", "session", "--resume"]
 
 # --- component libraries -----------------------------------------------------
 

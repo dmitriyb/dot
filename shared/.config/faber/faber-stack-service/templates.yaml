@@ -18,6 +18,9 @@ templates:
     skill: implement
     model: claude-sonnet-5
     effort: high
+    invoke:   # inline over the built-in claude profile: session capture only
+      session_dir: .claude/projects
+      resume_argv: ["claude", "--continue"]
     skills: [implement, go-expert]
     skills_link: .claude/skills
     hooks:
@@ -47,6 +50,9 @@ templates:
     skill: implement
     model: claude-sonnet-5
     effort: high
+    invoke:   # inline over the built-in claude profile: session capture only
+      session_dir: .claude/projects
+      resume_argv: ["claude", "--continue"]
     skills: [implement, go-expert]
     skills_link: .claude/skills
     hooks:
@@ -72,6 +78,9 @@ templates:
     skill: review
     model: claude-opus-5
     effort: high
+    invoke:   # inline over the built-in claude profile: session capture only
+      session_dir: .claude/projects
+      resume_argv: ["claude", "--continue"]
     skills: [review, go-expert]
     skills_link: .claude/skills
     hooks:
@@ -91,6 +100,9 @@ templates:
     skill: fix
     model: claude-sonnet-5
     effort: high
+    invoke:   # inline over the built-in claude profile: session capture only
+      session_dir: .claude/projects
+      resume_argv: ["claude", "--continue"]
     skills: [fix, go-expert]
     skills_link: .claude/skills
     hooks:
@@ -110,6 +122,9 @@ templates:
     skill: merge
     model: claude-sonnet-5
     effort: low
+    invoke:   # inline over the built-in claude profile: session capture only
+      session_dir: .claude/projects
+      resume_argv: ["claude", "--continue"]
     skills: [merge]
     skills_link: .claude/skills
     hooks:

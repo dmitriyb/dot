@@ -37,9 +37,7 @@
         "name": "bead-closed",
         "command": [
           "/bin/sh",
-          "-c",
-          "git show \"$2\":.beads/issues.jsonl 2>/dev/null | grep -q '\"status\":\"closed\"'",
-          "bead-closed"
+          "/etc/portitor/checks/bead-closed.sh"
         ]
       }
     ]
