@@ -28,6 +28,7 @@ end
 
 set -gx SUDO_EDITOR "$EDITOR"
 set -gx BAT_THEME ansi
+set -gx YAZI_TERM kitty
 
 # GPG configuration
 if _have gpg-connect-agent
