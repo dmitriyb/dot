@@ -11,6 +11,7 @@ if not set -q CLAUDE_NO_TELEMETRY; and command -q uuidgen
     set -gx OTEL_METRICS_EXPORTER otlp
     set -gx OTEL_EXPORTER_OTLP_PROTOCOL grpc
     set -gx OTEL_EXPORTER_OTLP_ENDPOINT http://localhost:4317
+    set -gx OTEL_EXPORTER_OTLP_METRICS_TEMPORALITY_PREFERENCE cumulative
     set -gx OTEL_RESOURCE_ATTRIBUTES "account=personal,surface=host,service.instance.id="(uuidgen | tr '[:upper:]' '[:lower:]')
     set -gx OTEL_METRICS_INCLUDE_SESSION_ID false
     set -gx OTEL_METRICS_INCLUDE_ACCOUNT_UUID false

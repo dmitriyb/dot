@@ -230,6 +230,7 @@ Then store it:
       -e OTEL_METRICS_EXPORTER=otlp
       -e OTEL_EXPORTER_OTLP_PROTOCOL=grpc
       -e OTEL_EXPORTER_OTLP_ENDPOINT="${DOCKER_CLAUDE_OTEL_ENDPOINT:-http://host.docker.internal:4317}"
+      -e OTEL_EXPORTER_OTLP_METRICS_TEMPORALITY_PREFERENCE=cumulative
       -e OTEL_RESOURCE_ATTRIBUTES="account=personal,surface=dcp,service.instance.id=$(uuidgen | tr '[:upper:]' '[:lower:]')"
       -e OTEL_METRICS_INCLUDE_SESSION_ID=false
       -e OTEL_METRICS_INCLUDE_ACCOUNT_UUID=false
