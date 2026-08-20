@@ -217,6 +217,28 @@ Then store it:
   resolve_gh_args personal
   add_secret_mount claude_code_oauth_token "$TOKEN"
 
+  # Personal usage telemetry -> the per-workstation edge collector (otel-edge,
+  # localhost:4317 on the host), which buffers and forwards to the home
+  # collector. Aggregates only: session/account labels disabled; the per-run
+  # service.instance.id UUID keeps concurrent containers' cumulative counters
+  # from colliding (dashboards sum() over it). Opt out per run with
+  # DOCKER_CLAUDE_NO_TELEMETRY=1. See plans/claude-usage-otel-aggregation.md.
+  PERSONAL_OTEL_ARGS=()
+  if [[ -z "${DOCKER_CLAUDE_NO_TELEMETRY:-}" ]]; then
+    PERSONAL_OTEL_ARGS=(
+      -e CLAUDE_CODE_ENABLE_TELEMETRY=1
+      -e OTEL_METRICS_EXPORTER=otlp
+      -e OTEL_EXPORTER_OTLP_PROTOCOL=grpc
+      -e OTEL_EXPORTER_OTLP_ENDPOINT="${DOCKER_CLAUDE_OTEL_ENDPOINT:-http://host.docker.internal:4317}"
+      -e OTEL_RESOURCE_ATTRIBUTES="account=personal,surface=dcp,service.instance.id=$(uuidgen | tr '[:upper:]' '[:lower:]')"
+      -e OTEL_METRICS_INCLUDE_SESSION_ID=false
+      -e OTEL_METRICS_INCLUDE_ACCOUNT_UUID=false
+      -e OTEL_METRICS_INCLUDE_VERSION=false
+    )
+    # Linux: host.docker.internal is Docker-Desktop-only; map the host gateway.
+    [[ "$(uname)" != "Darwin" ]] && PERSONAL_OTEL_ARGS+=(--add-host=host.docker.internal:host-gateway)
+  fi
+
   if [[ "$AGENT_MODE" == true ]]; then
     # Agent mode: forward an ephemeral no-touch signing-only agent. Transport
     # uses GH_TOKEN over HTTPS (see entrypoint), so the key signs but can't auth.
@@ -233,6 +255,7 @@ Then store it:
       -v "$FISH_DATA_VOLUME":/home/dev/.local/share/fish \
       -v "$TMUX_DATA_VOLUME":/home/dev/.local/share/tmux \
       "${PERSONAL_AGENT_ARGS[@]}" \
+      ${PERSONAL_OTEL_ARGS[@]+"${PERSONAL_OTEL_ARGS[@]}"} \
       ${SECRET_ARGS[@]+"${SECRET_ARGS[@]}"} \
       "$PERSONAL_IMAGE"
     cleanup_secrets
@@ -249,6 +272,7 @@ Then store it:
     -v claude-tmux-data-personal:/home/dev/.local/share/tmux \
     "${SSH_AGENT_ARGS[@]}" \
     -p 127.0.0.1:2223:2223 \
+    ${PERSONAL_OTEL_ARGS[@]+"${PERSONAL_OTEL_ARGS[@]}"} \
     ${SECRET_ARGS[@]+"${SECRET_ARGS[@]}"} \
     "$PERSONAL_IMAGE"
   rc=$?

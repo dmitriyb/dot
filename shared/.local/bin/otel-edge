@@ -1,0 +1,67 @@
+#!/usr/bin/env bash
+# otel-edge — the per-workstation OTLP store-and-forward relay.
+#
+#   otel-edge up|down|status
+#
+# Producers on this machine push to localhost:4317 (gRPC) / 4318 (HTTP); the
+# edge buffers in a disk-backed queue and forwards upstream. Upstream endpoint
+# (host:port, gRPC): $OTEL_EDGE_UPSTREAM, default host.docker.internal:14317 —
+# i.e. an ssh tunnel opened as:
+#   ssh -N -L 14317:127.0.0.1:4317 securehost-proxy-token
+# (14317, NOT 4317: the edge itself owns 4317 on this machine.)
+# Image pinned in ~/.local/share/versions.json (otel-collector-contrib).
+set -euo pipefail
+
+die() { echo "otel-edge: $1" >&2; exit "${2:-1}"; }
+usage() { sed -n '2,13p' "$0" | sed 's/^# \{0,1\}//' >&2; exit "${1:-0}"; }
+
+[[ $# -gt 0 ]] || usage 2
+case "$1" in -h|--help) usage 0 ;; esac
+VERB="$1"
+case "$VERB" in up|down|status) ;; *) die "unknown verb: $VERB (up|down|status)" 2 ;; esac
+
+command -v jq >/dev/null || die "'jq' not found on PATH"
+command -v docker >/dev/null || die "'docker' not found on PATH"
+
+# Stowed XDG paths first; fall back to the repo tree this script really lives
+# in (works pre-stow — same pattern as llm-local).
+data="${XDG_DATA_HOME:-$HOME/.local/share}"
+repo_share="$(cd "$(dirname "$(realpath "$0")")/../share" && pwd)"
+versions="$data/versions.json"; [[ -f "$versions" ]] || versions="$repo_share/versions.json"
+config="$data/otel-edge/config.yaml"; [[ -f "$config" ]] || config="$repo_share/otel-edge/config.yaml"
+[[ -f "$versions" ]] || die "versions.json not found (stow the dot repo)"
+[[ -f "$config" ]] || die "otel-edge config.yaml not found (stow the dot repo)"
+tag="$(jq -er '."otel-collector-contrib".version' "$versions")" || die "no otel-collector-contrib pin in versions.json"
+image="otel/opentelemetry-collector-contrib:$tag"
+upstream="${OTEL_EDGE_UPSTREAM:-host.docker.internal:14317}"
+
+NAME=otel-edge
+case "$VERB" in
+	up)
+		if docker ps --format '{{.Names}}' | grep -qx "$NAME"; then
+			echo "otel-edge: already running"; exit 0
+		fi
+		docker rm -f "$NAME" >/dev/null 2>&1 || true
+		# The contrib image runs as uid 10001; a fresh named volume is
+		# root-owned. Hand it over once so the persistent queue can write.
+		docker run --rm -v otel-edge-queue:/q busybox chown -R 10001:10001 /q >/dev/null 2>&1 \
+			|| die "could not prepare the queue volume"
+		extra=()
+		[[ "$(uname)" != "Darwin" ]] && extra+=(--add-host=host.docker.internal:host-gateway)
+		docker run -d --name "$NAME" --restart always \
+			-p 127.0.0.1:4317:4317 -p 127.0.0.1:4318:4318 \
+			-v "$(dirname "$config"):/etc/otelcol:ro" \
+			-v otel-edge-queue:/var/lib/otelcol-queue \
+			-e OTEL_EDGE_UPSTREAM="$upstream" \
+			"${extra[@]}" \
+			"$image" --config=/etc/otelcol/config.yaml >/dev/null
+		echo "otel-edge: up — localhost:4317/4318 -> $upstream (queued, retrying)"
+		;;
+	down)
+		docker rm -f "$NAME" >/dev/null 2>&1 && echo "otel-edge: removed" || echo "otel-edge: not present"
+		;;
+	status)
+		docker ps --filter "name=^${NAME}$" --format '{{.Names}}  {{.Status}}  {{.Ports}}' | grep . \
+			|| { echo "otel-edge: not running"; exit 1; }
+		;;
+esac
