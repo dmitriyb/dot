@@ -4,6 +4,21 @@
   "context_length": 32768,
   "sidecar": true,
   "parallel": 1,
-  "speculative_mtp": true,
-  "model_config": "qwen-qwen3.8-27b"
+  "engine": "llama-server",
+  "gguf": "lmstudio-community/Qwen3.8-27B-GGUF/Qwen3.8-27B-Q4_K_M.gguf",
+  "chat_template": "qwen-qwen3.8-27b",
+  "server_args": [
+    "--reasoning",
+    "off",
+    "--reasoning-format",
+    "deepseek",
+    "--spec-type",
+    "draft-mtp",
+    "--spec-draft-n-max",
+    "2",
+    "--repeat-penalty",
+    "1.05",
+    "-n",
+    "4096"
+  ]
 }

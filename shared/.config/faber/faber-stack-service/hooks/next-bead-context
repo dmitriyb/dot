@@ -26,17 +26,12 @@ blocking="$(grep -l '"blocking"[[:space:]]*:[[:space:]]*true' drifts/drift-*.jso
 if [ -n "$blocking" ]; then
   files_csv="$(paste -sd, <<<"$blocking")"
   : > "$bundle/epic-done"
-  {
-    echo "# Epic $epic: halted — blocking drift report(s) on main"
-    echo
-    echo "The spec is disputed by: $files_csv"
-    echo "No bead may be implemented until /drift-fix (authoring loop) rules on it."
-    echo "Do exactly one thing and stop:"
-    echo
-    printf '    printf %s > "$FABER_RESULT_DIR/output.json"\n' "'{\"done\":true,\"halt_reason\":\"blocking_drift\",\"drift_files\":\"$files_csv\"}'"
-    echo
-    echo "Do not create branches, do not commit, do not push, do not touch beads."
-  } > "$bundle/CONTEXT.md"
+  # Machine-readable settle sentinel: the finish-implement postlude copies this
+  # to output.json verbatim. The agent is skipped on done-cycles (prelude sets
+  # FABER_SKIP_AGENT), so no prose instruction is needed.
+  jq -cn --arg files "$files_csv" \
+    '{done:true, halt_reason:"blocking_drift", drift_files:$files}' > "$bundle/epic-output.json"
+  echo "# Epic $epic: halted — blocking drift report(s) on main ($files_csv)" > "$bundle/CONTEXT.md"
   echo "next-bead-context: blocking drift ($files_csv); epic settles" >&2
   exit 0
 fi
@@ -71,16 +66,9 @@ done < <(br ready --json 2>/dev/null | jq -r '(.issues? // .) | .[]?.id')
 
 if [ -z "$bead" ]; then
   : > "$bundle/epic-done"
-  {
-    echo "# Epic $epic: no ready beads remain"
-    echo
-    echo "Every child bead of this epic is done, blocked, or in progress elsewhere."
-    echo "There is NOTHING to implement in this cycle. Do exactly one thing and stop:"
-    echo
-    echo '    printf '\''{"done":true}\n'\'' > "$FABER_RESULT_DIR/output.json"'
-    echo
-    echo "Do not create branches, do not commit, do not push, do not touch beads."
-  } > "$bundle/CONTEXT.md"
+  # Machine-readable settle sentinel; see the blocking-drift branch above.
+  printf '{"done":true}\n' > "$bundle/epic-output.json"
+  echo "# Epic $epic: no ready beads remain — done-cycle" > "$bundle/CONTEXT.md"
   echo "next-bead-context: epic $epic has no ready bead; done-cycle"
   exit 0
 fi

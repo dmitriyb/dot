@@ -12,8 +12,14 @@ die() { echo "claim-next-bead: $*" >&2; exit 1; }
 bundle="${FABER_BUNDLE_DIR:?FABER_BUNDLE_DIR is required}"
 
 if [ -f "$bundle/epic-done" ]; then
-  echo "EPIC_DONE=1" > "$bundle/bundle.env"
-  echo "claim-next-bead: done-cycle; nothing to claim"
+  {
+    echo "EPIC_DONE=1"
+    # Agent-skip request (honored on an agent_optional template): a done-cycle
+    # has no judgement work — finish-implement copies the context hook's
+    # epic-output.json sentinel to output.json.
+    echo "FABER_SKIP_AGENT=1"
+  } > "$bundle/bundle.env"
+  echo "claim-next-bead: done-cycle; nothing to claim, agent skipped"
   exit 0
 fi
 [ -s "$bundle/selected-bead" ] || die "no selected-bead and no epic-done marker — context hook contract broken"

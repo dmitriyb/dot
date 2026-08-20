@@ -1,0 +1,97 @@
+#!/bin/bash
+# postlude (implement / implement-next) — runs IN the box AFTER the agent,
+# BEFORE result extraction, cwd = the repo clone. Owns the entire post-work
+# ceremony the skill used to narrate, because every step of it is
+# deterministic:
+#
+#   1. done-cycle: copy the context hook's epic-output.json sentinel to
+#      output.json and stop (the agent was skipped; there is no PR).
+#   2. stage + signed commit of the agent's working tree (skipped when clean —
+#      the drift/replacement paths may legitimately change nothing beyond the
+#      claim commit).
+#   3. push the feature branch; the gate auto-opens the PR and reports its
+#      number on the push output (a re-push reports the existing PR). The
+#      commit SUBJECT is the bare bead id, so the PR title is exactly that.
+#   4. link the bead: br update --external-ref, signed commit, push.
+#   5. set the PR description from the agent-written pr-body.md (required,
+#      non-empty — the ONE part of the ceremony that is judgement, and it is
+#      judged by the agent, not here).
+#   6. write output.json: {branch, pr}, plus done:false on an epic cycle.
+#
+# The agent's remaining contract: the edited tree, pr-body.md, nothing else.
+set -euo pipefail
+
+die() { echo "finish-implement: $*" >&2; exit 1; }
+bundle="${FABER_BUNDLE_DIR:?FABER_BUNDLE_DIR is required}"
+result="${FABER_RESULT_DIR:?FABER_RESULT_DIR is required}"
+
+# --- 1. done-cycle -----------------------------------------------------------
+if [ -f "$bundle/epic-done" ]; then
+  [ -s "$bundle/epic-output.json" ] || die "epic-done marker without epic-output.json — context hook contract broken"
+  cp "$bundle/epic-output.json" "$result/output.json"
+  echo "finish-implement: done-cycle — sentinel output emitted, no PR"
+  exit 0
+fi
+
+[ -f "$bundle/bundle.env" ] || die "no bundle.env — prelude contract broken"
+# shellcheck disable=SC1091
+. "$bundle/bundle.env"
+: "${BEAD_ID:?bundle.env carries no BEAD_ID}"
+: "${BRANCH:?bundle.env carries no BRANCH}"
+
+# --- 2. stage + signed commit (only when the agent changed something) --------
+git add -A
+if ! git diff --cached --quiet; then
+  # Subject is the bare bead id: the gate titles the auto-opened PR from the
+  # head commit's subject, and the PR title must be exactly the bead id.
+  git commit -qS -m "$BEAD_ID" -m "implement $BEAD_ID" || die "signed work commit failed"
+  echo "finish-implement: committed the work tree ($BEAD_ID)"
+else
+  echo "finish-implement: working tree clean — nothing beyond the claim to commit"
+fi
+
+# --- 3. push; the gate reports the PR number ---------------------------------
+# An up-to-date push (the agent already pushed by itself — tolerated, not
+# assumed) triggers no gate report line; recover the PR number from the bead
+# link if the agent also linked, else force a ref update with a signed empty
+# commit so the gate reports it.
+push_out="$(git push origin "$BRANCH" 2>&1)" || { echo "$push_out" >&2; die "push refused by the gate"; }
+pr="$(sed -n 's/^remote: portitor: PR #\([0-9][0-9]*\).*/\1/p' <<<"$push_out" | head -n1)"
+if [ -z "$pr" ]; then
+  pr="$(br show "$BEAD_ID" --json 2>/dev/null | jq -r '.[0].external_ref // empty' | grep -oE '[0-9]+' | head -n1 || true)"
+  [ -n "$pr" ] && echo "finish-implement: up-to-date push; PR #$pr recovered from the bead link"
+fi
+if [ -z "$pr" ]; then
+  git commit -qS --allow-empty -m "$BEAD_ID" -m "gate nudge: elicit the PR report on an up-to-date branch" \
+    || die "signed nudge commit failed"
+  push_out="$(git push origin "$BRANCH" 2>&1)" || { echo "$push_out" >&2; die "nudge push refused by the gate"; }
+  pr="$(sed -n 's/^remote: portitor: PR #\([0-9][0-9]*\).*/\1/p' <<<"$push_out" | head -n1)"
+fi
+[ -n "$pr" ] || { echo "$push_out" >&2; die "cannot learn the PR number (no gate report, no bead link)"; }
+echo "finish-implement: pushed $BRANCH — PR #$pr"
+
+# --- 4. link the bead to the PR ----------------------------------------------
+if ! br show "$BEAD_ID" --json 2>/dev/null | jq -e --arg r "PR#$pr" '.[0].external_ref == $r' >/dev/null; then
+  br update "$BEAD_ID" --external-ref "PR#$pr" >/dev/null || die "br update --external-ref failed"
+  git add .beads/issues.jsonl
+  if ! git diff --cached --quiet; then
+    git commit -qS -m "$BEAD_ID: link PR#$pr" || die "signed link commit failed"
+    git push origin "$BRANCH" >/dev/null 2>&1 || die "push of the link commit refused"
+  fi
+  echo "finish-implement: linked $BEAD_ID -> PR#$pr"
+fi
+
+# --- 5. PR description from the agent's pr-body.md ---------------------------
+body="$result/pr-body.md"
+[ -f "$body" ] || die "pr-body.md is ABSENT — the agent must write the PR description body"
+[ -s "$body" ] || die "pr-body.md is EMPTY — refusing to set an empty PR description"
+portitor pr describe --pr "$pr" < "$body" || die "the gate refused pr describe on PR #$pr"
+echo "finish-implement: set PR #$pr description ($(wc -c < "$body" | tr -d ' ') bytes)"
+
+# --- 6. typed output ---------------------------------------------------------
+if [ -n "${FABER_INPUT_EPIC:-}" ]; then
+  jq -cn --arg b "$BRANCH" --argjson p "$pr" '{done:false, branch:$b, pr:$p}' > "$result/output.json"
+else
+  jq -cn --arg b "$BRANCH" --argjson p "$pr" '{branch:$b, pr:$p}' > "$result/output.json"
+fi
+echo "finish-implement: output.json emitted (branch=$BRANCH pr=$pr)"

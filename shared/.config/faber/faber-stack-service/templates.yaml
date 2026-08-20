@@ -4,9 +4,10 @@
 # is the project-flavored layer — workflows below reference these templates by
 # name only, staying project-agnostic.
 #
-# Every skill's last act is to write $FABER_RESULT_DIR/output.json with exactly
-# the fields declared in `output:` — that JSON is how faber scores the step and
-# feeds ${steps.<id>.<field>} to the next one.
+# output.json (the fields declared in `output:`) is how faber scores the step
+# and feeds ${steps.<step>.<field>} onward. For implement* it is written by the
+# finish-implement POSTLUDE (the ceremony is deterministic); review/fix/merge
+# skills still write it as their last act.
 
 templates:
   implement:
@@ -17,7 +18,10 @@ templates:
       env: {FABER_AGENT_CLI: claude, PORTITOR_HOST: portitor-faber-stack-service}  # PORTITOR_HOST: the gate container the pr/portitor client targets
     skill: implement
     model: claude-sonnet-5
-    effort: high
+    # medium: the spec leaves are transcription-grade (interfaces, algorithms,
+    # enumerated test scenarios) — the design reasoning happened at spec time;
+    # measured at high, ~80% of output tokens were thinking. Review stays high.
+    effort: medium
     invoke:   # inline over the built-in claude profile: session capture only
       session_dir: .claude/projects
       resume_argv: ["claude", "--continue"]
@@ -26,7 +30,7 @@ templates:
     hooks:
       context: gather-context      # bead + spec -> CONTEXT.md (read-only, default branch)
       prelude: claim-bead          # branch off origin/main + signed in_progress claim
-      postlude: post-implement     # pr-body.md -> portitor pr describe (sets the PR description, not a comment)
+      postlude: finish-implement   # commit -> push -> PR# -> bead link -> describe -> output.json (deterministic)
       on_failure: release-bead     # host-side: undo the claim if the step fails
     inputs:
       repo: {type: string, required: true}
@@ -49,16 +53,20 @@ templates:
       env: {FABER_AGENT_CLI: claude, PORTITOR_HOST: portitor-faber-stack-service}  # PORTITOR_HOST: the gate container the pr/portitor client targets
     skill: implement
     model: claude-sonnet-5
-    effort: high
+    # medium: the spec leaves are transcription-grade (interfaces, algorithms,
+    # enumerated test scenarios) — the design reasoning happened at spec time;
+    # measured at high, ~80% of output tokens were thinking. Review stays high.
+    effort: medium
     invoke:   # inline over the built-in claude profile: session capture only
       session_dir: .claude/projects
       resume_argv: ["claude", "--continue"]
+    agent_optional: true           # done-cycle: the prelude skips the agent (FABER_SKIP_AGENT); finish-implement emits the sentinel
     skills: [implement, go-expert]
     skills_link: .claude/skills
     hooks:
       context: next-bead-context   # next ready epic bead (or done-cycle) -> CONTEXT.md
       prelude: claim-next-bead     # branch off origin/main + signed in_progress claim
-      postlude: post-implement     # pr-body.md -> portitor pr describe (sets the PR description, not a comment)
+      postlude: finish-implement   # commit -> push -> PR# -> bead link -> describe -> output.json (deterministic)
       on_failure: release-bead     # host-side: logging no-op (claim dies with the box clone)
     inputs:
       repo: {type: string, required: true}
@@ -99,7 +107,10 @@ templates:
       env: {FABER_AGENT_CLI: claude, PORTITOR_HOST: portitor-faber-stack-service}  # PORTITOR_HOST: the gate container the pr/portitor client targets
     skill: fix
     model: claude-sonnet-5
-    effort: high
+    # medium: the spec leaves are transcription-grade (interfaces, algorithms,
+    # enumerated test scenarios) — the design reasoning happened at spec time;
+    # measured at high, ~80% of output tokens were thinking. Review stays high.
+    effort: medium
     invoke:   # inline over the built-in claude profile: session capture only
       session_dir: .claude/projects
       resume_argv: ["claude", "--continue"]

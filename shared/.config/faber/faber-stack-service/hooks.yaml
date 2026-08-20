@@ -16,5 +16,5 @@ hooks:
   post-answers:   {path: ./hooks/post-answers}          # postlude (fix): answers.json -> portitor pr reply per thread (deterministic; exact failure attribution)
   post-review:    {path: ./hooks/post-review}           # postlude (review): review.json -> portitor pr review --inline (gate records the verdict)
   post-merge:     {path: ./hooks/post-merge}            # postlude (merge): verify + retry + land-or-fail (deterministic; cycle fail-stops if unlanded)
-  post-implement: {path: ./hooks/post-implement}        # postlude (implement*): pr-body.md -> portitor pr describe (sets the PR description, not a comment)
+  finish-implement: {path: ./hooks/finish-implement}   # postlude (implement*): commit -> push -> PR# -> bead link -> describe -> output.json (all deterministic)
   release-bead:   {path: ./hooks/release-bead}          # on_failure (implement*): host-side, logging no-op
