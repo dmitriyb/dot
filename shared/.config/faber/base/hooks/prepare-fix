@@ -1,0 +1,112 @@
+#!/bin/bash
+# prelude hook (fix) — runs IN the box AFTER the context hook (which checked out
+# the PR branch) and BEFORE the agent, with the delegated implementer identity.
+# Owns everything mechanical the fixer used to be instructed to do by hand:
+#
+#   1. reopen the bead when it is closed (see below);
+#   2. merge the base branch in when this PR is behind it.
+#
+# (2) is here because it is the only place it CAN be. The merge step detects the
+# state — `blocked_by` is a declared output of that template — but its `merger`
+# identity is in portitor's identity_only_roles, so it cannot author a commit and
+# cannot move the branch. This step's identity can. An AGENT doing it would be an
+# agent running `git merge origin/<base>`, which decides nothing.
+#
+# Rebase is never an option: it rewrites history and the gate denies force
+# pushes. Merge is the only move, so there is no choice to delegate.
+#
+# The land blocker arrives as data ($FABER_INPUT_BLOCKED_BY: ci_red | stuck |
+# behind | dirty), bound at the ci-fix call sites only — a review-feedback cycle
+# has no land blocker and leaves it empty. Nothing re-derives it from the prose
+# of a PR comment.
+#
+# Reopens the bead when it is closed. This is an ENFORCEMENT mechanism, not
+# bookkeeping: merge_gate's `bead-closed` predicate refuses to land a PR whose
+# bead is not closed, and only the reviewer identity may close one (the semantic
+# content rule `bead-close-reviewer-only` denies a status transition to "closed"
+# for everyone else). So reopening here means the fix CANNOT land until a
+# reviewer has closed it again — the gate forces the re-review, rather than this
+# workflow being trusted to ask for one. Because it lives in the prelude, the
+# agent has no say in it.
+#
+# The `fix` template is used from two places and this must be correct in both:
+#   review-cycle/fix — the bead is still in_progress; this is a no-op.
+#   land/ci-fix      — the reviewer already closed it; this reopens it.
+#
+# The branch is named after the bead verbatim (claim-bead / claim-next-bead
+# create it that way), and the context hook has us checked out on it.
+set -euo pipefail
+
+die() { echo "prepare-fix: $*" >&2; exit 1; }
+bundle="${FABER_BUNDLE_DIR:?FABER_BUNDLE_DIR is required}"
+[ -f "$bundle/bundle.env" ] || die "no bundle.env — fetch-pr contract broken"
+# shellcheck disable=SC1091
+. "$bundle/bundle.env"
+blocked="${FABER_INPUT_BLOCKED_BY:-}"
+
+branch="$(git branch --show-current)" || die "cannot determine the current branch"
+[ -n "$branch" ] || die "detached HEAD; expected to be on the PR branch"
+
+# --- 1. reopen the bead when the reviewer already closed it ------------------
+br sync --import-only >/dev/null 2>&1 || true
+
+json="$(br show "$branch" --json 2>/dev/null || true)"
+if [ -z "$json" ] || [ "$(jq 'length' <<<"$json" 2>/dev/null || echo 0)" -eq 0 ]; then
+	# Not every PR branch is a bead branch; say so and leave the beads alone
+	# rather than guessing at an id. The merge below still applies.
+	echo "prepare-fix: branch '$branch' is not a known bead; nothing to reopen" >&2
+else
+	status="$(jq -r '.[0].status' <<<"$json")"
+	if [ "$status" != "closed" ]; then
+		echo "prepare-fix: bead $branch is '$status'; no reopen needed"
+	else
+		br update "$branch" --status in_progress >/dev/null \
+			|| die "br update $branch --status in_progress failed"
+		git add .beads/issues.jsonl
+		git commit -qS -m "$branch: reopen for follow-up fix (re-review required before landing)" \
+			|| die "signed reopen commit failed"
+		echo "prepare-fix: bead $branch reopened; a reviewer must close it again before merge_gate will land"
+	fi
+fi
+
+# --- 2. merge the base in when this PR is behind it --------------------------
+# Self-detecting, so it is correct in both callers: a review-feedback cycle is
+# usually already up to date and this is a no-op, while a land cycle blocked on
+# `behind` or `dirty` is exactly what it is for.
+base="${BASE:-main}"
+merge_state=none
+git fetch -q origin "$base" 2>/dev/null || true
+if ! git rev-parse --verify --quiet "origin/$base^{commit}" >/dev/null; then
+	echo "prepare-fix: origin/$base is unknown; skipping the base merge" >&2
+elif [ "$(git rev-list --count "HEAD..origin/$base" 2>/dev/null || echo 0)" -eq 0 ]; then
+	echo "prepare-fix: branch is up to date with origin/$base"
+else
+	# --gpg-sign explicitly: a merge commit is a commit, and signing is never
+	# optional here. Conflicts are LEFT IN THE TREE on purpose — resolving them
+	# is the one part of this that is judgement, and it belongs to the agent.
+	if git merge --no-edit --gpg-sign "origin/$base" >/dev/null 2>&1; then
+		merge_state=clean
+		echo "prepare-fix: merged origin/$base (clean)"
+	else
+		merge_state=conflicted
+		echo "prepare-fix: merging origin/$base CONFLICTED — handing the tree to the agent" >&2
+		{
+			echo
+			echo "## Merge conflict with \`$base\` — resolve it"
+			echo
+			echo "The base branch was merged in for you and it conflicted. The working tree"
+			echo "carries the conflict; these paths are unmerged:"
+			echo
+			git diff --name-only --diff-filter=U | sed 's/^/- /'
+		} >> "$bundle/CONTEXT.md"
+	fi
+fi
+
+# --- 3. skip the agent when nothing is left for it ---------------------------
+# ONLY on a pure `behind` cycle whose merge came out clean and which carries no
+# review threads: then the entire fix was `git merge`, already done above, and
+# an agent would have nothing to decide. `ci_red` and `dirty` always keep it.
+if [ "$blocked" = behind ] && [ "$merge_state" = clean ] && [ "${UNRESOLVED_THREADS:-0}" -eq 0 ]; then
+	echo "FABER_SKIP_AGENT=1" >> "$bundle/bundle.env"
+	echo "prepare-fix: blocked_by=behind resolved by the merge; agent skipped"
+fi

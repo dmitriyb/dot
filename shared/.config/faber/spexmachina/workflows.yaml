@@ -47,7 +47,10 @@ workflows:
             - id: ci-fix
               use: fix
               when: steps.merge.merged == false
-              with: {repo: "${params.repo}", pr: "${steps.implement.pr}"}
+              # blocked_by travels as typed data: prepare-fix merges the base in
+              # on `behind`/`dirty` (the merger identity cannot commit), and a
+              # clean `behind` needs no agent at all.
+              with: {repo: "${params.repo}", pr: "${steps.implement.pr}", blocked_by: "${steps.merge.blocked_by}"}
             - id: ci-review
               use: review
               when: steps.merge.merged == false
@@ -122,7 +125,7 @@ workflows:
                   - id: ci-fix
                     use: fix
                     when: steps.merge.merged == false
-                    with: {repo: "${params.repo}", pr: "${steps.implement.pr}"}
+                    with: {repo: "${params.repo}", pr: "${steps.implement.pr}", blocked_by: "${steps.merge.blocked_by}"}
                   - id: ci-review
                     use: review
                     when: steps.merge.merged == false

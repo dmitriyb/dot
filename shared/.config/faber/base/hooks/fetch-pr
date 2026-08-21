@@ -115,11 +115,13 @@ fi
 # implement-only side-effect convention (result phase verifies it exists on the
 # gateway). review/fix are already checked out on the PR branch below, so they
 # have no NEW branch to declare. MODE and BEAD_ID are plain sidecar values;
-# post-review reads BEAD_ID to attribute the close.
+# post-review reads BEAD_ID to attribute the close; prepare-fix reads BASE to
+# merge the base branch in when the PR is behind it.
 {
   echo "PR=$pr"
   echo "MODE=$mode"
   echo "UNRESOLVED_THREADS=$nthreads"
+  echo "BASE=$(jq -r '.baseRefName // "main"' <<<"$prjson")"
   [ -n "$bead" ] && echo "BEAD_ID=$bead"
 } > "$bundle/bundle.env"
 {

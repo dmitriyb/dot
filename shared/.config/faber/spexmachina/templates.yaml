@@ -93,15 +93,20 @@ templates:
     skill: fix
     model: claude-sonnet-5
     effort: high
-    skills: [fix, go-expert]
+    agent_optional: true           # prepare-fix may resolve a pure `behind` cycle by itself and skip the agent
+    skills: [fix, go-expert, implement]   # implement: the fix skill references its drift protocol rather than keeping a second copy
     skills_link: .claude/skills
     hooks:
       context: fetch-pr            # PR feedback + threads -> CONTEXT.md, pr.json, threads.json
-      prelude: reopen-bead         # reopen a closed bead so merge_gate forces re-review; no-op inside review-cycle
+      prelude: prepare-fix         # reopen a closed bead + merge the base in when behind; may skip the agent
       postlude: post-answers       # answers.json -> per-thread replies through the gate; needs faber with the postlude phase
     inputs:
       repo: {type: string, required: true}
       pr:   {type: int,    required: true}
+      # Bound at the ci-fix call sites only: a review-feedback cycle has no land
+      # blocker. The merge template already declares it as an output, so the
+      # value travels as typed data instead of being re-read out of a comment.
+      blocked_by: {type: string}
     output:
       status: {type: string, required: true}
 

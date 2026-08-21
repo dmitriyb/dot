@@ -131,15 +131,17 @@ templates:
     effort: "Follow the operating instructions exactly. Batch independent shell commands into a single call instead of one command per turn. <|think_low|>"
     invoke:
       profile: goose
-    skills: [fix, go-expert]
+    agent_optional: true           # prepare-fix may resolve a pure `behind` cycle by itself and skip the agent
+    skills: [fix, go-expert, implement]   # implement: the fix skill references its drift protocol rather than keeping a second copy
     skills_link: .claude/skills
     hooks:
       context: fetch-pr
-      prelude: reopen-bead
+      prelude: prepare-fix         # reopen a closed bead + merge the base in when behind
       postlude: post-answers
     inputs:
       repo: {type: string, required: true}
       pr:   {type: int,    required: true}
+      blocked_by: {type: string}   # bound at the ci-fix call sites only
     output:
       status: {type: string, required: true}
 

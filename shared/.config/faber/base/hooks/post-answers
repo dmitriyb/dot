@@ -11,8 +11,13 @@
 #   - fetch-pr wrote $FABER_BUNDLE_DIR/threads.json (the unresolved threads at
 #     context time) and UNRESOLVED_THREADS into bundle.env;
 #   - the fix skill wrote $FABER_RESULT_DIR/answers.json:
-#       {"replies": [{"thread": "<id>", "body": "<markdown>"}, ...]}
+#       {"replies": [{"thread": "<id>", "body": "<markdown>"}, ...],
+#        "comment": "<optional markdown for review-body items with no thread>"}
 #     answering EVERY thread listed in threads.json.
+#
+# It also owns the deterministic tail, as finish-implement does for implement:
+# the signed commit of the fixer's tree, the push, the PR-level comment, and
+# output.json. The agent's contract is the edited tree plus answers.json.
 set -euo pipefail
 
 die() { echo "post-answers: $*" >&2; exit 1; }
@@ -29,20 +34,62 @@ threads_file="$bundle/threads.json"
 [ -f "$threads_file" ] || die "no threads.json — fetch-pr contract broken (portitor without reviewThreads?)"
 nthreads="$(jq 'length' "$threads_file")"
 
+# --- commit + push the fix ---------------------------------------------------
+# BEFORE the answers are validated, deliberately: a reply saying "Fixed — ..."
+# must not be posted against unpushed work, and a contract violation in
+# answers.json must not throw away a correct fix. An agent that committed or
+# pushed on its own is tolerated (the `dirty` path legitimately does git work),
+# never assumed.
+# An unresolved conflict must never be committed. prepare-fix hands the agent a
+# conflicted tree on the `dirty` path; if the agent did not finish resolving it,
+# `git add -A` would happily stage the conflict markers and this would push them.
+if [ -n "$(git ls-files --unmerged)" ]; then
+  die "the working tree still has unmerged paths — the merge conflict was not resolved: $(git diff --name-only --diff-filter=U | tr '\n' ' ')"
+fi
+git add -A
+if git diff --cached --quiet; then
+  echo "post-answers: working tree clean — the agent committed its own fix, or there was nothing to change"
+else
+  git commit -qS -m "${BEAD_ID:-fix}: address review feedback" || die "signed fix commit failed"
+  echo "post-answers: committed the fixer's tree"
+fi
+git push origin HEAD >/dev/null 2>&1 || die "the gate refused the push (a rebase needs a force push the gate denies — merge the base in instead)"
+echo "post-answers: pushed $(git rev-parse --abbrev-ref HEAD)"
+
 answers="$result/answers.json"
 
+# Every success path ends here: the optional PR-level comment (review-body items
+# have no thread to reply into, and the agent must not post it itself — one
+# channel, one poster) and the step's own record. `status` is synthesized rather
+# than written by the agent: nothing downstream branches on it, and a summary
+# the agent writes can disagree with what was actually posted.
+emit() {
+  if [ -f "$answers" ]; then
+    body="$(jq -r '.comment // ""' "$answers")"
+    if [ -n "$body" ]; then
+      printf '%s\n' "$body" | portitor pr comment --pr "$pr" \
+        || die "the gate refused the PR-level comment on PR #$pr"
+      echo "post-answers: posted the PR-level comment on PR #$pr"
+    fi
+  fi
+  jq -cn --arg s "$1" '{status:$s}' > "$result/output.json"
+  echo "post-answers: output.json emitted ($1)"
+  exit 0
+}
+
 if [ ! -f "$answers" ]; then
-  [ "$nthreads" -eq 0 ] && { echo "post-answers: no unresolved threads, no answers file — nothing to post"; exit 0; }
-  die "answers.json is ABSENT but $nthreads unresolved thread(s) exist — the agent never wrote its answers"
+  [ "$nthreads" -eq 0 ] || die "answers.json is ABSENT but $nthreads unresolved thread(s) exist — the agent never wrote its answers"
+  emit "no review threads; the fix was committed and pushed"
 fi
 
-jq -e 'type == "object" and (.replies | type == "array")' "$answers" >/dev/null 2>&1 \
-  || die "answers.json is MALFORMED — want {\"replies\": [{\"thread\": id, \"body\": md}, ...]}"
+jq -e 'type == "object" and (.replies | type == "array")
+       and ((.comment // "") | type == "string")' "$answers" >/dev/null 2>&1 \
+  || die "answers.json is MALFORMED — want {\"replies\": [{\"thread\": id, \"body\": md}, ...], \"comment\": md?}"
 
 nreplies="$(jq '.replies | length' "$answers")"
 if [ "$nreplies" -eq 0 ]; then
   echo "post-answers: answers.json carries zero replies (legal; $nthreads thread(s) were open)"
-  exit 0
+  emit "no thread replies; $nthreads thread(s) were open"
 fi
 
 # Every reply must target a KNOWN unresolved thread; every reply needs a body.
@@ -65,3 +112,4 @@ done < <(jq -r '.replies | keys[]' "$answers")
 
 [ "$fail" -eq 0 ] || die "$fail of $nreplies replies failed to post (gate error above)"
 echo "post-answers: posted $nreplies replies on PR #$pr"
+emit "addressed $nreplies of $nthreads review thread(s)"

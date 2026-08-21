@@ -13,7 +13,7 @@ hooks:
   next-bead-context: {path: ./hooks/next-bead-context}  # context (implement-next): pick next ready epic bead in-box -> CONTEXT.md (or done-cycle)
   claim-next-bead:   {path: ./hooks/claim-next-bead}    # prelude (implement-next): claim the selected bead (no-op on a done-cycle)
   fetch-pr:       {path: ./hooks/fetch-pr}              # context (review/fix): PR state + threads -> CONTEXT.md, pr.json, threads.json
-  reopen-bead:    {path: ./hooks/reopen-bead}           # prelude (fix): reopen a closed bead so merge_gate forces a re-review (no-op when already open)
+  prepare-fix:    {path: ./hooks/prepare-fix}           # prelude (fix): reopen a closed bead + merge the base in when behind (the agent gets judgement only)
   post-answers:   {path: ./hooks/post-answers}          # postlude (fix): answers.json -> portitor pr reply per thread (deterministic; exact failure attribution)
   post-review:    {path: ./hooks/post-review}           # postlude (review): review.json -> portitor pr review --inline (gate records the verdict)
   wait-checks:    {path: ./hooks/wait-checks}           # prelude (merge): wait/re-run CI, then skip the agent on a green PR or hand it the exception
