@@ -31,9 +31,9 @@ CONTEXT.md names the bead, its spec leaves and the unresolved threads; `threads.
 
 ## How to fix
 
-Fix only what the feedback calls for. **Verify each fix against the bead's spec leaves, not only against the reviewer's wording** — the leaf is the arbiter, and a reviewer can be wrong about what the contract says. Never "fix" CI by weakening what checks it: deleting or loosening a test, or touching the spec gate's own tooling, is a defect, not a fix — and `.github/**` and `spec/**` are denied to you by the gate anyway.
+Fix only what the feedback calls for. **Verify each fix against the bead's spec leaves, not only against the reviewer's wording**: the leaf is the arbiter. Never "fix" CI by weakening what checks it: deleting or loosening a test, or touching the spec gate's own tooling, is a defect, not a fix.
 
-- **Data-flow bead** (CONTEXT.md gives a `flow_*` leaf as the contract and no `test_*` leaves): your scope is every participant, and your `TODO(bead:<component-bead-id>)` markers are the designed handoff — feedback about them is about their accuracy, not their existence.
+- **Data-flow bead** (CONTEXT.md gives a `flow_*` leaf as the contract and no `test_*` leaves): the feedback may reach into any participant, and that is in scope. Its `TODO(bead:<component-bead-id>)` markers are the handoff those beads consume: feedback about them concerns their accuracy, never their existence.
 - **Cleanup bead** (CONTEXT.md says the node was REMOVED): the work is deletion, so feedback resolves to more removal, not new code.
 
 ## When the spec is what is wrong

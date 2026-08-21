@@ -27,7 +27,15 @@ set -euo pipefail
 
 die() { echo "post-merge: $*" >&2; exit 1; }
 result="${FABER_RESULT_DIR:?FABER_RESULT_DIR is required}"
+bundle="${FABER_BUNDLE_DIR:?FABER_BUNDLE_DIR is required}"
 pr="${FABER_INPUT_PR:?FABER_INPUT_PR is required}"
+# wait-checks wrote BLOCKED_BY when it handed the PR to the agent (and nothing
+# when it cleared the PR to land). Reading it here is what lets merge.json carry
+# ONLY the diagnosis: the label is the prelude's finding, not the agent's, and an
+# agent copying it across can only introduce a disagreement.
+[ -f "$bundle/bundle.env" ] || die "no bundle.env — wait-checks contract broken"
+# shellcheck disable=SC1091
+. "$bundle/bundle.env"
 
 # Wire marker: fetch-pr keys on this exact prefix to surface the diagnosis to the
 # fixer. Keep the two in sync — it is the whole contract between them.
@@ -41,15 +49,17 @@ verdict="$result/merge.json"
 
 # ---- the agent ran and declined to land ------------------------------------
 if [ -f "$verdict" ]; then
+	# The agent's whole contribution is the diagnosis. `merged: false` is implied
+	# by the file existing at all, and blocked_by is the prelude's finding — both
+	# are supplied here rather than transcribed by an agent that could get them
+	# wrong. A stale `merged`/`blocked_by` key is tolerated and ignored.
 	jq -e '
 	  type == "object"
-	  and (.merged == false)
-	  and (.blocked_by | type == "string" and length > 0)
 	  and (.diagnosis | type == "string" and length > 0)
 	' "$verdict" >/dev/null 2>&1 \
-		|| die "merge.json is MALFORMED — want {merged: false, blocked_by: <reason>, diagnosis: <md>}"
+		|| die "merge.json is MALFORMED — want {diagnosis: <md>}"
 
-	blocked_by="$(jq -r '.blocked_by' "$verdict")"
+	blocked_by="${BLOCKED_BY:?merge.json exists but bundle.env carries no BLOCKED_BY — wait-checks contract broken}"
 	{
 		printf '%s\n\n' "$CI_COMMENT_MARKER"
 		printf '**Landing blocked: `%s`**\n\n' "$blocked_by"

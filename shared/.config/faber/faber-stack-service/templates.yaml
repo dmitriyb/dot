@@ -164,4 +164,4 @@ templates:
       pr:   {type: int,    required: true}
     output:
       merged: {type: bool, required: true}
-      blocked_by: {type: string}   # ci_red | stuck | behind | dirty — set when merged=false
+      blocked_by: {type: string}   # ci_red | stuck | behind | dirty | merge_state — set when merged=false

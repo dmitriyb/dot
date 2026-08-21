@@ -19,7 +19,13 @@
 # Outcome, written to $FABER_BUNDLE_DIR:
 #   landable  -> FABER_SKIP_AGENT=1 in bundle.env; the postlude lands the PR
 #   otherwise -> BLOCKED_BY + CONTEXT.md for the agent, which decides whether to
-#                route the work back (output {merged:false}) or halt.
+#                route the work back (a diagnosis) or halt.
+#
+# BLOCKED_BY is one of: ci_red | stuck | behind | dirty | merge_state. That set
+# is the contract — post-merge threads it into the step's output and the ci-fix
+# step binds it as an input, so it is data, not prose. CONTEXT.md carries FACTS
+# only: what blocked, the check states, the merge state. What to DO about it is
+# the merge skill, in one copy.
 set -euo pipefail
 
 die() { echo "wait-checks: $*" >&2; exit 1; }
@@ -71,12 +77,6 @@ hand_to_agent() {
 		echo '```'
 		echo
 		echo "mergeStateStatus: $(jq -r '.mergeStateStatus' <<<"$last_json" 2>/dev/null)"
-		echo
-		echo "## Your job"
-		echo "Follow the merge skill. Decide whether a fixer can resolve this."
-		echo "If it can: comment the diagnosis for the next agent and return"
-		echo "{\"merged\": false, \"blocked_by\": \"$why\"}. If nothing in the repo"
-		echo "can fix it, write halt.json instead — do NOT comment on a halt."
 	} > "$bundle/CONTEXT.md"
 	echo "wait-checks: PR #$pr not landable ($why); agent will triage" >&2
 	exit 0
@@ -159,7 +159,14 @@ while :; do
 		fi
 		# Everything settled green but the forge still will not merge. UNKNOWN is
 		# GitHub still recomputing — keep waiting; anything else needs judgement.
-		[ "$mss" = "UNKNOWN" ] || hand_to_agent "$(echo "$mss" | tr '[:upper:]' '[:lower:]')" \
+		#
+		# Normalized to `merge_state` rather than lowercasing $mss: GitHub's
+		# enum also carries BLOCKED, UNSTABLE, DRAFT and HAS_HOOKS, and passing
+		# those straight through invented blocked_by values nothing documents
+		# and no consumer handles (prepare-fix keys on `behind`; post-merge
+		# already emits `merge_state` for its own refusal path). The specific
+		# state is not lost — it is on the mergeStateStatus line above.
+		[ "$mss" = "UNKNOWN" ] || hand_to_agent merge_state \
 			"All checks are green but mergeStateStatus is $mss."
 	fi
 
