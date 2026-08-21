@@ -3,52 +3,9 @@ name: review
 description: Review a pull request for correctness, spec traceability, and test quality
 ---
 
-Review the PR in your bundle. Use @~/.claude/skills/go-expert/SKILL.md for Go-specific review guidance.
+Review the PR described in `$FABER_BUNDLE_DIR/CONTEXT.md`. Use @~/.claude/skills/go-expert/SKILL.md for Go-specific review guidance.
 
-## Preconditions (already done for you)
-
-The **context** hook (`fetch-pr`) has run: it fetched the PR's review state via the portitor-mediated client (you have no `gh`) into `$FABER_BUNDLE_DIR/pr.json`, **checked you out onto the PR branch** so you review the PR's code, and recorded a coarse `MODE` (REVIEW / FOLLOWUP) in `$FABER_BUNDLE_DIR/bundle.env`.
-
-## Context loading
-
-1. The PR diff (you are on its branch) and `pr.json` (`.title`, `.body`, `.reviews[]`, `.comments[]`, `.commits[]`).
-2. The linked bead: extract the bead ID from the PR body/commits (the claim commit subject is `<bead-id>: start implement …`), then `br show <bead-id>`.
-3. The spec for the bead: `spex map context <bead-id>` → read `arch_*.md`, `test_*.md`, `flow_*.md`, `module.json`. There are no `impl_*.md` leaves — the arch leaf IS the contract. The bead id IS the key: `map context` folds the journal to the node itself. Do NOT pass the bead's `spex:` label — that is the create op's idempotency label, not a lookup key, and the journal is the sole source of linkage truth. A **cleanup** bead resolves to `{"removed": true, ...}` — a biography, not spec files; its contract is the retired leaf at `before_head` (`git show <before_head>:<path>`), and the work under review is deletion.
-
-## Review flow
-
-Iterative cycle `implement → [review → fix → review] → close`. The action depends on the `(mode, result)` pair.
-
-### Step 1: Refine mode (from pr.json)
-
-The bundle's `MODE` is coarse. Refine it:
-
-- **No prior feedback** (no review-body with text, no inline comments) → `mode = REVIEW`.
-- **Prior feedback exists and the author responded** → `mode = FOLLOWUP`.
-- **Prior feedback exists but the author did NOT respond** → **STOP. Do nothing** (emit `changes`; see the result step).
-
-"Responded" (NOT "fixed" — Step 2 verifies fixes): an inline comment is responded-to if a reply references its id; a review-body if a commit exists with `committedDate` after the review's `submittedAt`.
-
-### Step 2: Evaluate → `CLEAN` or `ISSUES`
-
-**If `mode = REVIEW`:** examine the diff against the bead + spec; every check must pass for CLEAN.
-
-**Already-satisfied replacement:** if the diff is bead-state-only (+ optional skill/doc), verify against `origin/main` instead (delivering commit is an ancestor and satisfies the requirement, the spec delta is non-behavioral, `go build/vet/test` pass, the cross-bead scope guard holds). All → CLEAN.
-
-1. **Spec traceability**: code maps to bead requirements; no unrelated changes.
-2. **Spec hygiene** (blocker): the bead's spec leaves must match the shipped implementation. Stale prose (`test_*` with retired preconditions; output-shape mismatches; `arch_*` describing a contract the code doesn't honor) is a blocker. `spex validate` passing is NOT sufficient — read each leaf against the diff.
-3. **Bead completion** (most important): re-read the bead line by line; every requirement must have code. Verbs literal (replaces/adds/removes). `TODO`/`FIXME`/`HACK`/shim/compat wrappers deferring the bead's own work are automatic rejections.
-4. **Correctness**: error paths, edge cases, no leaks.
-5. **Patterns**: idiomatic, follows conventions.
-6. **Tests**: verify requirements (not implementation), failure cases covered.
-7. **Integration tests**: if `test_*.md` defines scenarios, matching tests must exist; missing ones are a blocker.
-8. **Cross-bead test scope** (blocker): tests in the diff must trace ONLY to this bead's `test_files`. A test covering another bead's test_section is a blocker — default to requiring removal.
-
-**If `mode = FOLLOWUP`:** verify each prior feedback item against the **current files** (not the diff, not the reply). Replies/commit messages are not evidence. For each: read the original request, read the current file, confirm the fix is present AND correct AND introduces no new issues. CLEAN iff every item is fixed.
-
-### Step 3: Act — one of four, no other paths
-
-You do NOT post the review yourself: write it to `$FABER_RESULT_DIR/review.json` and the **postlude** (`post-review`) submits it as a **comment-type** GitHub review — feedback only, never a GitHub approve/request-changes (a single PAT account can't cast those on its own PR). Approval is **not** an internal verdict: it is your **signed bead close** below (portitor gates the close to the reviewer role), which the merge gate's `bead-closed` predicate reads off the PR head. On an `approve` verdict the postlude also resolves the threads your prior comment-reviews raised.
+CONTEXT.md gives you the bead, its spec leaves and the **mode**; `pr.json` holds the full PR state, and you are already on the PR branch. Your one deliverable is `$FABER_RESULT_DIR/review.json`. The box posts it, closes the bead on an approval, and emits the step's verdict — the closes and pushes you see in git history came from the box on previous cycles, never from an agent, so do not imitate them.
 
 ```json
 {"event": "approve" | "request-changes" | "comment",
@@ -56,39 +13,33 @@ You do NOT post the review yourself: write it to `$FABER_RESULT_DIR/review.json`
  "comments": [{"path": "<file>", "line": <n>, "body": "<blocker, as an inline thread>"}, ...]}
 ```
 
-**Keep `body` terse — a few lines, not an audit.** Its only readers are the fix agent (which needs the blockers) and a human glancing at the PR; neither wants a section-by-section pass. The substance of any blocker lives in `comments[]` (one inline thread per blocker at its `path:line`), NOT in the body. Never restate the spec, the diff, or every check you ran.
+**Keep `body` terse — a few lines, not an audit.** Its only readers are the fix agent, which needs the blockers, and a human glancing at the PR. Each blocker's substance belongs in `comments[]` as one inline thread at its `path:line`, not in the body. Never restate the spec, the diff, or the checks you ran.
 
-- **CLEAN + REVIEW** → `event: approve`, `body` = one line (verdict + a one-clause reason, e.g. "LGTM — Mul is `a*b`, traces to its arch/test leaves, tests pass"), no comments; then close the bead.
-- **CLEAN + FOLLOWUP** → `event: approve`, one-line body; close the bead.
-- **ISSUES + REVIEW** → `event: request-changes`, `body` = one line naming the blockers at a high level, one `comments[]` entry per blocker at its `path:line` (real threads the fix step answers); do not close.
-- **ISSUES + FOLLOWUP** → `event: request-changes`, one line per still-unfixed item; do not close.
+## Mode
 
-The STOP case (author never responded) writes `event: comment` with a one-line body naming the wait.
+- **REVIEW** — no prior feedback. Judge the diff against the criteria below.
+- **FOLLOWUP** — verify every prior feedback item against the **current files**. Replies and commit messages are not evidence: read the original request, read the file, confirm the fix is present, correct, and introduced nothing new. Approve only if every item holds.
+- **WAIT** — there is prior feedback and nothing has moved since. Do not re-review: write `event: comment` with a one-line body naming what is being waited on.
 
-#### Closing the bead (reviewer-signed)
+## What must hold to approve
 
-```bash
-br close <bead-id> --reason "Reviewed and approved in PR#<number>. All review feedback addressed."
-br epic close-eligible
-git add .beads/issues.jsonl
-git commit -S -m "Close <bead-id>: <short title>"
-git push        # portitor gates: the bead-close jsonl change must be reviewer-signed
-```
+1. **Bead completion**, the one that matters most: re-read the bead line by line; every requirement has concrete code. Verbs are literal — "replaces" means the old thing is gone.
+2. **Spec traceability**: the code maps to the bead's requirements, and nothing unrelated rides along.
+3. **Licence**: every behavioural decision in the diff is licensed by a statement in the spec. Code that settles a question the leaves leave open — or contradict each other on — is drift, not the implementer's call. Request a drift report instead of accepting the guess. This is the only place a silently-papered-over spec defect gets caught.
+4. **Spec hygiene** (blocker): the bead's leaves match what shipped. Stale prose — `test_*` carrying retired preconditions, output-shape mismatches, an `arch_*` describing a contract the code does not honour — is a blocker. `spex validate` passing is not sufficient; read each leaf against the diff.
+5. **No deferred work**: `TODO`/`FIXME`/`HACK`/shims/compat wrappers deferring this bead's OWN work are automatic rejections.
+6. **Tests**: every scenario in the `test_*` leaves has a matching test, tests verify requirements rather than implementation, and failure cases are covered. A missing scenario is a blocker.
+7. **Cross-bead test scope** (blocker): the tests in the diff trace ONLY to this bead's test leaves. A test covering another bead's `test_section` belongs to that bead — default to requiring its removal.
+8. **Correctness and patterns**: error paths, edge cases, leaks; idiomatic Go, consistent with the surrounding code.
 
-Only `review` closes beads — the close commit MUST be signed by the **reviewer** key (portitor's role rule enforces it). Do NOT push to the default branch.
+## Beads that are not ordinary components
 
-## Emit your result (required)
-
-Last step — faber loops or merges on this verdict:
-
-```bash
-printf '{"verdict":"%s"}\n' "<approved|changes>" > "$FABER_RESULT_DIR/output.json"
-```
-
-`approved` iff you reached CLEAN, wrote `event: approve` into review.json, and closed the bead; `changes` in every other case (issues written, or the STOP case where the author hasn't responded).
+- **Data-flow bead** (CONTEXT.md gives a `flow_*` leaf as the contract and no `test_*` leaves): it is SUPPOSED to touch every participant, so 2 and 7 do not apply as written and its `TODO(bead:<component-bead-id>)` markers are the designed handoff, not deferred work. Judge instead: the shared types and interfaces are updated across all participants, the tree builds, existing tests pass, and every marker names a real participant bead.
+- **Cleanup bead** (CONTEXT.md says the node was REMOVED): the contract is the retired leaf at `before_head`, and the work is deletion. Judge: the node's code and its tests are gone, no dead references or imports remain, the build is green, and nothing was reimplemented or preserved behind a flag.
+- **Already satisfied** (the diff is bead-state-only, plus optional docs): verify against `origin/main` instead — the delivering commit is an ancestor and satisfies the requirement, the spec delta is non-behavioral, `go build/vet/test` pass, and the cross-bead scope guard holds.
 
 ## Spec freeze and drift reports
 
-- **Any diff touching `spec/` is an unconditional REQUEST_CHANGES**, whatever else the PR contains. Spec truth moves only in the authoring loop; the gate denies such pushes structurally, so a spec-touching diff reaching you means something slipped — reject and say why.
-- **A PR carrying `drifts/drift-*.json` gets the report itself reviewed**: validate the shape against `schema/drift.schema.json`, then judge the substance — does the cited contradiction/hole actually exist in the named files? A drift-only PR (report + the bead's return to `open`, no code) is APPROVED when the claim is real and well-formed — and this is the one sanctioned exception to the approve⇔close contract: emit `event: approve` **without closing the bead**, since returning it to `open` is the PR's entire point (the merge gate sanctions this explicitly — its `bead-closed` predicate admits a PR that closed no bead when the PR is drift-only, meaning it touches nothing outside `drifts/` and `.beads/`); a report whose claim you can refute gets REQUEST_CHANGES with the refutation, exactly like wrong code.
-- **A blocking-drift PR that still carries code is malformed** — REQUEST_CHANGES. The protocol requires the work be discarded, because the code encodes one side of a dispute nobody has adjudicated yet. Nothing strips it automatically — the box is trusted to follow the protocol — so catching it is your job, and the gate is the backstop: a PR that closes no bead *and* touches code satisfies neither branch of the predicate and cannot land.
+- **Any diff touching `spec/` is an unconditional request-changes**, whatever else the PR contains. Spec truth moves only in the authoring loop, and the gate denies such pushes structurally — one reaching you means something slipped.
+- **A PR carrying `drifts/drift-*.json` gets the report itself reviewed**: validate the shape against `schema/drift.schema.json`, then judge the substance — does the cited contradiction or hole actually exist in the named files? A drift-only PR (report plus the bead's return to `open`, no code) is approved when the claim is real and well formed; the box knows not to close a bead on one, because returning it to `open` is the PR's whole point. A claim you can refute gets request-changes with the refutation, exactly like wrong code.
+- **A blocking-drift PR that still carries code is malformed** — request-changes. The protocol requires the work be discarded, because the code encodes one side of a dispute nobody has adjudicated. Nothing strips it automatically, so catching it is your job; the gate is only the backstop.

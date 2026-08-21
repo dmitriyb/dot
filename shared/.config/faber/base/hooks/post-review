@@ -5,7 +5,10 @@
 # It NEVER casts a real approve/request-changes event: a single PAT account can't
 # review its own PR (GitHub 422). Approval is the reviewer's signed bead close
 # (gated to the reviewer role), read by the merge_gate "bead-closed" predicate; on
-# an approve verdict this hook also resolves the threads its comment-reviews raised.
+# an approve verdict this hook also resolves the threads its comment-reviews raised,
+# performs that signed close, and writes output.json. The agent decides; every
+# step that follows from the decision is executed here — the same split
+# finish-implement makes on the implement side.
 # The agent never posts the review itself; it only writes the document this hook validates:
 #   $FABER_RESULT_DIR/review.json:
 #     {"event": "approve"|"request-changes"|"comment",
@@ -71,3 +74,58 @@ if [ "$verdict" = approve ]; then
     echo "post-review: no gate threads to resolve on PR #$pr (or none open)" >&2
   fi
 fi
+
+# --- the decision's consequences --------------------------------------------
+# Everything below follows deterministically from `verdict`, so none of it is an
+# agent's job. A close that fails is fatal: the merge gate reads bead-closed off
+# the PR head, so an "approved" verdict whose close never landed would send the
+# merge step at a PR that cannot land. Fail-stop instead, and say why.
+if [ "$verdict" = approve ]; then
+  bead="${BEAD_ID:?approve verdict but bundle.env carries no BEAD_ID — fetch-pr could not resolve the bead, so the close cannot be attributed}"
+  # br owns bead state, so ask br — never pattern-match the jsonl. The gate's own
+  # bead-closed predicate records what that costs: an earlier version grepped the
+  # corpus for any "status":"closed", matched hundreds of beads from previous
+  # epics, and enforced nothing.
+  status="$(br show "$bead" --json 2>/dev/null | jq -r '.[0].status // ""')"
+  case "$status" in
+    "")
+      die "br show $bead returned no bead — cannot decide whether to close it" ;;
+    closed)
+      echo "post-review: bead $bead is already closed" ;;
+    open)
+      # The ONE sanctioned approve-without-close. A bead is `open` at review time
+      # only when the drift protocol deliberately returned it: claim-bead claims
+      # in_progress, and reopen-bead re-opens to in_progress too, so no other path
+      # leaves it here. Closing it would erase the very thing the PR exists to land.
+      #
+      # This asks br instead of re-deriving the gate's drift-only shape rule from
+      # changed paths. The gate matches paths because its image carries no jq and
+      # it must answer a different question ("may this land"); duplicating that
+      # rule here would be a second source of a policy the gate already owns — and
+      # it would get the gate's own documented anomaly wrong, since a NON-blocking
+      # drift PR that happens to touch only drifts/ and .beads/ still has an
+      # in_progress bead and must close.
+      if ! ls drifts/drift-*.json >/dev/null 2>&1; then
+        echo "post-review: WARNING bead $bead is 'open' but the tree carries no drift report — approving without a close anyway; the merge gate will refuse this PR" >&2
+      fi
+      echo "post-review: bead $bead was returned to 'open' (drift protocol) — approving WITHOUT closing it" ;;
+    *)
+      title="$(br show "$bead" --json 2>/dev/null | jq -r '.[0].title // ""')"
+      br close "$bead" --reason "Reviewed and approved in PR#$pr. All review feedback addressed." >/dev/null \
+        || die "br close $bead failed"
+      br epic close-eligible >/dev/null 2>&1 || true
+      git add .beads/issues.jsonl
+      if git diff --cached --quiet; then
+        die "br close $bead changed nothing in .beads/issues.jsonl — the close cannot be signed or pushed"
+      fi
+      # Signed by the REVIEWER key: portitor's role rule admits a bead-close jsonl
+      # change from no other identity, and this box runs as reviewer.
+      git commit -qS -m "Close $bead: $title" || die "signed close commit failed"
+      git push origin HEAD >/dev/null 2>&1 || die "the gate refused the reviewer-signed close push for $bead"
+      echo "post-review: closed $bead (was '$status', reviewer-signed) and pushed" ;;
+  esac
+  printf '{"verdict":"approved"}\n' > "$result/output.json"
+else
+  printf '{"verdict":"changes"}\n' > "$result/output.json"
+fi
+echo "post-review: output.json emitted (verdict=$verdict)"
