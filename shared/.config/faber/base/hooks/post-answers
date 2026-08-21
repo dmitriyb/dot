@@ -101,6 +101,13 @@ bad="$(jq --slurpfile th "$threads_file" -r '
   | length' "$answers")"
 [ "$bad" -eq 0 ] || die "answers.json is MALFORMED — $bad reply(ies) target an unknown thread id or carry no body (known ids are in threads.json)"
 
+# Each reply is a verdict, not prose: `Addressed — ...` or `Declined — ...`.
+# Enforced here because a reply that says neither leaves the reviewer guessing
+# whether the thread was fixed or refused. The PR-level `comment` is exempt: it
+# also carries conflict rationale, which is neither.
+badfmt="$(jq -r '[.replies[] | select((.body | test("^\\s*(Addressed|Declined)\\b")) | not)] | length' "$answers")"
+[ "$badfmt" -eq 0 ] || die "$badfmt reply(ies) start with neither \"Addressed\" nor \"Declined\" — every thread reply is one of those two verdicts"
+
 fail=0
 while IFS= read -r idx; do
   tid="$(jq -r ".replies[$idx].thread" "$answers")"

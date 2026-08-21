@@ -13,7 +13,16 @@ CONTEXT.md gives you the bead, its spec leaves and the **mode**; `pr.json` holds
  "comments": [{"path": "<file>", "line": <n>, "body": "<blocker, as an inline thread>"}, ...]}
 ```
 
-**Keep `body` terse — a few lines, not an audit.** Its only readers are the fix agent, which needs the blockers, and a human glancing at the PR. Each blocker's substance belongs in `comments[]` as one inline thread at its `path:line`, not in the body. Never restate the spec, the diff, or the checks you ran.
+## Comment format
+
+`Approved.` — one line, nothing else. Not a summary of what you checked, and never a restatement of the spec or the diff.
+
+Everything else you write is a blocker that must be fixed before this PR can be approved. **There is no advisory tier**: no nits, no "minor", no asides you would not block on. If it is not worth a fix cycle, do not write it — which is also what keeps the bar high for writing anything at all.
+
+- **Inline** (`comments[]`) is the default: 1–2 sentences at the exact `path:line`, saying what is wrong *there*.
+- **Body** only when a blocker has no line in the diff to attach to: one paragraph, and say why it could not be inline.
+
+**Severity is not the size of the fix** — a one-character edit can be a blocker. In particular, anything the code *claims* that is not true is always one: a fabricated requirement or bead id, a name or comment describing behaviour the code does not have, a test named for a scenario it does not exercise. Identifiers and comments are read as fact by everyone who comes after, and this project's traceability runs on them. Untrue is never cosmetic.
 
 ## Mode
 

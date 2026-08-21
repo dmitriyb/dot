@@ -10,10 +10,14 @@ CONTEXT.md names the bead, its spec leaves and the unresolved threads; `threads.
 1. **The edited working tree**: the fixes, left uncommitted.
 2. **`$FABER_RESULT_DIR/answers.json`**: one reply per thread, plus an optional PR-level comment for review-body items that have no thread.
    ```json
-   {"replies": [{"thread": "<id from threads.json>", "body": "Fixed — <what changed>"}],
+   {"replies": [{"thread": "<id from threads.json>", "body": "Addressed — <what changed>"}],
     "comment": "<optional markdown, for feedback with no thread to answer into>"}
    ```
-   Answer each thread individually — never one bulk summary. Every `thread` id must come from `threads.json`, and every thread there should get a reply.
+   Every thread gets exactly one reply, and each is one of:
+   - **`Addressed — <what changed>`** — 1–2 sentences.
+   - **`Declined — <why>`** — up to one paragraph. The reviewer re-judges it; use this when you believe the review is wrong, never to defer work.
+
+   Nothing else, and never one bulk summary. Every `thread` id must come from `threads.json`.
 
 ## Which job is this? CONTEXT.md tells you
 

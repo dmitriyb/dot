@@ -41,6 +41,24 @@ jq -e '
 ' "$review" >/dev/null 2>&1 \
   || die "review.json is MALFORMED — want {event: approve|request-changes|comment, body: md, comments: [{path, line, body}]}"
 
+# --- format, enforced rather than asked ------------------------------------
+# The skill states the rules; these bind them. Both target observed failures: a
+# two-paragraph audit posted as an approval, and a real defect filed as a "nit"
+# that nothing would ever come back to fix.
+#
+# `non-blocking` is deliberately NOT in the banned set: the drift schema owns
+# `blocking` as a field name, so a reviewer judging a drift report has to be able
+# to write it. The advisory TIER is abolished by the skill; this catches the
+# vocabulary that carried it.
+if jq -e '[.body, (.comments // [])[].body] | join("\n") | test("\\bnits?\\b|minor:|optional:"; "i")' \
+     "$review" >/dev/null 2>&1; then
+  die "review.json hedges a finding (nit / minor: / optional:) — there is no advisory tier: everything you write must be fixed before approval, so either make it a blocker or drop it"
+fi
+if [ "$(jq -r '.event' "$review")" = approve ] \
+   && [ "$(jq -r '.body' "$review" | sed '/^[[:space:]]*$/d' | wc -l | tr -d ' ')" -gt 1 ]; then
+  die "an approval body must be a single line (\"Approved.\") — it is not a summary of what you checked"
+fi
+
 verdict="$(jq -r '.event' "$review")"
 ncomments="$(jq '(.comments // []) | length' "$review")"
 
