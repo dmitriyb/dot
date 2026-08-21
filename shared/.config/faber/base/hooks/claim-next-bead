@@ -5,7 +5,8 @@
 # feature branch off the default, signed in_progress claim, branch declared as
 # the step's side-effect. On a done-cycle ($bundle/epic-done) it does nothing —
 # no branch, no claim, no BRANCH declaration (faber then verifies no
-# side-effect), and the agent just emits {"done":true}.
+# side-effect) — and it SKIPS the agent: a done-cycle has no judgement work, so
+# the sentinel the context hook already wrote is the whole answer.
 set -euo pipefail
 
 die() { echo "claim-next-bead: $*" >&2; exit 1; }
@@ -40,18 +41,18 @@ br sync --import-only >/dev/null 2>&1 || true
 
 json="$(br show "$bead" --json)" || die "br show $bead failed"
 [ "$(jq 'length' <<<"$json")" -gt 0 ] || die "bead $bead not found"
-if jq -e '.[0].labels | index("spex:cleanup")' <<<"$json" >/dev/null; then
-  die "bead $bead is a cleanup bead (spex:cleanup); not an implement bead"
-fi
 status="$(jq -r '.[0].status' <<<"$json")"
 case "$status" in
   open|ready) ;;
   *) die "bead $bead status is '$status', expected open or ready" ;;
 esac
 
-record="$(jq -r '.[0].labels[]? | select(startswith("spex:")) | select(. != "spex:cleanup") | ltrimstr("spex:")' <<<"$json" | head -n1)"
+# The context key next-bead-context actually resolved with — a node identity hash
+# or the bead id. NOT the `spex:` label: that is the create op's idempotency key
+# and `spex map context` does not accept it.
+record="$(cat "$bundle/context-key" 2>/dev/null || true)"
 base="origin/$(default_branch)"
-branch="$bead"   # bead id verbatim (git allows the dot): e.g. mt-oxm.1, not mt-oxm-1-playground-mul
+branch="$bead"   # bead id verbatim (git allows the dot in refs); the id is already a safe ref token
 
 # Branch first, so the claim commit never lands on the default branch.
 git checkout -q -b "$branch" "$base" || die "branch $branch off $base failed"

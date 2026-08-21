@@ -9,10 +9,12 @@
 # Contract with the prelude + skill:
 #   - a bead was selected  -> $FABER_BUNDLE_DIR/selected-bead carries its id;
 #     CONTEXT.md is the normal implement prompt (claim-next-bead claims it).
-#   - nothing ready        -> $FABER_BUNDLE_DIR/epic-done exists; CONTEXT.md
-#     tells the agent to emit {"done":true} and stop (no branch, no claim).
-#   - blocking drift on main -> same epic-done marker; CONTEXT.md dictates the
-#     settle sentinel {"done":true,"halt_reason":"blocking_drift",...} instead.
+#   - nothing ready        -> $FABER_BUNDLE_DIR/epic-done exists and
+#     epic-output.json carries {"done":true}. The prelude skips the agent and
+#     finish-implement copies the sentinel to output.json — a settle decision
+#     is not judgement, so no agent is asked to transcribe it.
+#   - blocking drift on main -> same markers; the sentinel carries
+#     {"done":true,"halt_reason":"blocking_drift","drift_files":...} instead.
 set -euo pipefail
 
 die() { echo "next-bead-context: $*" >&2; exit 1; }
@@ -26,17 +28,12 @@ blocking="$(grep -l '"blocking"[[:space:]]*:[[:space:]]*true' drifts/drift-*.jso
 if [ -n "$blocking" ]; then
   files_csv="$(paste -sd, <<<"$blocking")"
   : > "$bundle/epic-done"
-  {
-    echo "# Epic $epic: halted — blocking drift report(s) on main"
-    echo
-    echo "The spec is disputed by: $files_csv"
-    echo "No bead may be implemented until /drift-fix (authoring loop) rules on it."
-    echo "Do exactly one thing and stop:"
-    echo
-    printf '    printf %s > "$FABER_RESULT_DIR/output.json"\n' "'{\"done\":true,\"halt_reason\":\"blocking_drift\",\"drift_files\":\"$files_csv\"}'"
-    echo
-    echo "Do not create branches, do not commit, do not push, do not touch beads."
-  } > "$bundle/CONTEXT.md"
+  # Machine-readable settle sentinel: the finish-implement postlude copies this
+  # to output.json verbatim. The agent is skipped on done-cycles (prelude sets
+  # FABER_SKIP_AGENT), so no prose instruction is needed.
+  jq -cn --arg files "$files_csv" \
+    '{done:true, halt_reason:"blocking_drift", drift_files:$files}' > "$bundle/epic-output.json"
+  echo "# Epic $epic: halted — blocking drift report(s) on main ($files_csv)" > "$bundle/CONTEXT.md"
   echo "next-bead-context: blocking drift ($files_csv); epic settles" >&2
   exit 0
 fi
@@ -73,16 +70,9 @@ done < <(br ready --json 2>/dev/null | jq -r '(.issues? // .) | .[]?.id')
 
 if [ -z "$bead" ]; then
   : > "$bundle/epic-done"
-  {
-    echo "# Epic $epic: no ready beads remain"
-    echo
-    echo "Every child bead of this epic is done, blocked, or in progress elsewhere."
-    echo "There is NOTHING to implement in this cycle. Do exactly one thing and stop:"
-    echo
-    echo '    printf '\''{"done":true}\n'\'' > "$FABER_RESULT_DIR/output.json"'
-    echo
-    echo "Do not create branches, do not commit, do not push, do not touch beads."
-  } > "$bundle/CONTEXT.md"
+  # Machine-readable settle sentinel; see the blocking-drift branch above.
+  printf '{"done":true}\n' > "$bundle/epic-output.json"
+  echo "# Epic $epic: no ready beads remain — done-cycle" > "$bundle/CONTEXT.md"
   echo "next-bead-context: epic $epic has no ready bead; done-cycle"
   exit 0
 fi
@@ -91,7 +81,6 @@ printf '%s\n' "$bead" > "$bundle/selected-bead"
 
 json="$(br show "$bead" --json)" || die "br show $bead failed"
 title="$(jq -r '.[0].title' <<<"$json")"
-status="$(jq -r '.[0].status' <<<"$json")"
 # ---- resolve the spec context ----------------------------------------------
 # THE BEAD ID IS THE KEY. `spex map context` folds the journal itself — "if the
 # key is not a 12-hex hash, fold the journal and map the task id to its node's
@@ -99,7 +88,7 @@ status="$(jq -r '.[0].status' <<<"$json")"
 # key: it is the create op's idempotency label, and since event-keyed linkage
 # (spec/proposals/2026-08-11-event-keyed-linkage.md) "the journal is the sole
 # source of linkage truth". Passing the label resolved nothing and, because the
-# old branch only warned, produced an EMPTY spec-files.txt and a cycle that
+# old branch only warned, produced an EMPTY spec context and a cycle that
 # implemented blind. Hence `die` below: no spec context is not a degraded run,
 # it is a broken one, and it must stop the step rather than reach an agent.
 JOURNAL="spec/.history.jsonl"
@@ -126,12 +115,11 @@ if [ "$removed" = "true" ]; then
       'select(.eid==$e and .event=="removed") | .path // ""' "$JOURNAL" | head -n1)"
   fi
 else
-  specs="$(jq -r '[.arch_file] + (.impl_files//[]) + (.test_files//[]) + (.flow_files//[]) + [.module_file]
+  specs="$(jq -r '[.arch_file] + (.test_files//[]) + (.flow_files//[]) + [.module_file]
                   | .[] | select(. != null and . != "")' <<<"$mapjson")"
   [ -n "$specs" ] || die "bead $bead resolved to a live node with no spec leaves — key $key"
 fi
 
-printf '%s\n' "$specs" | sed '/^$/d' > "$bundle/spec-files.txt"
 # The key that actually resolved, for claim-next-bead to publish as RECORD_ID.
 # Derived here so one hook owns resolution: the label is not a key and must never
 # be handed to an agent as one.
@@ -141,53 +129,40 @@ printf '%s\n' "$key" > "$bundle/context-key"
   echo "# Implement bead $bead (next ready in epic $epic)"
   echo
   echo "- title: $title"
-  echo "- status: $status (the prelude claims it in_progress on your feature branch)"
-  echo "- context key: $key"
-  echo
-  echo "You are on your feature branch (see \$BRANCH in your environment); the bead"
-  echo "is claimed. Do NOT push to the default branch and do NOT close the bead —"
-  echo "review closes it."
-  echo
   if [ "$removed" = "true" ]; then
-    # REMOVAL cycle. There is no arch leaf to implement against — the node left the
-    # spec — so the contract is the journal's biography plus the retired leaf as it
-    # stood at before_head. The work is deletion, not construction.
-    echo "## This is a CLEANUP bead — the spec node it names was REMOVED"
+    # REMOVAL cycle. There is no arch leaf: the node left the spec, so the only
+    # contract is the journal's biography plus the retired leaf as it stood at
+    # before_head. What to DO with that is the skill's cleanup path; these are
+    # the facts it cannot know.
+    echo
+    echo "## This bead's spec node was REMOVED (cleanup cycle)"
     echo
     jq -r '"- node: \(.name) (\(.node_type)) in module \(.module)\n- removed by proposal: \(.proposal)\n- removal event: \(.eid)\n- before_head: \(.before_head)\n- after_head: \(.after_head)"' <<<"$mapjson"
-    [ -n "${leaf_path:-}" ] && echo "- retired spec leaf: $leaf_path"
-    echo
-    echo "There are no spec files to read: the node's leaves were deleted with it."
+    # before_head is null whenever the journal holds no change event preceding
+    # the removal (arch_context_resolver.md). Printing `git show null:<path>`
+    # then hands the agent a command that cannot run, in the one cycle where the
+    # retired leaf is its only contract — so the guard is on the value, not on
+    # the path alone.
+    bh="$(jq -r '.before_head // empty' <<<"$mapjson")"
     if [ -n "${leaf_path:-}" ]; then
-      echo "To read the contract the code was written against, run:"
-      echo
-      jq -r --arg p "$leaf_path" '"    git show \(.before_head):\($p)"' <<<"$mapjson"
-      echo
+      echo "- retired spec leaf: $leaf_path"
+      if [ -n "$bh" ]; then
+        echo
+        echo "The contract the deleted code was written against:"
+        echo
+        echo "    git show $bh:$leaf_path"
+      else
+        echo "- prior revision: none recorded (no before_head) — the retired leaf cannot be retrieved"
+      fi
     fi
-    echo "## Your job"
-    echo "DELETE the code that implemented this node, and nothing else. Remove its"
-    echo "tests with it, drop now-dead references and imports, and leave the tree"
-    echo "building green. Do NOT reimplement it, do NOT preserve it behind a flag,"
-    echo "and do NOT touch spec/ — the removal is already decided and recorded."
-    echo "If the code cannot be removed (something live still depends on it), file"
-    echo "a drift report instead of forcing it; that dependency contradicts the spec."
   else
-    echo "## Spec context — read these first (this is the source of truth)"
-    sed 's/^/- /' "$bundle/spec-files.txt"
-    echo
-    echo "## Your job"
-    echo "Implement the single component this bead covers against its spec leaves,"
-    echo "write/adjust the tests its test_* leaves define, run the completion gate"
-    echo "(\`go build/vet/test ./...\`), then commit (signed), push the branch, open"
-    echo "the PR, and link the bead. Full workflow: your \`implement\` skill."
+    echo "- spec leaves (your contract):"
+    printf '%s\n' "$specs" | sed '/^$/d;s/^/  - /'
   fi
-  echo
-  echo "This is one cycle of an epic run: emit \`\"done\":false\` in your output"
-  echo "(see the skill's emit step) so the next cycle follows."
 } > "$bundle/CONTEXT.md"
 
 if [ "$removed" = "true" ]; then
   echo "next-bead-context: selected $bead (cleanup; $(jq -r '"removed \(.name) from module \(.module)"' <<<"$mapjson"))"
 else
-  echo "next-bead-context: selected $bead (key $key); $(wc -l < "$bundle/spec-files.txt") spec files"
+  echo "next-bead-context: selected $bead (key $key); $(printf '%s\n' "$specs" | sed '/^$/d' | wc -l | tr -d ' ') spec leaves"
 fi

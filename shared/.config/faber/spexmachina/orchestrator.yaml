@@ -27,7 +27,7 @@ remote:                                  # portitor step: the box's ONLY git rem
   host_key_file: ./keys/portitor_host_key.pub   # portitor step: pin portitor's SSH host key here
 
 credentials:
-  resolver: ./hooks/get-token            # host-side get_token(service); reads the macOS keychain
+  resolver: ../base/hooks/get-token      # host-side get_token(service); reads the macOS keychain
   services:
     claude_code_oauth_token:             # file mode -> /run/secrets -> env CLAUDE_CODE_OAUTH_TOKEN
       mode: file                         # (the var Claude Code honors); shredded after the run
@@ -39,9 +39,14 @@ identities:                             # resolved by role NAME via the faber re
 
 # --- component libraries -----------------------------------------------------
 
+# ../base is the SHARED library: one copy of the images, skills and hooks every
+# project in this tree runs. Editing it edits every project — that is the point.
+# What stays here is what is genuinely this project's: the substrate above, the
+# templates (they carry PORTITOR_HOST, this instance's gate) and the workflows
+# (their `repo` param default names this project's repo).
 include:
-  - images.yaml       # spex-box (pinned toolset + overlay)
-  - skills.yaml       # implement / review / fix / merge / go-expert
-  - hooks.yaml        # gather-context / claim-bead / next-bead-context / claim-next-bead / fetch-pr / post-* / release-bead
-  - templates.yaml    # implement / review / fix / merge
-  - workflows.yaml    # bead (Gate B) / epic (Gate A)
+  - ../base/images.yaml    # spex-box (pinned toolset + overlay)
+  - ../base/skills.yaml    # implement / review / fix / merge / go-expert
+  - ../base/hooks.yaml     # context / prelude / postlude hooks for every role
+  - templates.yaml         # implement / review / fix / merge
+  - workflows.yaml         # bead (Gate B) / epic (Gate A)

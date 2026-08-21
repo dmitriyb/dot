@@ -36,13 +36,18 @@ gate side agree by construction:
 
 ```
 orchestrator.yaml   substrate (faber-stack-service-net / faber-stack-service-egress / portitor-faber-stack-service) + include
-images.yaml         spex-box — IDENTICAL to spexmachina (toolset hash reuse)
-overlay.nix         claude-code + spex + br derivations — IDENTICAL to spexmachina
-hooks.yaml/hooks/    gather-context / claim-bead / … — verbatim (project-agnostic)
-skills.yaml/skills/  implement / review / fix / merge / go-expert — verbatim (the drift-protocol references — schema/drift.schema.json, drifts/ — assume the target repo carries them; the playground seed repo may not, which is acceptable: a drift report there is judged without schema validation)
-templates.yaml      IDENTICAL except PORTITOR_HOST: portitor-faber-stack-service
-workflows.yaml      IDENTICAL except repo default = faber-stack-service
+templates.yaml      same shape as spexmachina's; differs only in PORTITOR_HOST
+                    (portitor-faber-stack-service) and the implementer effort
+workflows.yaml      same as spexmachina's except the `repo` param default
 keys/               host-key pin lands here at `faber-stack up` (see keys/README.md)
+
+../base/            the SHARED library — images, overlay, skills and hooks are ONE
+                    copy, used by this project and spexmachina alike. Not "identical
+                    by discipline" any more: the same files. (The drift-protocol
+                    references — schema/drift.schema.json, drifts/ — assume the target
+                    repo carries them; the playground seed repo may not, which is
+                    acceptable: a drift report there is judged without schema
+                    validation.)
 ```
 
 ## Run

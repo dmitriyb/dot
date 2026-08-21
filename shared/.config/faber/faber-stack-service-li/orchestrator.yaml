@@ -29,7 +29,7 @@ remote:
   host_key_file: ../faber-stack-service/keys/portitor_host_key.pub
 
 credentials:
-  resolver: ../faber-stack-service/hooks/get-token
+  resolver: ../base/hooks/get-token
   services:
     claude_code_oauth_token:             # still needed: review + merge run Claude Code
       mode: file
@@ -59,8 +59,8 @@ invoke_profiles:
 # --- component libraries -----------------------------------------------------
 
 include:
-  - ../faber-stack-service/skills.yaml
-  - ../faber-stack-service/hooks.yaml
-  - ../faber-stack-service/workflows.yaml
+  - ../base/skills.yaml
+  - ../base/hooks.yaml
+  - ../faber-stack-service/workflows.yaml   # project-owned: its `repo` param default
   - images.yaml
   - templates.yaml

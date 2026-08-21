@@ -18,7 +18,7 @@ hooks:
   post-review:    {path: ./hooks/post-review}           # postlude (review): review.json -> portitor pr review --inline (gate records the verdict)
   wait-checks:    {path: ./hooks/wait-checks}           # prelude (merge): wait/re-run CI, then skip the agent on a green PR or hand it the exception
   post-merge:     {path: ./hooks/post-merge}            # postlude (merge): land when the prelude cleared it; otherwise pass the agent's verdict through
-  post-implement: {path: ./hooks/post-implement}        # postlude (implement*): pr-body.md -> portitor pr describe (sets the PR description, not a comment)
+  finish-implement: {path: ./hooks/finish-implement}    # postlude (implement*): commit -> push -> PR# -> bead link -> describe -> output.json (all deterministic)
   release-bead:   {path: ./hooks/release-bead}          # on_failure (implement*): host-side, logging no-op
 
 # NOTE: faber bind-mounts hooks ONE FILE PER ROLE (/faber/hooks/{context,prelude,

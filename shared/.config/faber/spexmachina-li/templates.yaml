@@ -40,7 +40,7 @@ templates:
     hooks:
       context: gather-context
       prelude: claim-bead
-      postlude: post-implement
+      postlude: finish-implement
       on_failure: release-bead
     inputs:
       repo: {type: string, required: true}
@@ -71,17 +71,15 @@ templates:
     effort: "Follow the operating instructions exactly. Batch independent shell commands into a single call instead of one command per turn. <|think_low|>"
     invoke:
       profile: goose
-      # The epic-cycle output contract is the one instruction the local model
-      # kept missing while it lived only in the skill prose — pin it in the
-      # prompt. An inline override REPLACES the profile's prompt_template, so
-      # the skill-read instruction is repeated here.
-      prompt_template: "Read the file /faber/skills/{skill}/SKILL.md and follow it as your operating instructions for this task.\n\n{body}{extra}\n\nMANDATORY: your $FABER_RESULT_DIR/output.json must contain the key \"done\" (boolean; false on a work cycle, true only when CONTEXT.md declares a done-cycle) and, on a work cycle, also \"branch\" (string) and \"pr\" (number)."
+      # (The former output-contract prompt override is gone: output.json is now
+      # written by the finish-implement postlude, not the agent.)
+    agent_optional: true           # done-cycle: the prelude skips the agent (FABER_SKIP_AGENT); finish-implement emits the sentinel
     skills: [implement, go-expert]
     skills_link: .claude/skills
     hooks:
       context: next-bead-context
       prelude: claim-next-bead
-      postlude: post-implement
+      postlude: finish-implement
       on_failure: release-bead
     inputs:
       repo: {type: string, required: true}

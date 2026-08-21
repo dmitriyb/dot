@@ -9,17 +9,23 @@ plus five reusable named libraries (`images`, `skills`, `hooks`, `templates`,
 
 ```
 orchestrator.yaml   project assembly: substrate (network/remote/credentials/identities) + include
-images.yaml         spex-box — pinned toolset (nixos-25.11 / Go 1.25.10) + overlay
-skills.yaml         implement / review / fix / merge / go-expert  → skills/<name>/
-hooks.yaml          gather-context / claim-bead / next-bead-context / claim-next-bead / fetch-pr /
-                    reopen-bead / wait-checks / post-* / release-bead → hooks/<name>
 templates.yaml      implement / review / fix / merge  (named refs into the libraries)
+                    — project-owned because each entry carries PORTITOR_HOST, this
+                    instance's gate container
 workflows.yaml      bead (auto-merge chain) / epic (the same chain per child, sequential)
-overlay.nix         claude-code + spex + br derivations (real, verified hashes)
-skills/             the SKILL.md trees (implement / review / fix / merge / go-expert)
-hooks/              the hook executables (context runs before prelude; cwd = the clone)
+                    — project-owned because its `repo` param default names this repo
 portitor/           the declarative gate policy + its predicate scripts (see below)
 keys/               role + gateway keys — filled at the portitor step (see keys/README.md)
+
+../base/            the SHARED library — ONE copy for every project in this tree:
+  images.yaml       spex-box — pinned toolset (nixos-25.11 / Go 1.25.10) + overlay
+  overlay.nix       claude-code + spex + br derivations (real, verified hashes)
+  skills.yaml       implement / review / fix / merge / go-expert  → skills/<name>/
+  hooks.yaml        gather-context / claim-bead / next-bead-context / claim-next-bead /
+                    fetch-pr / reopen-bead / wait-checks / post-* / finish-implement /
+                    release-bead → hooks/<name>
+  skills/           the SKILL.md trees
+  hooks/            the hook executables (context runs before prelude; cwd = the clone)
 ```
 
 ## The gate policy (`portitor/`)

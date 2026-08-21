@@ -32,10 +32,26 @@ workflows:
               when: steps.review.verdict == "changes"
               with: {repo: "${params.repo}", pr: "${steps.implement.pr}"}
 
-      - id: merge
-        use: merge
-        when: steps.review.verdict == "approved"    # post-loop ref = final iteration
-        with: {repo: "${params.repo}", pr: "${steps.implement.pr}"}
+      # Same bounded landing loop as the epic — the merge template now settles
+      # OK with {merged:false} on a red build or a conflict, so a bare merge
+      # step would report success without landing anything.
+      - id: land
+        loop:
+          max: 2
+          until: steps.merge.merged == true
+          steps:
+            - id: merge
+              use: merge
+              when: steps.review.verdict == "approved"    # post-loop ref = final iteration
+              with: {repo: "${params.repo}", pr: "${steps.implement.pr}"}
+            - id: ci-fix
+              use: fix
+              when: steps.merge.merged == false
+              with: {repo: "${params.repo}", pr: "${steps.implement.pr}"}
+            - id: ci-review
+              use: review
+              when: steps.merge.merged == false
+              with: {repo: "${params.repo}", pr: "${steps.implement.pr}"}
 
   # ---- epic: pull-loop — one full bead chain per cycle, until dry ----------
   # No up-front child enumeration: each cycle's implement-next box clones
@@ -80,7 +96,34 @@ workflows:
                     use: fix
                     when: steps.review.verdict == "changes"
                     with: {repo: "${params.repo}", pr: "${steps.implement.pr}"}
-            - id: merge
-              use: merge
-              when: steps.implement.done == false && steps.review.verdict == "approved"
-              with: {repo: "${params.repo}", pr: "${steps.implement.pr}"}
+            # Landing is a bounded loop, not a single shot: the merge step's
+            # prelude waits for CI and re-runs stuck jobs, but a genuinely red
+            # build (or a conflict, or a stale base) is work for a fixer, and
+            # merge itself can hand nothing back — it is the cycle's last step.
+            # So merge settles OK with {merged:false, blocked_by:...} and this
+            # loop routes it: fix, re-review, try to land again.
+            #
+            # ci-fix's prelude REOPENS the bead, which makes merge_gate's
+            # bead-closed predicate refuse until ci-review closes it again — so
+            # the fix cannot land without passing a reviewer. The gate enforces
+            # that, not this wiring.
+            #
+            # max 2 = one land attempt, one fix→review round, one more attempt.
+            # Exhaustion is a step failure, exactly as review-cycle's max 5.
+            - id: land
+              loop:
+                max: 2
+                until: steps.merge.merged == true
+                steps:
+                  - id: merge
+                    use: merge
+                    when: steps.implement.done == false && steps.review.verdict == "approved"
+                    with: {repo: "${params.repo}", pr: "${steps.implement.pr}"}
+                  - id: ci-fix
+                    use: fix
+                    when: steps.merge.merged == false
+                    with: {repo: "${params.repo}", pr: "${steps.implement.pr}"}
+                  - id: ci-review
+                    use: review
+                    when: steps.merge.merged == false
+                    with: {repo: "${params.repo}", pr: "${steps.implement.pr}"}

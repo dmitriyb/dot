@@ -31,7 +31,7 @@ remote:
   host_key_file: ../spexmachina/keys/portitor_host_key.pub   # single source: the base project's pin
 
 credentials:
-  resolver: ../spexmachina/hooks/get-token
+  resolver: ../base/hooks/get-token
   services:
     claude_code_oauth_token:             # still needed: review + merge run Claude Code
       mode: file
@@ -62,12 +62,13 @@ invoke_profiles:
     effort_flag: "--system"
 
 # --- component libraries -----------------------------------------------------
-# skills / hooks / workflows are the base project's, by reference; their
-# internal paths resolve relative to the declaring file, i.e. ../spexmachina.
+# skills / hooks come from the shared ../base library; workflows stays with the
+# base PROJECT (its `repo` param default names that repo). Every included file's
+# internal paths resolve relative to the declaring file, not to this one.
 
 include:
-  - ../spexmachina/skills.yaml
-  - ../spexmachina/hooks.yaml
-  - ../spexmachina/workflows.yaml
+  - ../base/skills.yaml
+  - ../base/hooks.yaml
+  - ../spexmachina/workflows.yaml   # project-owned: its `repo` param default
   - images.yaml       # spex-box (base overlay) + goose-spex-box (local overlay)
   - templates.yaml    # implement*/fix on goose+qwen; review/merge on claude opus
