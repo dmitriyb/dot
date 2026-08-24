@@ -36,12 +36,15 @@ let
   };
 
   # --- spex pin ----------------------------------------------------------------
-  # spexmachina's first tagged release. Version + per-arch sha256 come from the
-  # release's manifest.json (the .sha256 sidecar assets carry the same values).
-  spexVersion = "0.1.0";
+  # Version + per-arch sha256 come from the release's manifest.json (the .sha256
+  # sidecar assets carry the same values). v0.2.0-rc.1 (commit 0b07056) is the
+  # first release carrying the .spex/ state dir + ProjectResolver: older
+  # binaries pre-flight on spec/.snapshot.json and refuse the migrated repo,
+  # which broke the boxes' `spex map context` once PR#355 landed on main.
+  spexVersion = "0.2.0-rc.1";
   spexSha256 = {
-    "arm64" = "f087a817e10f8612bf1b6daf207b6f9d327aad62fcee1427ce248004c3e5a9c5";
-    "amd64" = "2bf0ed718ebe6d04eba2b4e5677f561c05f733b991be37e1e2996a5de5d7c173";
+    "arm64" = "a8f41c3bc68a9274c643b28ca91ba448f41cbedbf5f071ec8a4e90bd07804bc4";
+    "amd64" = "8dbf8189030a99098f0bb0153eff4a88ddf0b56c874392d8b59adba61b7d2e8c";
   };
 
   # --- br (beads_rust) pin -----------------------------------------------------
