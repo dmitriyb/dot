@@ -158,9 +158,13 @@ fi
     echo
     jq -r '"- node: \(.name) (\(.node_type)) in module \(.module)\n- removed by proposal: \(.proposal)\n- removal event: \(.eid)"' <<<"$mapjson"
     bh="$(jq -r '.before_head // empty' <<<"$mapjson")"
+    # The task journal at its resolved location (.spex/, since the state-dir
+    # migration); repos that have not migrated still keep the legacy path.
+    journal=".spex/history.jsonl"
+    [ -f "$journal" ] || journal="spec/.history.jsonl"
     lp=""
-    [ -f spec/.history.jsonl ] && lp="$(jq -r --arg e "$(jq -r '.eid' <<<"$mapjson")" \
-      'select(.eid==$e and .event=="removed") | .path // ""' spec/.history.jsonl | head -n1)"
+    [ -f "$journal" ] && lp="$(jq -r --arg e "$(jq -r '.eid' <<<"$mapjson")" \
+      'select(.eid==$e and .event=="removed") | .path // ""' "$journal" | head -n1)"
     if [ -n "$lp" ] && [ -n "$bh" ]; then
       echo "- retired spec leaf: $lp"
       echo

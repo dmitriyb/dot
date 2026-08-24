@@ -91,7 +91,10 @@ title="$(jq -r '.[0].title' <<<"$json")"
 # old branch only warned, produced an EMPTY spec context and a cycle that
 # implemented blind. Hence `die` below: no spec context is not a degraded run,
 # it is a broken one, and it must stop the step rather than reach an agent.
-JOURNAL="spec/.history.jsonl"
+# The task journal at its resolved location (.spex/, since the state-dir
+# migration); repos that have not migrated still keep the legacy path.
+JOURNAL=".spex/history.jsonl"
+[ -f "$JOURNAL" ] || JOURNAL="spec/.history.jsonl"
 key="$bead"
 
 mapjson="$(spex map context "$key")" \
