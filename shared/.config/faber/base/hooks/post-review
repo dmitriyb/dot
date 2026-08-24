@@ -60,21 +60,71 @@ if [ "$(jq -r '.event' "$review")" = approve ] \
 fi
 
 verdict="$(jq -r '.event' "$review")"
-ncomments="$(jq '(.comments // []) | length' "$review")"
+
+# --- wire marker + anchor pre-validation -------------------------------------
+# Marker: fetch-pr's mode function reads `event=request-changes head=<sha>` off
+# posted review bodies to learn WHICH head a review judged, instead of guessing
+# from timestamps (the guess deadlocked PR#355's review loop at WAIT). Keep the
+# regex there in sync with this line — it is the whole contract between them.
+head_sha="$(git rev-parse HEAD)" || die "cannot resolve the reviewed head SHA"
+marker="<!-- faber:review event=$verdict head=$head_sha -->"
+
+# Anchors: GitHub 422s a review whose inline comment names a line outside the
+# diff, and that 422 used to cost the PR ALL its threads (the fold-all retry
+# below) — leaving fixers nothing to reply to and the mode function without its
+# thread signal. Validate up front instead: a comment on a line the diff does
+# not show is snapped to the nearest shown line of the same file; a comment on
+# a file the diff does not touch is folded into the body. Deterministic, so it
+# lives here and not in the skill.
+prepared="$bundle/review-post.json"
+commentable="$bundle/commentable-lines.txt"
+base="${BASE:-main}"
+git fetch -q origin "$base" 2>/dev/null || true
+if git rev-parse --verify --quiet "origin/$base^{commit}" >/dev/null; then
+  # New-side line numbers the diff shows (added + context), one `path:line` per
+  # row — exactly the set GitHub accepts an inline anchor on.
+  git diff --no-color -U3 "origin/$base"...HEAD | awk '
+    $1 == "+++" { file = ($2 == "/dev/null") ? "" : substr($2, 3); next }
+    /^@@/       { split($3, a, ","); ln = substr(a[1], 2) + 0; next }
+    file != "" && (/^\+/ || /^ /) { print file ":" ln; ln++ }
+  ' > "$commentable"
+else
+  : > "$commentable"   # no base to diff against — pass anchors through as-is
+fi
+jq --arg m "$marker" --rawfile cl "$commentable" '
+  ($cl | split("\n") | map(select(length > 0)
+        | capture("^(?<p>.*):(?<l>[0-9]+)$") | {p, l: (.l | tonumber)})) as $ok
+  | def near($c): ([ $ok[] | select(.p == $c.path) | .l ]) as $ls
+      | if ($ls | length) == 0 then null
+        elif ($ls | index($c.line)) != null then $c.line
+        else ($ls | min_by(if . >= $c.line then . - $c.line else $c.line - . end))
+        end;
+  (if $ok == [] then (.comments // [])
+   else [ (.comments // [])[] | . as $c | near($c) as $l
+          | if $l == null then . + {fold: true} else .line = $l end ]
+   end) as $cs
+  | {body: ($m + "\n" + .body
+            + ([ $cs[] | select(.fold) ]
+               | if length == 0 then "" else
+                   "\n\n---\n**Inline notes** (file not in the diff):\n"
+                   + ([ .[] | "- `\(.path):\(.line)` — \(.body)" ] | join("\n"))
+                 end)),
+     comments: [ $cs[] | select(.fold | not) | {path, line, body} ]}
+' "$review" > "$prepared" || die "anchor pre-validation failed"
+ncomments="$(jq '.comments | length' "$prepared")"
 
 # ALWAYS a comment-type review (feedback + inline threads). The approve/changes
 # distinction is carried by output.json + the bead close, NOT a GitHub event.
-if jq '{body: .body, comments: (.comments // [])}' "$review" \
-     | portitor pr review --pr "$pr" --event comment --inline; then
+if portitor pr review --pr "$pr" --event comment --inline < "$prepared"; then
   echo "post-review: posted comment review on PR #$pr ($ncomments inline comment(s); verdict=$verdict)"
 elif [ "$ncomments" -gt 0 ]; then
-  # An inline comment anchored to a line NOT in the PR's diff makes GitHub 422 the
-  # whole review. Retry body-only, folding the inline notes into the body so the
-  # feedback still lands (as one review comment, not per-line threads).
+  # An anchor the pre-validation could not catch still 422s the whole review.
+  # Retry body-only, folding the inline notes into the body so the feedback
+  # still lands (as one review comment, not per-line threads).
   echo "post-review: inline review rejected; retrying body-only (comments folded into the body)" >&2
   jq '{body: (.body + "\n\n---\n**Inline notes** (could not anchor to the diff):\n"
              + ([.comments[] | "- `\(.path):\(.line)` — \(.body)"] | join("\n"))),
-       comments: []}' "$review" \
+       comments: []}' "$prepared" \
     | portitor pr review --pr "$pr" --event comment --inline \
     || die "the gate refused the review even body-only (see error above)"
   echo "post-review: posted body-only review on PR #$pr (folded $ncomments inline note(s); verdict=$verdict)"

@@ -41,8 +41,9 @@ ci_comment="$(jq -r --arg m "$CI_COMMENT_MARKER" \
   '[.comments[]? | select((.body // "") | startswith($m))] | last // empty | .body // empty' <<<"$prjson")"
 
 # --- mode: REVIEW | FOLLOWUP | WAIT -----------------------------------------
-# A pure function of pr.json, computed once here so no agent re-derives it (and
-# so a wrong refinement cannot send a reviewer at the wrong question).
+# A pure function of pr.json + the checked-out head, computed once here so no
+# agent re-derives it (and so a wrong refinement cannot send a reviewer at the
+# wrong question).
 #
 #   REVIEW   no prior feedback — judge the diff against the bead and its spec.
 #   FOLLOWUP prior feedback AND the author moved since — verify the fixes.
@@ -51,24 +52,42 @@ ci_comment="$(jq -r --arg m "$CI_COMMENT_MARKER" \
 # Feedback = reviewer review-bodies + unresolved inline threads + human PR
 # comments. The machine-authored CI report is excluded: nobody can "respond" to
 # it, so counting it pinned every subsequent cycle at FOLLOWUP forever.
-# "Moved" = a commit landed after the newest timestamped feedback, or an inline
-# thread carries a reply. GitHub timestamps are ISO-8601 UTC and equal-length,
-# so string comparison is chronological. Review threads carry NO timestamp in
-# the gate's GraphQL shape (id, isResolved, path, line, comments{id, body,
-# author}) — the reply count is the only signal they offer.
-mode="$(jq -r --arg m "$CI_COMMENT_MARKER" '
+#
+# "Moved" is SHA-based: post-review stamps every review it posts with
+# `<!-- faber:review event=<event> head=<sha> -->` (its wire marker — keep the
+# two in sync), so the newest request-changes review names the exact head it
+# judged. FOLLOWUP iff the current head differs from that SHA, or an inline
+# thread carries a reply; WAIT only when the head IS the judged one. This is
+# what makes the fixer's own PR comments and this loop's own WAIT posts inert.
+# The previous rule — newest commit timestamp vs newest feedback timestamp —
+# counted both as feedback, so a fix commit pushed seconds before its summary
+# comment stayed "older than feedback" forever and the review loop deadlocked
+# at WAIT until exhaustion (PR#355). The timestamp comparison survives ONLY as
+# a fallback for PRs whose reviews predate the marker. Review threads carry NO
+# timestamp in the gate's GraphQL shape (id, isResolved, path, line,
+# comments{id, body, author}) — the reply count is the only signal they offer.
+head_sha="$(git rev-parse HEAD)" || die "cannot resolve the checked-out PR head"
+mode="$(jq -r --arg m "$CI_COMMENT_MARKER" --arg head "$head_sha" '
   def bodies: [ .reviews[]? | select((.state=="COMMENTED" or .state=="CHANGES_REQUESTED")
                                      and ((.body//"") | length > 0)) ];
   def notes:  [ .comments[]? | select(((.body//"") | startswith($m)) | not) ];
   def open_threads: [ (.reviewThreads // [])[] | select(.isResolved | not) ];
-  ((bodies | length) + (notes | length) + (open_threads | length)) as $n
+  "<!-- faber:review event=request-changes head=(?<h>[0-9a-f]{7,40}) -->" as $rx
+  | ((bodies | length) + (notes | length) + (open_threads | length)) as $n
   | if $n == 0 then "REVIEW"
     else
-      ([ (bodies[].submittedAt // empty), (notes[].createdAt // empty) ] | max // "") as $fb
-      | ([ .commits[]?.committedDate // empty ] | max // "") as $cm
-      | if (($fb != "" and $cm > $fb)
-            or ([ open_threads[] | select((.comments // [] | length) > 1) ] | length > 0))
-        then "FOLLOWUP" else "WAIT" end
+      ([ open_threads[] | select((.comments // [] | length) > 1) ] | length > 0) as $replied
+      | ([ bodies[] | select((.body//"") | test($rx))
+           | {at: (.submittedAt // ""), h: ((.body//"") | capture($rx).h)} ]
+         | sort_by(.at) | last) as $judged
+      | if $judged != null
+        then (if ($head != $judged.h) or $replied then "FOLLOWUP" else "WAIT" end)
+        else
+          ([ (bodies[].submittedAt // empty), (notes[].createdAt // empty) ] | max // "") as $fb
+          | ([ .commits[]?.committedDate // empty ] | max // "") as $cm
+          | if (($fb != "" and $cm > $fb) or $replied)
+            then "FOLLOWUP" else "WAIT" end
+        end
     end' <<<"$prjson")"
 prior="$(jq -r --arg m "$CI_COMMENT_MARKER" '
   [ (.reviews[]? | select((.state=="COMMENTED" or .state=="CHANGES_REQUESTED") and ((.body//"") | length > 0))),
