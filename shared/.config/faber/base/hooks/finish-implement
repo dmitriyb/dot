@@ -21,6 +21,56 @@
 # The agent's remaining contract: the edited tree, pr-body.md, nothing else.
 set -euo pipefail
 
+# --- diagnostics ------------------------------------------------------------
+# Duplicated in every hook on purpose: faber bind-mounts ONE FILE PER ROLE, so a
+# sibling helper is unreachable — hooks.yaml records that a "$(dirname $0)/lib"
+# call exited 127 on every step. The duplication costs ~15 lines; not having it
+# cost a fix round that could not be diagnosed afterwards at all.
+#
+# Everything this hook prints to stderr is copied into the attempt's result dir,
+# which faber preserves on EVERY path, success included. Without this a hook's
+# account of what it did survived only when the STEP FAILED (handoff.json's
+# stderr_tail — and only a tail of it), so a warning on a step that succeeded
+# went nowhere, and a call that failed silently left nothing to read.
+#
+# NEVER `set -x` here and never print a secret: the box holds credentials and
+# these files persist on the host for the life of the run directory.
+_hook="finish-implement"
+_hooks_dir="${FABER_RESULT_DIR:-}/hooks"
+if [ -n "${FABER_RESULT_DIR:-}" ] && mkdir -p "$_hooks_dir" 2>/dev/null; then
+	exec 2> >(tee -a "$_hooks_dir/$_hook.log" >&2)
+else
+	_hooks_dir=""   # host-side hook, or no result dir: log to stderr only
+fi
+
+# emit <event> [key=value ...] — the machine-readable half of the same record,
+# one JSON object per line in events.jsonl. Makes "how often does X actually
+# fail" a jq across the run directories rather than a reconstruction from
+# whichever side effects happened to survive.
+_emit() {
+	[ -n "${_hooks_dir:-}" ] || return 0
+	_e="$1"; shift
+	jq -cn --arg ts "$(date -u +%Y-%m-%dT%H:%M:%SZ)" --arg hook "$_hook" --arg event "$_e" --args \
+		'{ts:$ts,hook:$hook,event:$event} + ($ARGS.positional|map(split("=")|{(.[0]):(.[1:]|join("="))})|add // {})' \
+		"$@" >> "$_hooks_dir/events.jsonl" 2>/dev/null || true
+}
+
+# verify_push <branch> — confirm the gate's ref actually holds our commit. A
+# push that exits 0 without advancing the remote leaves every later step reading
+# stale state, and the exit code alone cannot tell that from success. One extra
+# ls-remote per push is the whole cost.
+verify_push() {
+	vp_ref="$1"
+	vp_local="$(git rev-parse HEAD)"
+	vp_remote="$(git ls-remote origin "refs/heads/$vp_ref" 2>/dev/null | awk '{print $1}')"
+	if [ "$vp_remote" = "$vp_local" ]; then
+		_emit push_verify ref="$vp_ref" sha="$vp_local" result=ok
+		return 0
+	fi
+	_emit push_verify ref="$vp_ref" want="$vp_local" got="${vp_remote:-none}" result=mismatch
+	return 1
+}
+
 die() { echo "finish-implement: $*" >&2; exit 1; }
 bundle="${FABER_BUNDLE_DIR:?FABER_BUNDLE_DIR is required}"
 result="${FABER_RESULT_DIR:?FABER_RESULT_DIR is required}"
@@ -56,6 +106,7 @@ fi
 # link if the agent also linked, else force a ref update with a signed empty
 # commit so the gate reports it.
 push_out="$(git push origin "$BRANCH" 2>&1)" || { echo "$push_out" >&2; die "push refused by the gate"; }
+verify_push "$BRANCH" || die "push of $BRANCH reported success but the gate does not hold $(git rev-parse HEAD) — nothing downstream would see this work"
 pr="$(sed -n 's/^remote: portitor: PR #\([0-9][0-9]*\).*/\1/p' <<<"$push_out" | head -n1)"
 if [ -z "$pr" ]; then
   pr="$(br show "$BEAD_ID" --json 2>/dev/null | jq -r '.[0].external_ref // empty' | grep -oE '[0-9]+' | head -n1 || true)"

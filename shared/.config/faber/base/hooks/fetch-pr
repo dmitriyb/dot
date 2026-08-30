@@ -13,6 +13,40 @@
 # skills, in one copy.
 set -euo pipefail
 
+# --- diagnostics ------------------------------------------------------------
+# Duplicated in every hook on purpose: faber bind-mounts ONE FILE PER ROLE, so a
+# sibling helper is unreachable — hooks.yaml records that a "$(dirname $0)/lib"
+# call exited 127 on every step. The duplication costs ~15 lines; not having it
+# cost a fix round that could not be diagnosed afterwards at all.
+#
+# Everything this hook prints to stderr is copied into the attempt's result dir,
+# which faber preserves on EVERY path, success included. Without this a hook's
+# account of what it did survived only when the STEP FAILED (handoff.json's
+# stderr_tail — and only a tail of it), so a warning on a step that succeeded
+# went nowhere, and a call that failed silently left nothing to read.
+#
+# NEVER `set -x` here and never print a secret: the box holds credentials and
+# these files persist on the host for the life of the run directory.
+_hook="fetch-pr"
+_hooks_dir="${FABER_RESULT_DIR:-}/hooks"
+if [ -n "${FABER_RESULT_DIR:-}" ] && mkdir -p "$_hooks_dir" 2>/dev/null; then
+	exec 2> >(tee -a "$_hooks_dir/$_hook.log" >&2)
+else
+	_hooks_dir=""   # host-side hook, or no result dir: log to stderr only
+fi
+
+# emit <event> [key=value ...] — the machine-readable half of the same record,
+# one JSON object per line in events.jsonl. Makes "how often does X actually
+# fail" a jq across the run directories rather than a reconstruction from
+# whichever side effects happened to survive.
+_emit() {
+	[ -n "${_hooks_dir:-}" ] || return 0
+	_e="$1"; shift
+	jq -cn --arg ts "$(date -u +%Y-%m-%dT%H:%M:%SZ)" --arg hook "$_hook" --arg event "$_e" --args \
+		'{ts:$ts,hook:$hook,event:$event} + ($ARGS.positional|map(split("=")|{(.[0]):(.[1:]|join("="))})|add // {})' \
+		"$@" >> "$_hooks_dir/events.jsonl" 2>/dev/null || true
+}
+
 die() { echo "fetch-pr: $*" >&2; exit 1; }
 pr="${FABER_INPUT_PR:?FABER_INPUT_PR is required}"
 bundle="${FABER_BUNDLE_DIR:?FABER_BUNDLE_DIR is required}"
@@ -54,34 +88,49 @@ ci_comment="$(jq -r --arg m "$CI_COMMENT_MARKER" \
 # it, so counting it pinned every subsequent cycle at FOLLOWUP forever.
 #
 # "Moved" is SHA-based: post-review stamps every review it posts with
-# `<!-- faber:review event=<event> head=<sha> -->` (its wire marker — keep the
-# two in sync), so the newest request-changes review names the exact head it
-# judged. FOLLOWUP iff the current head differs from that SHA, or an inline
-# thread carries a reply; WAIT only when the head IS the judged one. This is
-# what makes the fixer's own PR comments and this loop's own WAIT posts inert.
-# The previous rule — newest commit timestamp vs newest feedback timestamp —
-# counted both as feedback, so a fix commit pushed seconds before its summary
-# comment stayed "older than feedback" forever and the review loop deadlocked
-# at WAIT until exhaustion (PR#355). The timestamp comparison survives ONLY as
-# a fallback for PRs whose reviews predate the marker. Review threads carry NO
-# timestamp in the gate's GraphQL shape (id, isResolved, path, line,
-# comments{id, body, author}) — the reply count is the only signal they offer.
+# `<!-- faber:review event=<event> head=<sha> replies=<n> -->` (its wire marker
+# — keep the two in sync), so the newest request-changes review names the exact
+# head it judged AND how many open-thread comments existed when it judged.
+# FOLLOWUP iff the current head differs from that SHA, or the open-thread
+# comment total has GROWN past the stamped one; WAIT only when neither moved.
+# This is what makes the fixer's own PR comments and this loop's own WAIT posts
+# inert. The previous rule — newest commit timestamp vs newest feedback
+# timestamp — counted both as feedback, so a fix commit pushed seconds before
+# its summary comment stayed "older than feedback" forever and the review loop
+# deadlocked at WAIT until exhaustion (PR#355). The timestamp comparison
+# survives ONLY as a fallback for PRs whose reviews predate the marker.
+#
+# The COUNT, not a boolean, is what breaks the second deadlock (PR#387). Review
+# threads carry no timestamp in the gate's GraphQL shape (id, isResolved, path,
+# line, comments{id, body, author}), so "has a reply" was the only signal used
+# — and it is a latch that never clears: once the fixer answers an open thread
+# that thread has >1 comment forever, so every later round evaluated FOLLOWUP
+# whether or not anything moved, and WAIT became unreachable for the life of
+# the PR. A watermark clears each round because post-review re-stamps it.
 head_sha="$(git rev-parse HEAD)" || die "cannot resolve the checked-out PR head"
+
+# Comments across still-open threads, as of this context. post-review stamps it
+# into its marker so the NEXT round can tell "the fixer replied since" from
+# "the fixer replied at some point in the past".
+open_thread_comments="$(jq -r '[ (.reviewThreads // [])[] | select(.isResolved | not)
+                                 | (.comments // [] | length) ] | add // 0' <<<"$prjson")"
 mode="$(jq -r --arg m "$CI_COMMENT_MARKER" --arg head "$head_sha" '
   def bodies: [ .reviews[]? | select((.state=="COMMENTED" or .state=="CHANGES_REQUESTED")
                                      and ((.body//"") | length > 0)) ];
   def notes:  [ .comments[]? | select(((.body//"") | startswith($m)) | not) ];
   def open_threads: [ (.reviewThreads // [])[] | select(.isResolved | not) ];
-  "<!-- faber:review event=request-changes head=(?<h>[0-9a-f]{7,40}) -->" as $rx
+  "<!-- faber:review event=request-changes head=(?<h>[0-9a-f]{7,40})(?: replies=(?<r>[0-9]+))? -->" as $rx
   | ((bodies | length) + (notes | length) + (open_threads | length)) as $n
   | if $n == 0 then "REVIEW"
     else
       ([ open_threads[] | select((.comments // [] | length) > 1) ] | length > 0) as $replied
+      | ([ open_threads[] | (.comments // [] | length) ] | add // 0) as $open_comments
       | ([ bodies[] | select((.body//"") | test($rx))
-           | {at: (.submittedAt // ""), h: ((.body//"") | capture($rx).h)} ]
+           | ((.body//"") | capture($rx)) as $c
+           | {at: (.submittedAt // ""), h: $c.h, r: (($c.r // "0") | tonumber)} ]
          | sort_by(.at) | last) as $judged
       | if $judged != null
-        then (if ($head != $judged.h) or $replied then "FOLLOWUP" else "WAIT" end)
+        then (if ($head != $judged.h) or ($open_comments > $judged.r) then "FOLLOWUP" else "WAIT" end)
         else
           ([ (bodies[].submittedAt // empty), (notes[].createdAt // empty) ] | max // "") as $fb
           | ([ .commits[]?.committedDate // empty ] | max // "") as $cm
@@ -93,6 +142,27 @@ prior="$(jq -r --arg m "$CI_COMMENT_MARKER" '
   [ (.reviews[]? | select((.state=="COMMENTED" or .state=="CHANGES_REQUESTED") and ((.body//"") | length > 0))),
     (.comments[]? | select(((.body//"") | startswith($m)) | not)),
     ((.reviewThreads // [])[] | select(.isResolved | not)) ] | length' <<<"$prjson")"
+
+# The two feedback channels that carry no thread, rendered for CONTEXT.md. Same
+# selectors the mode function uses above (reviewer review-bodies with real text;
+# PR comments that are not the machine-authored CI report), so what the fixer
+# is shown and what the mode decision counts can never disagree. post-review's
+# wire marker is stripped from each body — it is plumbing, not feedback.
+bodies_md="$(jq -r '
+  [ .reviews[]? | select((.state=="COMMENTED" or .state=="CHANGES_REQUESTED")
+                         and ((.body//"") | length > 0))
+    | "### review by \(.author.login // "?") (\(.state))\n\n"
+      + ((.body // "") | split("\n")
+         | map(select(startswith("<!-- faber:review") | not)) | join("\n"))
+  ] | join("\n\n")' <<<"$prjson")"
+nbodies="$(jq '[ .reviews[]? | select((.state=="COMMENTED" or .state=="CHANGES_REQUESTED")
+                                     and ((.body//"") | length > 0)) ] | length' <<<"$prjson")"
+notes_md="$(jq -r --arg m "$CI_COMMENT_MARKER" '
+  [ .comments[]? | select(((.body//"") | startswith($m)) | not)
+    | "### comment by \(.author.login // "?")\n\n" + (.body // "")
+  ] | join("\n\n")' <<<"$prjson")"
+nnotes="$(jq --arg m "$CI_COMMENT_MARKER" \
+  '[ .comments[]? | select(((.body//"") | startswith($m)) | not) ] | length' <<<"$prjson")"
 
 # Unresolved review threads (portitor >= 0.1.4 includes reviewThreads in fetch;
 # tolerate absence on an older gate). threads.json is the postlude's contract:
@@ -140,6 +210,7 @@ fi
   echo "PR=$pr"
   echo "MODE=$mode"
   echo "UNRESOLVED_THREADS=$nthreads"
+  echo "OPEN_THREAD_COMMENTS=$open_thread_comments"
   echo "BASE=$(jq -r '.baseRefName // "main"' <<<"$prjson")"
   [ -n "$bead" ] && echo "BEAD_ID=$bead"
 } > "$bundle/bundle.env"
@@ -187,6 +258,28 @@ fi
     echo
     echo "(Full thread objects: \`threads.json\` in the bundle.)"
   fi
+  # Review BODIES and loose PR comments, rendered — not merely counted. They are
+  # feedback with no thread to answer into: a reviewer that wants something the
+  # diff does not contain has nowhere to anchor an inline comment, so it says so
+  # in the body instead. Until this section existed CONTEXT.md listed only the
+  # inline threads; the fix skill's "read ALL THREE sources" was the only thing
+  # pointing at `pr.json .reviews[]`, and prose is advisory. So the fixer worked
+  # the thread list, re-answered threads nobody had resolved, and never saw what
+  # the reviewer was actually asking for — the PR#387 deadlock. post-review's
+  # own marker line is stripped (plumbing, not feedback); the machine-authored
+  # CI report has its own section below.
+  if [ -n "$bodies_md" ]; then
+    echo
+    echo "## Review feedback with no thread ($nbodies) — address EVERY one"
+    echo
+    printf '%s\n' "$bodies_md"
+  fi
+  if [ -n "$notes_md" ]; then
+    echo
+    echo "## PR comments ($nnotes) — address EVERY one"
+    echo
+    printf '%s\n' "$notes_md"
+  fi
   if [ -n "$ci_comment" ]; then
     echo
     echo "## CI failure from the last land attempt — fix this"
@@ -200,3 +293,40 @@ fi
 } > "$bundle/CONTEXT.md"
 
 echo "fetch-pr: PR #$pr on $branch (mode=$mode, bead=${bead:-unresolved}, unresolved threads=$nthreads)"
+
+# --- impasse: the reviewer has now twice refused THIS EXACT tree -------------
+# Review-side only: a fixer must always be allowed to run, and halting it would
+# strand feedback nobody ever answers.
+#
+# Counted off the PR, never carried: each posted review stamps the head it
+# judged, so "how many times has this tree been refused" is re-derivable from
+# pr.json alone and survives a resume, a fresh box, or a run started tomorrow.
+#
+# Two, not one. One request-changes at the current head is legitimate: the fixer
+# may answer `Declined — ...` without touching code, and the reviewer deserves
+# one round to read that answer and reconsider. A SECOND refusal of a tree that
+# has not changed since is the two agents restating themselves, and every
+# further round costs a review plus a fix to reproduce the same disagreement —
+# which is how cycle 5 spent all five iterations of its loop and reported only
+# `loop-exhausted`, a message that names nothing anyone can act on.
+if [ "${FABER_SKILL:-}" = review ]; then
+  refusals="$(jq -r --arg head "$head_sha" '
+    "<!-- faber:review event=request-changes head=(?<h>[0-9a-f]{7,40})(?: replies=(?<r>[0-9]+))? -->" as $rx
+    | [ .reviews[]? | select((.body//"") | test($rx))
+        | select(((.body//"") | capture($rx).h) == $head) ] | length' <<<"$prjson")"
+  if [ "$refusals" -ge 2 ]; then
+    result="${FABER_RESULT_DIR:?FABER_RESULT_DIR is required to record a halt}"
+    jq -n --arg h "$head_sha" --arg n "$refusals" --arg pr "$pr" --arg t "$nthreads" '
+      {reason: "review_impasse",
+       detail: ("PR #" + $pr + ": the reviewer has requested changes " + $n
+                + " times on head " + $h + ", which has not moved between them — "
+                + "the fixer changed no code in answer. " + $t + " thread(s) are still "
+                + "open. Further rounds re-run a review and a fix to restate the same "
+                + "disagreement, so the loop is stopped here instead of exhausting its "
+                + "bound. Read the open threads and the review bodies on the PR and "
+                + "settle it: either the objection is wrong (resolve the thread) or the "
+                + "fix is missing (push it).")}' > "$result/halt.json"
+    echo "fetch-pr: PR #$pr — review impasse at head $head_sha ($refusals refusals, no code change); halting" >&2
+    exit 0
+  fi
+fi

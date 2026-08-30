@@ -51,8 +51,21 @@ workflows:
               # on `behind`/`dirty` (the merger identity cannot commit), and a
               # clean `behind` needs no agent at all.
               with: {repo: "${params.repo}", pr: "${steps.implement.pr}", blocked_by: "${steps.merge.blocked_by}"}
+            # depends_on, not mere declaration order: without an edge the scheduler
+            # dispatches ci-fix and ci-review TOGETHER, and both are wrong at once.
+            # The reviewer judges code the fixer has not written yet — it spends
+            # its verdict on the unfixed tree, so it votes `changes` and never
+            # closes the bead that prepare-fix just reopened, and iteration 2's
+            # merge then refuses on the gate's bead-closed precondition. And both
+            # boxes ask the same hardware token for an SK signature at the same
+            # instant to clone, where the second request is refused outright
+            # (`agent refused operation`) and that step dies before its first hook.
+            # The cycle chain is sequential everywhere else, which is why this was
+            # the only place two agent boxes ever launched together, and why it
+            # stayed invisible until a red CI first reached the land loop.
             - id: ci-review
               use: review
+              depends_on: [ci-fix]
               when: steps.merge.merged == false
               with: {repo: "${params.repo}", pr: "${steps.implement.pr}"}
 
@@ -126,7 +139,13 @@ workflows:
                     use: fix
                     when: steps.merge.merged == false
                     with: {repo: "${params.repo}", pr: "${steps.implement.pr}", blocked_by: "${steps.merge.blocked_by}"}
+                  # Ordering edge, same as the bead workflow's land loop above and
+                  # for the same two reasons: a reviewer that runs beside the fixer
+                  # judges the unfixed tree and leaves the reopened bead closed to
+                  # nobody, and two boxes cannot ask one hardware token for an SK
+                  # signature at the same instant.
                   - id: ci-review
                     use: review
+                    depends_on: [ci-fix]
                     when: steps.merge.merged == false
                     with: {repo: "${params.repo}", pr: "${steps.implement.pr}"}

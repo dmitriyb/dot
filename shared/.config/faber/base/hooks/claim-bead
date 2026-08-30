@@ -9,6 +9,40 @@
 # has).
 set -euo pipefail
 
+# --- diagnostics ------------------------------------------------------------
+# Duplicated in every hook on purpose: faber bind-mounts ONE FILE PER ROLE, so a
+# sibling helper is unreachable — hooks.yaml records that a "$(dirname $0)/lib"
+# call exited 127 on every step. The duplication costs ~15 lines; not having it
+# cost a fix round that could not be diagnosed afterwards at all.
+#
+# Everything this hook prints to stderr is copied into the attempt's result dir,
+# which faber preserves on EVERY path, success included. Without this a hook's
+# account of what it did survived only when the STEP FAILED (handoff.json's
+# stderr_tail — and only a tail of it), so a warning on a step that succeeded
+# went nowhere, and a call that failed silently left nothing to read.
+#
+# NEVER `set -x` here and never print a secret: the box holds credentials and
+# these files persist on the host for the life of the run directory.
+_hook="claim-bead"
+_hooks_dir="${FABER_RESULT_DIR:-}/hooks"
+if [ -n "${FABER_RESULT_DIR:-}" ] && mkdir -p "$_hooks_dir" 2>/dev/null; then
+	exec 2> >(tee -a "$_hooks_dir/$_hook.log" >&2)
+else
+	_hooks_dir=""   # host-side hook, or no result dir: log to stderr only
+fi
+
+# emit <event> [key=value ...] — the machine-readable half of the same record,
+# one JSON object per line in events.jsonl. Makes "how often does X actually
+# fail" a jq across the run directories rather than a reconstruction from
+# whichever side effects happened to survive.
+_emit() {
+	[ -n "${_hooks_dir:-}" ] || return 0
+	_e="$1"; shift
+	jq -cn --arg ts "$(date -u +%Y-%m-%dT%H:%M:%SZ)" --arg hook "$_hook" --arg event "$_e" --args \
+		'{ts:$ts,hook:$hook,event:$event} + ($ARGS.positional|map(split("=")|{(.[0]):(.[1:]|join("="))})|add // {})' \
+		"$@" >> "$_hooks_dir/events.jsonl" 2>/dev/null || true
+}
+
 die() { echo "claim-bead: $*" >&2; exit 1; }
 bead="${FABER_INPUT_BEAD:?FABER_INPUT_BEAD is required}"
 bundle="${FABER_BUNDLE_DIR:?FABER_BUNDLE_DIR is required}"

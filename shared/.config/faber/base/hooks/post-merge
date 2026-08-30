@@ -25,6 +25,40 @@
 # the prelude's job now, against per-check budgets the gate resolves.
 set -euo pipefail
 
+# --- diagnostics ------------------------------------------------------------
+# Duplicated in every hook on purpose: faber bind-mounts ONE FILE PER ROLE, so a
+# sibling helper is unreachable — hooks.yaml records that a "$(dirname $0)/lib"
+# call exited 127 on every step. The duplication costs ~15 lines; not having it
+# cost a fix round that could not be diagnosed afterwards at all.
+#
+# Everything this hook prints to stderr is copied into the attempt's result dir,
+# which faber preserves on EVERY path, success included. Without this a hook's
+# account of what it did survived only when the STEP FAILED (handoff.json's
+# stderr_tail — and only a tail of it), so a warning on a step that succeeded
+# went nowhere, and a call that failed silently left nothing to read.
+#
+# NEVER `set -x` here and never print a secret: the box holds credentials and
+# these files persist on the host for the life of the run directory.
+_hook="post-merge"
+_hooks_dir="${FABER_RESULT_DIR:-}/hooks"
+if [ -n "${FABER_RESULT_DIR:-}" ] && mkdir -p "$_hooks_dir" 2>/dev/null; then
+	exec 2> >(tee -a "$_hooks_dir/$_hook.log" >&2)
+else
+	_hooks_dir=""   # host-side hook, or no result dir: log to stderr only
+fi
+
+# emit <event> [key=value ...] — the machine-readable half of the same record,
+# one JSON object per line in events.jsonl. Makes "how often does X actually
+# fail" a jq across the run directories rather than a reconstruction from
+# whichever side effects happened to survive.
+_emit() {
+	[ -n "${_hooks_dir:-}" ] || return 0
+	_e="$1"; shift
+	jq -cn --arg ts "$(date -u +%Y-%m-%dT%H:%M:%SZ)" --arg hook "$_hook" --arg event "$_e" --args \
+		'{ts:$ts,hook:$hook,event:$event} + ($ARGS.positional|map(split("=")|{(.[0]):(.[1:]|join("="))})|add // {})' \
+		"$@" >> "$_hooks_dir/events.jsonl" 2>/dev/null || true
+}
+
 die() { echo "post-merge: $*" >&2; exit 1; }
 result="${FABER_RESULT_DIR:?FABER_RESULT_DIR is required}"
 bundle="${FABER_BUNDLE_DIR:?FABER_BUNDLE_DIR is required}"
@@ -44,6 +78,42 @@ CI_COMMENT_MARKER="<!-- faber:ci-report -->"
 # `portitor pr fetch` surfaces the GitHub PR `state` (OPEN|CLOSED|MERGED); a
 # landed PR reads MERGED. There is no boolean `.merged` field.
 is_merged() { portitor pr fetch --pr "$pr" 2>/dev/null | jq -e '.state == "MERGED"' >/dev/null 2>&1; }
+
+# The gate mirror keeps every feature branch ever pushed to it. Once the PR is
+# merged upstream that copy is dead weight — and worse, a bead id can come back:
+# a drift PR returns its bead to `open` by design (see the gate's own
+# bead-closed predicate), so a later cycle claims the same id, branches fresh
+# off main, and cannot fast-forward the leftover. The push is then refused in
+# finish-implement, AFTER the implement agent has done its work — an entire
+# agent run thrown away for a ref nobody needed. Deleting here keeps the branch
+# for exactly as long as review, fix and merge might want it, and no longer.
+#
+# The gate permits this: internal/gate/gate.go exempts deletions from the
+# signature, ancestry and role checks, refusing only the default branch.
+#
+# Non-fatal throughout. The merge has already landed by the time this runs, so
+# a cleanup that fails must never fail the step — the worst case is the leftover
+# ref this exists to avoid, which portitor-branch can still clear by hand.
+delete_gate_branch() {
+	# `|| true` is load-bearing under `set -euo pipefail`: a failing fetch makes
+	# the pipeline, and so this assignment, non-zero — which would exit the hook
+	# and fail the step for a PR that has already merged.
+	br="$(portitor pr fetch --pr "$pr" 2>/dev/null | jq -r '.headRefName // empty')" || true
+	[ -n "$br" ] || { echo "post-merge: could not resolve PR #$pr's head branch; gate mirror left as is" >&2; return 0; }
+	git push origin --delete "$br" >/dev/null 2>&1 && rc=0 || rc=$?
+	# Verify the effect, not the exit code: `git push --delete` can report success
+	# against a ref that is still advertised, and a survivor is precisely the
+	# leftover this exists to prevent — the one that refuses the next claim of the
+	# same bead id AFTER its implement agent has run.
+	if [ -n "$(git ls-remote --heads origin "$br" 2>/dev/null)" ]; then
+		echo "post-merge: WARNING $br is STILL on the gate mirror after the delete (push rc=$rc)" >&2
+		echo "post-merge: clear it with: portitor-branch --repo <repo> delete $br" >&2
+		_emit gate_branch_delete branch="$br" result=still_present rc="$rc"
+	else
+		echo "post-merge: deleted $br from the gate mirror (verified)"
+		_emit gate_branch_delete branch="$br" result=gone rc="$rc"
+	fi
+}
 
 verdict="$result/merge.json"
 
@@ -74,6 +144,7 @@ fi
 
 # ---- the agent was skipped: the prelude cleared this to land ----------------
 if is_merged; then
+	delete_gate_branch
 	printf '{"merged":true}\n' > "$result/output.json"
 	echo "post-merge: PR #$pr is already merged"
 	exit 0
@@ -107,7 +178,12 @@ if ! merge_err="$(portitor pr merge --pr "$pr" 2>&1)"; then
 	echo "post-merge: PR #$pr not landed (the gate refused, see above); routed back to the land loop"
 	exit 0
 fi
-is_merged || die "PR #$pr: merge reported success but the PR is not MERGED"
+if ! is_merged; then
+	_emit merge_verify pr="$pr" result=not_merged
+	die "PR #$pr: merge reported success but the PR is not MERGED"
+fi
+_emit merge_verify pr="$pr" result=merged
 
+delete_gate_branch
 printf '{"merged":true}\n' > "$result/output.json"
 echo "post-merge: PR #$pr merged"

@@ -10,8 +10,22 @@ CONTEXT.md gives you the bead, its spec leaves and the **mode**; `pr.json` holds
 ```json
 {"event": "approve" | "request-changes" | "comment",
  "body": "<markdown summary>",
- "comments": [{"path": "<file>", "line": <n>, "body": "<blocker, as an inline thread>"}, ...]}
+ "comments": [{"path": "<file>", "line": <n>, "body": "<blocker, as an inline thread>"}, ...],
+ "threads": {"<open thread id>": "settled" | "open", ...}}
 ```
+
+`threads` is one verdict for **every** thread in `CONTEXT.md`'s unresolved list:
+
+- **`settled`** — the objection now holds, whether the fixer changed the code or
+  convinced you it never needed changing. The box resolves it.
+- **`open`** — you still stand behind it. It stays live.
+
+An id you omit defaults to `open`, so silence is not neutral — it is a decision,
+and the box logs that you left it to the default. An unresolved thread is
+re-served to the next fixer as live work that it is required to answer, so a
+thread you are satisfied with but left open becomes a reply you read again next
+round, and again after that. That is how a review loop spends five iterations
+restating itself.
 
 ## Comment format
 
@@ -29,6 +43,8 @@ Everything else you write is a blocker that must be fixed before this PR can be 
 - **REVIEW** — no prior feedback. Judge the diff against the criteria below.
 - **FOLLOWUP** — verify every prior feedback item against the **current files**. Replies and commit messages are not evidence: read the original request, read the file, confirm the fix is present, correct, and introduced nothing new. Approve only if every item holds.
 - **WAIT** — there is prior feedback and nothing has moved since. Do not re-review: write `event: comment` with a one-line body naming what is being waited on.
+
+If you find yourself writing the same objection a second time against code that has not changed, the disagreement is real and neither side is going to move: say so plainly in `body`. The box halts a third round on an unchanged head rather than letting the loop exhaust, and your body text is what a human reads to settle it.
 
 ## What must hold to approve
 

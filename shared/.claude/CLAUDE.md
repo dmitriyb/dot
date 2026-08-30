@@ -87,9 +87,12 @@ in a session where none of this conversation survives.
 - Before editing a genuinely new part you have not already worked on this
   session, review the change for standard antipatterns: data/config in code
   (policy, budgets, thresholds or settings hardcoded into scripts or source
-  instead of a declarative config), and secrets or personal-info leaks
+  instead of a declarative config), secrets or personal-info leaks
   (absolute/machine paths, usernames, nicknames, emails, host layout) into
-  committed content.
+  committed content, and success taken from an exit code instead of from the
+  effect (an operation reported done because the call returned 0, with nothing
+  re-reading the state it was supposed to change — and its failure announced
+  only on a channel that does not survive the step).
 - If found in this exact change: STOP, name it specifically, and ask — accept for
   this session (revisitable) or rework now. Do not proceed until answered.
 - Do not silently extend an existing smell to "match the neighbors"; surface it

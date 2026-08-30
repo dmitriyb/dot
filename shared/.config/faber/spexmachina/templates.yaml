@@ -17,6 +17,9 @@ templates:
       resources: {memory: 8g, cpus: 4}
       env: {FABER_AGENT_CLI: claude, PORTITOR_HOST: portitor-spex}  # PORTITOR_HOST: the gate container the pr/portitor client targets
     skill: implement
+    invoke:   # inline over the built-in claude profile: session capture only
+      session_dir: .claude/projects
+      resume_argv: ["claude", "--continue"]
     model: claude-sonnet-5
     effort: high
     skills: [implement, go-expert]
@@ -46,6 +49,9 @@ templates:
       resources: {memory: 8g, cpus: 4}
       env: {FABER_AGENT_CLI: claude, PORTITOR_HOST: portitor-spex}  # PORTITOR_HOST: the gate container the pr/portitor client targets
     skill: implement
+    invoke:   # inline over the built-in claude profile: session capture only
+      session_dir: .claude/projects
+      resume_argv: ["claude", "--continue"]
     model: claude-sonnet-5
     effort: high
     agent_optional: true           # done-cycle: the prelude skips the agent (FABER_SKIP_AGENT); finish-implement emits the sentinel
@@ -72,6 +78,9 @@ templates:
     run:
       env: {FABER_AGENT_CLI: claude, PORTITOR_HOST: portitor-spex}  # PORTITOR_HOST: the gate container the pr/portitor client targets
     skill: review
+    invoke:   # inline over the built-in claude profile: session capture only
+      session_dir: .claude/projects
+      resume_argv: ["claude", "--continue"]
     model: claude-opus-5
     effort: high
     skills: [review, go-expert]
@@ -91,6 +100,9 @@ templates:
     run:
       env: {FABER_AGENT_CLI: claude, PORTITOR_HOST: portitor-spex}  # PORTITOR_HOST: the gate container the pr/portitor client targets
     skill: fix
+    invoke:   # inline over the built-in claude profile: session capture only
+      session_dir: .claude/projects
+      resume_argv: ["claude", "--continue"]
     model: claude-sonnet-5
     effort: high
     agent_optional: true           # prepare-fix may resolve a pure `behind` cycle by itself and skip the agent
@@ -124,6 +136,9 @@ templates:
             CHECKS_CEILING_SECONDS: "720", CHECKS_POLL_SECONDS: "10",
             CHECKS_APPEAR_SECONDS: "60"}
     skill: merge
+    invoke:   # inline over the built-in claude profile: session capture only
+      session_dir: .claude/projects
+      resume_argv: ["claude", "--continue"]
     # The agent runs ONLY on the exception branches (red CI, a stuck run, a
     # conflict) — the green path skips it entirely — so a capable model costs
     # almost nothing in aggregate and is worth it where judgement is needed.

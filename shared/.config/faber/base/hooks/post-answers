@@ -20,6 +20,56 @@
 # output.json. The agent's contract is the edited tree plus answers.json.
 set -euo pipefail
 
+# --- diagnostics ------------------------------------------------------------
+# Duplicated in every hook on purpose: faber bind-mounts ONE FILE PER ROLE, so a
+# sibling helper is unreachable — hooks.yaml records that a "$(dirname $0)/lib"
+# call exited 127 on every step. The duplication costs ~15 lines; not having it
+# cost a fix round that could not be diagnosed afterwards at all.
+#
+# Everything this hook prints to stderr is copied into the attempt's result dir,
+# which faber preserves on EVERY path, success included. Without this a hook's
+# account of what it did survived only when the STEP FAILED (handoff.json's
+# stderr_tail — and only a tail of it), so a warning on a step that succeeded
+# went nowhere, and a call that failed silently left nothing to read.
+#
+# NEVER `set -x` here and never print a secret: the box holds credentials and
+# these files persist on the host for the life of the run directory.
+_hook="post-answers"
+_hooks_dir="${FABER_RESULT_DIR:-}/hooks"
+if [ -n "${FABER_RESULT_DIR:-}" ] && mkdir -p "$_hooks_dir" 2>/dev/null; then
+	exec 2> >(tee -a "$_hooks_dir/$_hook.log" >&2)
+else
+	_hooks_dir=""   # host-side hook, or no result dir: log to stderr only
+fi
+
+# emit <event> [key=value ...] — the machine-readable half of the same record,
+# one JSON object per line in events.jsonl. Makes "how often does X actually
+# fail" a jq across the run directories rather than a reconstruction from
+# whichever side effects happened to survive.
+_emit() {
+	[ -n "${_hooks_dir:-}" ] || return 0
+	_e="$1"; shift
+	jq -cn --arg ts "$(date -u +%Y-%m-%dT%H:%M:%SZ)" --arg hook "$_hook" --arg event "$_e" --args \
+		'{ts:$ts,hook:$hook,event:$event} + ($ARGS.positional|map(split("=")|{(.[0]):(.[1:]|join("="))})|add // {})' \
+		"$@" >> "$_hooks_dir/events.jsonl" 2>/dev/null || true
+}
+
+# verify_push <branch> — confirm the gate's ref actually holds our commit. A
+# push that exits 0 without advancing the remote leaves every later step reading
+# stale state, and the exit code alone cannot tell that from success. One extra
+# ls-remote per push is the whole cost.
+verify_push() {
+	vp_ref="$1"
+	vp_local="$(git rev-parse HEAD)"
+	vp_remote="$(git ls-remote origin "refs/heads/$vp_ref" 2>/dev/null | awk '{print $1}')"
+	if [ "$vp_remote" = "$vp_local" ]; then
+		_emit push_verify ref="$vp_ref" sha="$vp_local" result=ok
+		return 0
+	fi
+	_emit push_verify ref="$vp_ref" want="$vp_local" got="${vp_remote:-none}" result=mismatch
+	return 1
+}
+
 die() { echo "post-answers: $*" >&2; exit 1; }
 bundle="${FABER_BUNDLE_DIR:?FABER_BUNDLE_DIR is required}"
 result="${FABER_RESULT_DIR:?FABER_RESULT_DIR is required}"
@@ -54,6 +104,7 @@ else
   echo "post-answers: committed the fixer's tree"
 fi
 git push origin HEAD >/dev/null 2>&1 || die "the gate refused the push (a rebase needs a force push the gate denies — merge the base in instead)"
+verify_push "$(git rev-parse --abbrev-ref HEAD)" || die "the fix push reported success but the gate does not hold it — the replies below would answer for work that never landed"
 echo "post-answers: pushed $(git rev-parse --abbrev-ref HEAD)"
 
 answers="$result/answers.json"
@@ -101,12 +152,18 @@ bad="$(jq --slurpfile th "$threads_file" -r '
   | length' "$answers")"
 [ "$bad" -eq 0 ] || die "answers.json is MALFORMED — $bad reply(ies) target an unknown thread id or carry no body (known ids are in threads.json)"
 
-# Each reply is a verdict, not prose: `Addressed — ...` or `Declined — ...`.
-# Enforced here because a reply that says neither leaves the reviewer guessing
-# whether the thread was fixed or refused. The PR-level `comment` is exempt: it
-# also carries conflict rationale, which is neither.
+# `Addressed — ...` / `Declined — ...` is the convention the fix skill asks for,
+# and it stays a convention: NOTHING parses this prefix. No hook reads it, no
+# downstream step binds it, and the reviewer it is written for is an agent
+# reading prose — unlike `blocked_by`, which post-merge threads into the step
+# output and ci-fix binds as a typed input. It was a `die` until a fix step lost
+# a 1h33m epic over two replies opening "Confirmed still holds" and "Filed as a
+# non-blocking drift claim" — both legitimate answers, both against code this
+# hook had already committed and pushed. A first-word test cannot separate a
+# real verdict from `Addressed — <evasion>` either, so a deviation is reported
+# and the replies are posted.
 badfmt="$(jq -r '[.replies[] | select((.body | test("^\\s*(Addressed|Declined)\\b")) | not)] | length' "$answers")"
-[ "$badfmt" -eq 0 ] || die "$badfmt reply(ies) start with neither \"Addressed\" nor \"Declined\" — every thread reply is one of those two verdicts"
+[ "$badfmt" -eq 0 ] || echo "post-answers: $badfmt reply(ies) open with neither \"Addressed\" nor \"Declined\"; posting anyway (see skills/fix)" >&2
 
 fail=0
 while IFS= read -r idx; do
