@@ -23,6 +23,15 @@ already agree binds nothing.
   and are building the case afterwards. That is the signal to stop, not proceed.
 - My frustration is not authorization. Neither is a broken state, nor one you
   caused. Urgency you feel is not mine.
+- Before any operation that touches a key or leaves this machine — `git commit`
+  and `git tag` (signing), `git push` / `fetch` / `pull` / `clone` (ssh auth; I
+  am not always at the machine to touch the key), tracker mutations
+  (`br create/update/close`, adapter runs), anything moving durable state
+  (`spex ingest`, `spex register`) — announce the exact operation and its
+  object, then wait for my go. One go covers one named operation.
+- The same pause guards destructive local operations — `git reset --hard`,
+  `git branch -D`, deleting uncommitted work — a named announcement, then my
+  go.
 
 ## Verified over plausible
 
@@ -78,6 +87,15 @@ or fakes it destroys the property entirely.
   commit cannot be pushed anyway. Checking only burns tokens.
 - A signing failure is the hard stop above — report only: no diagnostics, no
   retry, no workaround.
+
+## Commit messages
+
+- Show the full message and the staged file list at the pause before every
+  commit; the commit runs only after my go on exactly that message.
+- The message states the meaning of the change — what it changes, never which
+  procedure produced it.
+- Default size is one sentence. Big work does not grow the message: scope,
+  doubts and caveats belong in the pre-commit discussion, and stay there.
 
 ## Committed content outlives the session
 

@@ -315,7 +315,7 @@ For an epic, the same full chain runs as a pull-loop, one cycle at a time:
 each cycle's box picks the next ready epic bead from inside the clone (br in
 the image; the host needs no br), lands it, and the loop ends on the first
 cycle that finds nothing ready — or that finds a blocking drift report on
-main (settle sentinel `halt_reason: blocking_drift`; triage with /drift-fix,
+main (settle sentinel `halt_reason: blocking_drift`; triage with /drift-workflow,
 then rerun). Sequential landing is also correctness —
 every merge advances main and the gate's stale-base rule rejects branches
 claimed off an older main. A failed cycle fail-stops the epic after the

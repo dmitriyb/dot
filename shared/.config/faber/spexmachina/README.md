@@ -87,5 +87,5 @@ faber run epic --config orchestrator.yaml --param epic=<epic-id>
   each cycle's box selects the next ready epic bead from inside the clone
   (`next-bead-context`), lands it, and the loop settles on the first cycle that
   finds nothing ready — or that finds a blocking drift report in `drifts/` (the
-  spec is disputed; `/drift-fix` in the repo triages, then rerun the epic). Strictly sequential by construction — every merge advances
+  spec is disputed; `/drift-workflow` in the repo triages, then rerun the epic). Strictly sequential by construction — every merge advances
   main and the gate's stale-base rule rejects branches claimed off an older main.
