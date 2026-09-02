@@ -199,21 +199,17 @@ if [[ "$(uname)" == "Darwin" ]]; then
   SSH_AGENT_ARGS+=(--group-add 0)
 fi
 
-# faber config + run state (personal only). The host's ~/.config/faber holds every
-# project's orchestrator/hooks/skills AND, because faber-epic cds into the project
-# dir before `faber run`, every project's .faber/runs/ (journals, box results,
-# captured sessions). One bind at the same XDG path lets the in-container agent read
-# run journals and edit workflow config in place — no copy-paste from the host
-# terminal. Resolved through symlinks first: on the host the path is a stow link into
-# the dot checkout, and docker binds the path it is given, not what it points at.
-# Read-write on purpose: editing hooks/skills/config is the point. Runs are only ever
-# written by the host-side faber. The container image carries a stowed symlink at the
-# same path (into its baked dot clone); the bind shadows it while the container runs.
-# Nothing here grants the docker socket — faber inside the container can `validate`,
-# never `build` or `run`.
-FABER_CONFIG_ARGS=()
-if [[ -d "$HOME/.config/faber" ]]; then
-  FABER_CONFIG_ARGS=(-v "$(resolve_path "$HOME/.config/faber")":/home/dev/.config/faber)
+# faber run state (personal only). The host-side faber writes every run — journal,
+# box results, --sessions transcripts — under state_dir from ~/.config/faber/host.json
+# (docs/deploy.md), which is set to ~/.local/state/faber: one flat runs/ for all
+# projects, each journal header naming its own config_path and workflow. Binding that
+# real directory at the same XDG path lets the in-container agent read runs live; it
+# is not a copy. Workflow config is NOT mounted: it lives in the dot repo, so the agent
+# edits it in its own /workspace/dot clone and runs `faber validate` there (nix, no
+# daemon). Nothing here grants the docker socket — `faber build`/`run` stay host-side.
+FABER_STATE_ARGS=()
+if [[ -d "$HOME/.local/state/faber" ]]; then
+  FABER_STATE_ARGS=(-v "$HOME/.local/state/faber":/home/dev/.local/state/faber)
 fi
 
 if [[ "$MODE" == "personal" ]]; then
@@ -258,7 +254,7 @@ Then store it:
     -v "$PERSONAL_REPO_VOLUME":/workspace \
     -v claude-fish-data-personal:/home/dev/.local/share/fish \
     -v claude-tmux-data-personal:/home/dev/.local/share/tmux \
-    ${FABER_CONFIG_ARGS[@]+"${FABER_CONFIG_ARGS[@]}"} \
+    ${FABER_STATE_ARGS[@]+"${FABER_STATE_ARGS[@]}"} \
     "${SSH_AGENT_ARGS[@]}" \
     -p 127.0.0.1:2223:2223 \
     ${PERSONAL_OTEL_ARGS[@]+"${PERSONAL_OTEL_ARGS[@]}"} \
