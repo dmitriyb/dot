@@ -80,6 +80,19 @@ RUN printf '%s\n' 'dvbozhko@gmail.com ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIIhmCW
     && bash install.sh \
     && rm -f install.sh install.sh.sig /tmp/spex-signers
 
+# Install faber (the host CLI only in spirit: here it serves `faber validate`, which
+# compiles orchestrator.yaml against nix and needs no docker daemon — the daemon is
+# deliberately NOT reachable from this container). Same verified-installer pattern and
+# the same release-signing key as spex above; the installer also drops `faber-box`
+# beside it, unused here. INSTALL_DIR overrides the installer's /usr/local/bin default.
+RUN printf '%s\n' 'dvbozhko@gmail.com ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIIhmCWVDP/Tcm3CqXNjTQTChbKxr223xMob9zc56Uuny' > /tmp/faber-signers \
+    && curl -fsSLO https://github.com/dmitriyb/faber/releases/latest/download/install.sh \
+    && curl -fsSLO https://github.com/dmitriyb/faber/releases/latest/download/install.sh.sig \
+    && ssh-keygen -Y verify -f /tmp/faber-signers -I dvbozhko@gmail.com -n file \
+         -s install.sh.sig < install.sh \
+    && INSTALL_DIR=/home/dev/.local/bin sh install.sh \
+    && rm -f install.sh install.sh.sig /tmp/faber-signers
+
 # Clone and stow dotfiles. DOT_PROFILE=headless → setup.sh stows shared + headless
 # and skips host-only ssh-agent activation (no init system here; the agent is
 # forwarded from the host via -e SSH_AUTH_SOCK at run time).
