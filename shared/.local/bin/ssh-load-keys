@@ -3,8 +3,8 @@
 # ssh-agent, EXCLUDING any sign-only / no-touch key listed in ~/.ssh/signing-key-hashes.
 #
 # A no-touch key must never live in the main (forwarded) agent: it would let
-# anything inside a forwarded container sign with no touch. Those keys are only
-# loaded into the ephemeral agent created by `docker-claude --agent`.
+# anything inside a forwarded container sign with no touch. Those keys are
+# loaded only by faber, one per step, into that step's ephemeral agent.
 #
 # Resident keys are downloaded with `ssh-keygen -K` (PIN + one touch), loaded
 # selectively, then the handle files are discarded — nothing is left on disk.
@@ -18,7 +18,7 @@ Usage: ssh-load-keys        (no arguments)
 
 Loads the YubiKey's resident FIDO2 keys into the running ssh-agent, EXCLUDING
 any sign-only / no-touch key listed in ~/.ssh/signing-key-hashes (those load
-only into the ephemeral agent of `docker-claude --agent`). Needs the YubiKey
+only into faber's per-step ephemeral agents). Needs the YubiKey
 plugged in; asks PIN + one touch; downloaded handle files are discarded.
 EOF2
 			exit 0 ;;

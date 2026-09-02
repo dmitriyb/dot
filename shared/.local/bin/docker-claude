@@ -7,7 +7,6 @@ WORK_IMAGE="claude-dev-work"
 MODE=""
 REBUILD=false
 NO_CACHE=false
-AGENT_MODE=false
 
 usage() {
   cat <<'EOF'
@@ -17,7 +16,7 @@ docker-claude — single entrypoint for the containerized Claude cockpit.
   forwarding, and separate personal/work images.
 
 usage:
-  docker-claude personal [-a] [-r | --no-cache]
+  docker-claude personal [-r | --no-cache]
   docker-claude work [-r | --no-cache]
 
 commands:
@@ -25,8 +24,6 @@ commands:
   work               work account via the wire proxy (needs the `jbcentral` CLI)
 
 options:
-  -a, --agent        personal only: forward an ephemeral no-touch SSH signing agent
-                     (commits are signed; the key cannot auth)
   -r, --rebuild      rebuild the image(s) before running
   --no-cache         rebuild with no Docker cache (implies --rebuild)
   -h, --help         show this help
@@ -34,13 +31,13 @@ options:
 aliases: dc=docker-claude, dcp=personal, dcw=work.
 
 examples:
-  docker-claude personal --agent     # interactive personal session w/ signing agent
+  docker-claude personal             # interactive personal session
   docker-claude work                 # work account via the wire proxy
 EOF
 }
 
 # Resolve our own real path (needed before the shared lib is sourced), then load
-# the shared lib (keychain + signing + dot_root) from the sibling libexec dir.
+# the shared lib (keychain + secret mounts + dot_root) from the sibling libexec dir.
 resolve_path() {
   local p="$1" target
   while [ -L "$p" ]; do
@@ -94,10 +91,6 @@ while [[ $# -gt 0 ]]; do
   --no-cache)
     NO_CACHE=true
     REBUILD=true
-    shift
-    ;;
-  -a | --agent)
-    AGENT_MODE=true
     shift
     ;;
   *)
@@ -255,30 +248,6 @@ Then store it:
     )
     # Linux: host.docker.internal is Docker-Desktop-only; map the host gateway.
     [[ "$(uname)" != "Darwin" ]] && PERSONAL_OTEL_ARGS+=(--add-host=host.docker.internal:host-gateway)
-  fi
-
-  if [[ "$AGENT_MODE" == true ]]; then
-    # Agent mode: forward an ephemeral no-touch signing-only agent. Transport
-    # uses GH_TOKEN over HTTPS (see entrypoint), so the key signs but can't auth.
-    start_personal_signing_agent
-    PERSONAL_AGENT_ARGS=(-v "$SIGN_SOCK":/ssh-agent -e SSH_AUTH_SOCK=/ssh-agent -e AGENT_MODE=1)
-    if [[ "$(uname)" == "Darwin" ]]; then
-      PERSONAL_AGENT_ARGS+=(--group-add 0)
-    fi
-    # NOT exec: control returns here on container exit so the trap tears down the
-    # signing agent and cleanup_secrets shreds the mounted token files.
-    docker run -it --rm \
-      --memory=8g --cpus=4 \
-      -v "$PERSONAL_REPO_VOLUME":/workspace \
-      -v "$FISH_DATA_VOLUME":/home/dev/.local/share/fish \
-      -v "$TMUX_DATA_VOLUME":/home/dev/.local/share/tmux \
-      ${FABER_CONFIG_ARGS[@]+"${FABER_CONFIG_ARGS[@]}"} \
-      "${PERSONAL_AGENT_ARGS[@]}" \
-      ${PERSONAL_OTEL_ARGS[@]+"${PERSONAL_OTEL_ARGS[@]}"} \
-      ${SECRET_ARGS[@]+"${SECRET_ARGS[@]}"} \
-      "$PERSONAL_IMAGE"
-    cleanup_secrets
-    exit 0
   fi
 
   # NOT exec (was): keep the parent alive so cleanup_secrets runs after the session.

@@ -1,7 +1,7 @@
 # agent-common.sh — shared host-side helpers for docker-claude.
 #
 # Sourced, not executed. Single source of truth for the cross-platform keychain
-# reads, the personal signing-agent bring-up, and path resolution. Sourced by
+# reads, the /run/secrets token mounts, and path resolution. Sourced by
 # docker-claude (the entrypoint); lives next to it in .local/libexec/docker-claude.
 
 # Portable `readlink -f` (BSD/macOS readlink lacks -f): walk the symlink chain.
@@ -104,57 +104,5 @@ keychain_optional() {
 		[[ -n "$hint" ]] && echo "$hint" >&2
 	else
 		echo "Warning: keychain lookup failed for $label (rc=$rc); continuing without it." >&2
-	fi
-}
-
-# ---- resident no-touch signing key (the role identity for autonomous runs) ----
-
-# Committed list of SHA-256 hashes identifying the sign-only / no-touch resident
-# key(s). Only hashes are stored, never the key name.
-SIGNING_HASH_FILE="$HOME/.ssh/signing-key-hashes"
-
-_sha256() {
-	if command -v sha256sum >/dev/null 2>&1; then
-		sha256sum | awk '{print $1}'
-	else
-		shasum -a 256 | awk '{print $1}'
-	fi
-}
-
-# True if the given key handle's application suffix is listed in SIGNING_HASH_FILE.
-_is_signing_key() {
-	local suffix h
-	suffix="${1##*_sk_rk_}"
-	h="$(printf '%s' "$suffix" | _sha256)"
-	grep -vE '^[[:space:]]*(#|$)' "$SIGNING_HASH_FILE" 2>/dev/null | grep -qix "$h"
-}
-
-# start_personal_signing_agent — interactive `docker-claude --agent` (personal) mode.
-# Loads ONLY the personal no-touch sign-only key, identified by HASH (SIGNING_HASH_FILE).
-# The resident key is pulled off the YubiKey at launch (PIN + 1 touch); the handle file
-# is removed once loaded; the agent + socket are torn down on exit (trap), so nothing is
-# left at rest.
-start_personal_signing_agent() {
-	if [[ ! -s "$SIGNING_HASH_FILE" ]] || ! grep -qiE '^[[:space:]]*[0-9a-f]{64}[[:space:]]*$' "$SIGNING_HASH_FILE"; then
-		echo "Error: no signing-key hash configured in $SIGNING_HASH_FILE." >&2
-		echo "Add one with: printf '%s' '<app-suffix>' | sha256sum" >&2
-		exit 1
-	fi
-	SIGN_SOCK="$(mktemp -u "${TMPDIR:-/tmp}/dc-agent.XXXXXX.sock")"
-	eval "$(ssh-agent -a "$SIGN_SOCK")" >/dev/null
-	SIGN_PID="$SSH_AGENT_PID"
-	trap 'kill "$SIGN_PID" 2>/dev/null; rm -f "$SIGN_SOCK"' EXIT
-	local dir key; dir="$(mktemp -d)"
-	( cd "$dir" && ssh-keygen -K -N "" >/dev/null ) # download resident creds (PIN + touch)
-	shopt -s nullglob
-	for key in "$dir"/id_*_sk_rk_*; do
-		[[ "$key" == *.pub ]] && continue
-		if _is_signing_key "$key"; then
-			SSH_AUTH_SOCK="$SIGN_SOCK" ssh-add "$key" >/dev/null 2>&1
-		fi
-	done
-	rm -rf "$dir"
-	if [[ "$(SSH_AUTH_SOCK="$SIGN_SOCK" ssh-add -L 2>/dev/null | grep -c .)" != 1 ]]; then
-		echo "Warning: signing agent does not hold exactly one key." >&2
 	fi
 }

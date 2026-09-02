@@ -38,26 +38,12 @@ secret-tool store --label='gh work'     service gh account work
 
 Tokens are passed in as `GH_TOKEN` at container start. If absent, `gh` just stays unauthenticated — no error.
 
-### Agent mode (no-touch commit signing)
-
-`--agent` (personal only) forwards an ephemeral signing-only agent holding a single no-touch FIDO2 key, so agents inside the container can sign commits without touch prompts. Push/fetch use `GH_TOKEN` over HTTPS, so the key signs but can't authenticate as you.
-
-One-time setup: enroll a resident no-touch key, register its **public** key on GitHub as a *Signing Key*, then record its hash so the scripts can find it without storing the name:
-
-```bash
-ssh-keygen -t ed25519-sk -O resident -O no-touch-required -O application=ssh:<name> -f /tmp/k && rm /tmp/k*
-printf '%s' '<name>' | sha256sum   # add the digest to ~/.ssh/signing-key-hashes
-```
-
-Load your normal (touch) keys into the main agent with `ssh-load-keys`, which excludes any no-touch key listed in `~/.ssh/signing-key-hashes`.
-
 ## Usage
 
 `docker-claude` is the single entrypoint; everything is a subcommand.
 
 ```bash
 docker-claude personal             # Personal account (Max subscription via OAuth)
-docker-claude personal --agent     # Personal, agent mode: ephemeral no-touch signing agent
 docker-claude work                 # Work account (via wire proxy)
 docker-claude personal -r          # Rebuild images, then launch personal
 docker-claude personal --no-cache  # Full fresh rebuild (re-downloads everything)
@@ -143,7 +129,7 @@ to add — not more hashing.
 - **Separate auth**: personal uses `CLAUDE_CODE_OAUTH_TOKEN` (keychain), work uses the wire proxy (started host-side via the `jbcentral` CLI; the container reaches it through `host.docker.internal`); `gh` CLI uses `GH_TOKEN` from keychain (optional)
 - **Persistent volumes**: `claude-personal-repos` / `claude-work-repos` (cloned repos; work on native ext4), `claude-fish-data-personal` / `claude-fish-data-work` (fish history), `claude-tmux-data-personal` / `claude-tmux-data-work` (tmux resurrect). Neovim plugins and the Claude binary are baked into the image. Claude Code's own state piggybacks on the repo volume rather than a dedicated volume: session transcripts (`projects/`) and prompt history (`history.jsonl`) are symlinked from `~/.claude` into `/workspace/.claude-state` by the entrypoint, and per-project trust is regenerated into `~/.claude.json` from the `/workspace` subdirectories on every boot (so trust never re-prompts, with no stale entries or cached state).
 - **faber config mount** (personal only): the host's `~/.config/faber` — every project's orchestrator/hooks/skills and, since `faber-epic` runs from the project dir, every project's `.faber/runs/` (journals, box results, `--sessions` transcripts) — is bind-mounted read-write at the same path, resolved through its stow symlink. The in-container agent reads run journals and edits workflow config in place; runs are written only by the host-side faber. `faber validate` works in-container (nix, no daemon); `faber build`/`run` do not, by design.
-- **SSH agent forwarding**: by default the host agent is forwarded (YubiKey touch-signing works for git). With `--agent` (personal only), an ephemeral signing-only agent holding just a no-touch FIDO2 key is forwarded instead, and git transport switches to `GH_TOKEN` over HTTPS — so agents can sign commits without touch prompts but can't authenticate as you. The agent is torn down on container exit; the no-touch key is identified by hash in `~/.ssh/signing-key-hashes` (no key name in the repo).
+- **SSH agent forwarding**: the host agent is forwarded, so YubiKey touch-signing works for git inside the container.
 - **IDEA access**: dedicated ed25519 key for SSH, auto-generated per machine at build time
 - **MCP servers**: work entrypoint filters to only Docker-compatible servers (ijproxy via host IDE, Context7, PluginModelAnalyzer)
 - **Nested tmux**: container uses `C-b` prefix, `ctrl+arrow` for window nav (host uses `C-a`, `shift+arrow`)
