@@ -11,8 +11,10 @@ CONTEXT.md names the bead, its spec leaves and the unresolved threads; `threads.
 2. **`$FABER_RESULT_DIR/answers.json`**: one reply per thread, plus an optional PR-level comment for review-body items that have no thread.
    ```json
    {"replies": [{"thread": "<id from threads.json>", "body": "Addressed — <what changed>"}],
-    "comment": "<optional markdown, for feedback with no thread to answer into>"}
+    "comment": "<optional markdown, for feedback with no thread to answer into>",
+    "description": "<optional markdown: the whole PR body, only when the review asks for the description to change>"}
    ```
+   `description` replaces the PR body whole — carry over every section that still holds. The box posts it; you have no other channel to the PR description.
    Every thread gets exactly one reply, and each is one of:
    - **`Addressed — <what changed>`** — 1–2 sentences.
    - **`Declined — <why>`** — up to one paragraph. The reviewer re-judges it; use this when you believe the review is wrong, never to defer work.

@@ -12,7 +12,8 @@
 #     context time) and UNRESOLVED_THREADS into bundle.env;
 #   - the fix skill wrote $FABER_RESULT_DIR/answers.json:
 #       {"replies": [{"thread": "<id>", "body": "<markdown>"}, ...],
-#        "comment": "<optional markdown for review-body items with no thread>"}
+#        "comment": "<optional markdown for review-body items with no thread>",
+#        "description": "<optional markdown: the PR body, replaced whole>"}
 #     answering EVERY thread listed in threads.json.
 #
 # It also owns the deterministic tail, as finish-implement does for implement:
@@ -116,6 +117,38 @@ answers="$result/answers.json"
 # the agent writes can disagree with what was actually posted.
 emit() {
   if [ -f "$answers" ]; then
+    # The PR body is the durable record of the delivery (the bead's
+    # external_ref points at it), and a review may find it wrong — the observed
+    # case was a body saying "No code change" over a head that rewrote four
+    # files. Only finish-implement had a `describe` lever, so the fixer could
+    # answer that review only in prose (run 20260903-114514). Same channel rule
+    # as the comment below: the agent writes the text, this hook posts it.
+    # Verified by re-reading the PR, not by the exit code: finish-implement
+    # trusts `describe`'s exit status, and a body that did not take would let
+    # the replies below claim a fix the PR does not carry.
+    desc="$(jq -r '.description // ""' "$answers")"
+    if [ -n "$desc" ]; then
+      printf '%s\n' "$desc" | portitor pr describe --pr "$pr" \
+        || die "the gate refused pr describe on PR #$pr"
+      fetched="$(portitor pr fetch --pr "$pr" 2>/dev/null)" || fetched=""
+      if [ -z "$fetched" ]; then
+        echo "post-answers: could not re-read PR #$pr to verify the description" >&2
+        _emit describe_verify pr="$pr" result=unavailable
+      else
+        # Compare modulo line endings and trailing whitespace: GitHub normalizes
+        # CRLF and trims, and neither changes what the body says.
+        norm() { tr -d '\r' | sed 's/[[:space:]]*$//' | sed -e :a -e '/^\n*$/{$d;N;ba' -e '}'; }
+        want_n="$(printf '%s\n' "$desc" | norm)"
+        got_n="$(jq -r '.body // ""' <<<"$fetched" | norm)"
+        if [ "$want_n" = "$got_n" ]; then
+          _emit describe_verify pr="$pr" result=ok bytes="$(printf '%s' "$desc" | wc -c | tr -d ' ')"
+          echo "post-answers: set PR #$pr description (verified)"
+        else
+          _emit describe_verify pr="$pr" result=mismatch
+          die "pr describe reported success but PR #$pr does not carry the new body — the replies below would claim a description the PR does not have"
+        fi
+      fi
+    fi
     body="$(jq -r '.comment // ""' "$answers")"
     if [ -n "$body" ]; then
       printf '%s\n' "$body" | portitor pr comment --pr "$pr" \
@@ -134,8 +167,9 @@ if [ ! -f "$answers" ]; then
 fi
 
 jq -e 'type == "object" and (.replies | type == "array")
-       and ((.comment // "") | type == "string")' "$answers" >/dev/null 2>&1 \
-  || die "answers.json is MALFORMED — want {\"replies\": [{\"thread\": id, \"body\": md}, ...], \"comment\": md?}"
+       and ((.comment // "") | type == "string")
+       and ((.description // "") | type == "string")' "$answers" >/dev/null 2>&1 \
+  || die "answers.json is MALFORMED — want {\"replies\": [{\"thread\": id, \"body\": md}, ...], \"comment\": md?, \"description\": md?}"
 
 nreplies="$(jq '.replies | length' "$answers")"
 if [ "$nreplies" -eq 0 ]; then

@@ -107,9 +107,25 @@ if jq -e '[.body, (.comments // [])[].body] | join("\n") | test("\\bnits?\\b|min
      "$review" >/dev/null 2>&1; then
   die "review.json hedges a finding (nit / minor: / optional:) — there is no advisory tier: everything you write must be fixed before approval, so either make it a blocker or drop it"
 fi
+# An approve event whose body is more than the one line `Approved.` is not an
+# approval: the skill defines every further line as a blocker, so "approved,
+# except for ..." is a verdict this hook cannot score true or false. It is not
+# a fix round either — the leftover item may be one no fixer can clear (a PR
+# body the fix role had no lever for was the observed case, run 20260903-114514)
+# — and it is not a failure: nothing broke. So it is an OPERATOR STOP: nothing
+# is posted to the PR, the reviewer's body travels as the halt detail, and faber
+# settles the step halted (run exit 3, resumable) instead of failed. Resume
+# re-runs the review with a fresh agent; clear the item on the PR first, or the
+# next reviewer halts here again with the same text.
 if [ "$(jq -r '.event' "$review")" = approve ] \
    && [ "$(jq -r '.body' "$review" | sed '/^[[:space:]]*$/d' | wc -l | tr -d ' ')" -gt 1 ]; then
-  die "an approval body must be a single line (\"Approved.\") — it is not a summary of what you checked"
+  jq -n --arg pr "$pr" --arg body "$(jq -r '.body' "$review")" '
+    {reason: "approval-not-boolean",
+     detail: ("the reviewer returned an approve verdict with a multi-line body; approved with reservations is not approved, and the reservation may be one no fixer can clear — nothing was posted to PR #" + $pr + ". Clear it on the PR, then resume (the review re-runs). Reviewer body:\n\n" + $body)}
+  ' > "$result/halt.json" || die "could not write halt.json"
+  _emit halt reason=approval-not-boolean pr="$pr"
+  echo "post-review: approve verdict with a multi-line body on PR #$pr — not posting; halting for an operator (see halt.json)" >&2
+  exit 0
 fi
 
 verdict="$(jq -r '.event' "$review")"
