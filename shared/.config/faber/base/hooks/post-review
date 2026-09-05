@@ -103,7 +103,20 @@ jq -e '
 # `blocking` as a field name, so a reviewer judging a drift report has to be able
 # to write it. The advisory TIER is abolished by the skill; this catches the
 # vocabulary that carried it.
-if jq -e '[.body, (.comments // [])[].body] | join("\n") | test("\\bnits?\\b|minor:|optional:"; "i")' \
+#
+# `minor` and `optional` are ordinary English besides being tier names, so they
+# are matched only where a TIER can be declared: at the head of a line, past an
+# optional list bullet and emphasis. Unanchored, they also matched the word in
+# the middle of a sentence — a review was killed for quoting a requirement
+# ("The flag is required, not optional: a run without it is exit 1"), which is
+# the strongest possible use of the word and the opposite of hedging. `nit` has
+# no such second life in review prose, so it stays matched anywhere.
+#
+# The line anchor is spelled `(?:^|\n)` rather than `^` with a flag: jq's
+# Oniguruma leaves `^` at string start by default, and `(?m)` there means "dot
+# matches newline", so the flag reads as a coincidence rather than a statement.
+if jq -e '[.body, (.comments // [])[].body] | join("\n")
+          | test("\\bnits?\\b|(?:^|\n)[[:space:]]*(?:[-*+][[:space:]]*)?(?:\\*\\*|__|_)?(?:minor|optional)(?:\\*\\*|__|_)?[[:space:]]*:"; "i")' \
      "$review" >/dev/null 2>&1; then
   die "review.json hedges a finding (nit / minor: / optional:) — there is no advisory tier: everything you write must be fixed before approval, so either make it a blocker or drop it"
 fi
