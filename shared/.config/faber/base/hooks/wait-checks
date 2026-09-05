@@ -73,8 +73,36 @@ bundle="${FABER_BUNDLE_DIR:?FABER_BUNDLE_DIR is required}"
 ceiling="${CHECKS_CEILING_SECONDS:-720}"   # 12m: ~3 attempts of detect + re-run, with margin
 poll="${CHECKS_POLL_SECONDS:-10}"
 appear="${CHECKS_APPEAR_SECONDS:-60}"      # how long an EMPTY rollup means "not registered yet" (see the loop)
+settle="${CHECKS_SETTLE_SECONDS:-90}"      # how long a non-CLEAN state on an all-green PR reads as forge lag (see the loop)
+api_tries="${CHECKS_API_TRIES:-3}"         # a checks read is a network hop; one blip must not decide the step
+api_retry="${CHECKS_API_RETRY_SECONDS:-5}"
 
 command -v portitor >/dev/null 2>&1 || die "the portitor client is not on PATH"
+
+# `portitor pr checks` is one network hop through the gate to the GitHub API, and
+# a single blip used to end the step outright: a run died here on one
+# `net/http: TLS handshake timeout` from the graphql endpoint, on a PR that was
+# green. A transport error carries no information about the PR, so it is retried
+# a bounded number of times before it is allowed to be fatal. portitor prints its
+# own diagnosis to stderr, which is already tee'd into the hook log, so every
+# attempt stays on the record; only stdout is captured, so the JSON stays clean.
+pr_checks() {
+	local n=1 out=""
+	while :; do
+		if out="$(portitor pr checks --pr "$pr")"; then
+			printf '%s' "$out"
+			return 0
+		fi
+		if [ "$n" -ge "$api_tries" ]; then
+			_emit checks_read pr="$pr" result=exhausted attempts="$n"
+			return 1
+		fi
+		_emit checks_read pr="$pr" result=retry attempt="$n" of="$api_tries"
+		echo "wait-checks: portitor pr checks --pr $pr failed (attempt $n/$api_tries); retrying in ${api_retry}s" >&2
+		n=$(( n + 1 ))
+		sleep "$api_retry"
+	done
+}
 
 # A check is only measurable once it has actually started: `startedAt` comes
 # straight from GitHub, so a QUEUED job waiting for a runner has no elapsed time
@@ -112,15 +140,17 @@ hand_to_agent() {
 		echo
 		echo "mergeStateStatus: $(jq -r '.mergeStateStatus' <<<"$last_json" 2>/dev/null)"
 	} > "$bundle/CONTEXT.md"
+	_emit decision pr="$pr" result=handoff blocked_by="$why" mss="$mss"
 	echo "wait-checks: PR #$pr not landable ($why); agent will triage" >&2
 	exit 0
 }
 
 start="$(date +%s)"
 last_json=""
+settle_start=""   # when the PR first went all-green under a non-CLEAN merge state
 
 while :; do
-	last_json="$(portitor pr checks --pr "$pr")" || die "portitor pr checks --pr $pr failed"
+	last_json="$(pr_checks)" || die "portitor pr checks --pr $pr failed after $api_tries attempt(s)"
 
 	mss="$(jq -r '.mergeStateStatus // "UNKNOWN"' <<<"$last_json")"
 
@@ -132,6 +162,7 @@ while :; do
 			| (["SUCCESS","SKIPPED","NEUTRAL"] | index($c)) | not)
 		| .name] | join(", ")' <<<"$last_json")"
 	pending="$(jq -r '[.checks[] | select(.status != "COMPLETED")] | length' <<<"$last_json")"
+	nchecks="$(jq -r '.checks | length' <<<"$last_json")"
 
 	if [ -n "$failed" ]; then
 		hand_to_agent ci_red "Failing checks: $failed" \
@@ -162,12 +193,16 @@ while :; do
 	# filter, and so never gets a check at all. Hence a bounded grace rather than
 	# a wait — past it, an empty rollup is taken at face value and the CLEAN test
 	# below decides.
-	if [ "$(jq -r '.checks | length' <<<"$last_json")" -eq 0 ] \
-		&& [ $(( $(date +%s) - start )) -lt "$appear" ]; then
+	if [ "$nchecks" -eq 0 ] && [ $(( $(date +%s) - start )) -lt "$appear" ]; then
+		_emit appear_wait pr="$pr" elapsed="$(( $(date +%s) - start ))" budget="$appear"
 		echo "wait-checks: PR #$pr has no checks yet; waiting up to ${appear}s for them to register" >&2
 		sleep "$poll"
 		continue
 	fi
+
+	# A fresh wave of checks (a push landing mid-poll) restarts the settle window
+	# below: it is a budget for ONE all-green episode, not for the whole run.
+	[ "$pending" -eq 0 ] || settle_start=""
 
 	if [ "$pending" -eq 0 ]; then
 		if [ "$mss" = "CLEAN" ]; then
@@ -188,20 +223,46 @@ while :; do
 				echo "lands the PR. If you are reading this, the skip did not take effect —"
 				echo "check that the merge template still declares \`agent_optional: true\`."
 			} > "$bundle/CONTEXT.md"
+			_emit decision pr="$pr" result=landable mss="$mss" checks="$nchecks"
 			echo "wait-checks: PR #$pr is CLEAN and green; skipping the agent" >&2
 			exit 0
 		fi
-		# Everything settled green but the forge still will not merge. UNKNOWN is
-		# GitHub still recomputing — keep waiting; anything else needs judgement.
+		# Everything settled green but the forge still will not merge. GitHub
+		# recomputes mergeStateStatus from the check-run conclusions
+		# ASYNCHRONOUSLY, so the first read after the last job completes can
+		# still carry the pre-green value: a run died here on an UNSTABLE read
+		# taken 2s after the final check turned green, on a PR that was CLEAN at
+		# the same head moments later. UNKNOWN ("still recomputing") was already
+		# read as lag; UNSTABLE ("mergeable, but a check is not yet green") is
+		# the same lag one step further along, and had no grace at all.
 		#
+		# Both now get a bounded settle window, on the principle CHECKS_APPEAR_
+		# SECONDS already applies above: a value is taken at face value only
+		# once it has had a chance to change. Reachable only when nothing failed
+		# (a red check routed ci_red) and nothing is pending, so the wait cannot
+		# mask a real failure — a state that outlives the window still reaches
+		# the agent, just later. This also bounds UNKNOWN, which previously spun
+		# to the ceiling and then reported the misleading `stuck`.
+		case "$mss" in
+		UNKNOWN|UNSTABLE)
+			[ -n "$settle_start" ] || settle_start="$(date +%s)"
+			if [ $(( $(date +%s) - settle_start )) -lt "$settle" ]; then
+				_emit settle_wait pr="$pr" mss="$mss" elapsed="$(( $(date +%s) - settle_start ))" budget="$settle"
+				echo "wait-checks: PR #$pr all checks green but mergeStateStatus=$mss; waiting up to ${settle}s for it to settle" >&2
+				sleep "$poll"
+				continue
+			fi
+			;;
+		esac
+
 		# Normalized to `merge_state` rather than lowercasing $mss: GitHub's
 		# enum also carries BLOCKED, UNSTABLE, DRAFT and HAS_HOOKS, and passing
 		# those straight through invented blocked_by values nothing documents
 		# and no consumer handles (prepare-fix keys on `behind`; post-merge
 		# already emits `merge_state` for its own refusal path). The specific
 		# state is not lost — it is on the mergeStateStatus line above.
-		[ "$mss" = "UNKNOWN" ] || hand_to_agent merge_state \
-			"All checks are green but mergeStateStatus is $mss."
+		hand_to_agent merge_state \
+			"All checks are green but mergeStateStatus is $mss (unchanged for ${settle}s)."
 	fi
 
 	# Stuck: a running check past its gate-resolved budget. Ask for a re-run and
@@ -214,6 +275,7 @@ while :; do
 		[ -n "$name" ] || continue
 		s="$(started_epoch "$startedAt")" || continue          # queued, not yet measurable
 		[ $(( now - s )) -gt "$budget" ] || continue
+		_emit rerun pr="$pr" check="$name" budget="$budget" result=requested
 		echo "wait-checks: $name exceeded ${budget}s; requesting a re-run" >&2
 		# </dev/null for the same reason post-review's resolve loop needs it: this
 		# reads from `$stuck` on stdin and portitor forwards over SSH, which drains
@@ -221,6 +283,7 @@ while :; do
 		# iteration — but the redirect is what makes that a choice rather than an
 		# accident.
 		if ! rerun_err="$(portitor pr rerun --pr "$pr" 2>&1 </dev/null)"; then
+			_emit rerun pr="$pr" check="$name" result=refused
 			hand_to_agent stuck "Check \"$name\" is stuck and the gate refused a re-run." \
 				"Gate said: $rerun_err"
 		fi

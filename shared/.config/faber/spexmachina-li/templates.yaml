@@ -151,7 +151,8 @@ templates:
     run:
       env: {FABER_AGENT_CLI: claude, PORTITOR_HOST: portitor-spex,
             CHECKS_CEILING_SECONDS: "720", CHECKS_POLL_SECONDS: "10",
-            CHECKS_APPEAR_SECONDS: "60"}
+            CHECKS_APPEAR_SECONDS: "60", CHECKS_SETTLE_SECONDS: "90",
+            CHECKS_API_TRIES: "3", CHECKS_API_RETRY_SECONDS: "5"}
     skill: merge
     model: claude-opus-5
     effort: high

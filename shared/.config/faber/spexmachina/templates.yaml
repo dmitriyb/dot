@@ -128,13 +128,17 @@ templates:
     run:
       # PORTITOR_HOST: the gate container the pr/portitor client targets.
       # CHECKS_*: the prelude's CLIENT-side policy — how long to wait overall, how
-      # often to poll, and how long an empty rollup is read as "the run has not
-      # registered yet" rather than "this PR has no CI". The per-check stuck
-      # budgets and the re-run attempt cap are GATE-side (the per-repo `checks`
-      # config), so they stay authoritative.
+      # often to poll, how long an empty rollup is read as "the run has not
+      # registered yet" rather than "this PR has no CI", how long a non-CLEAN
+      # merge state on an all-green PR is read as forge lag rather than a
+      # blocker, and how many times a checks read is retried before one network
+      # blip decides the step. The per-check stuck budgets and the re-run
+      # attempt cap are GATE-side (the per-repo `checks` config), so they stay
+      # authoritative.
       env: {FABER_AGENT_CLI: claude, PORTITOR_HOST: portitor-spex,
             CHECKS_CEILING_SECONDS: "720", CHECKS_POLL_SECONDS: "10",
-            CHECKS_APPEAR_SECONDS: "60"}
+            CHECKS_APPEAR_SECONDS: "60", CHECKS_SETTLE_SECONDS: "90",
+            CHECKS_API_TRIES: "3", CHECKS_API_RETRY_SECONDS: "5"}
     skill: merge
     invoke:   # inline over the built-in claude profile: session capture only
       session_dir: .claude/projects

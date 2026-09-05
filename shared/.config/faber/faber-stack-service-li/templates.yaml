@@ -169,11 +169,14 @@ templates:
     identity: merger
     run:
       # CHECKS_*: the wait-checks prelude's CLIENT-side policy (overall wait,
-      # poll interval, and how long an empty rollup reads as "not registered
-      # yet"). The per-check stuck budgets and re-run cap stay GATE-side.
+      # poll interval, how long an empty rollup reads as "not registered yet",
+      # how long a non-CLEAN merge state on an all-green PR reads as forge lag,
+      # and the retry budget for a checks read). The per-check stuck budgets and
+      # re-run cap stay GATE-side.
       env: {FABER_AGENT_CLI: claude, PORTITOR_HOST: portitor-faber-stack-service,
             CHECKS_CEILING_SECONDS: "720", CHECKS_POLL_SECONDS: "10",
-            CHECKS_APPEAR_SECONDS: "60"}
+            CHECKS_APPEAR_SECONDS: "60", CHECKS_SETTLE_SECONDS: "90",
+            CHECKS_API_TRIES: "3", CHECKS_API_RETRY_SECONDS: "5"}
     skill: merge
     # The agent runs ONLY on the exception branches — the green path skips it
     # entirely — so a capable model costs almost nothing in aggregate.
