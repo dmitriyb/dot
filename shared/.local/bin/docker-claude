@@ -1,5 +1,8 @@
 #!/usr/bin/env bash
-set -euo pipefail
+set -eEuo pipefail
+
+# `set -e` exits silently otherwise; -E reaches subshells, BASHPID stops double reports.
+trap 'rc=$?; [[ $BASHPID == $$ ]] && echo "docker-claude: aborted (rc=$rc) at ${BASH_SOURCE[0]##*/}:$LINENO: $BASH_COMMAND" >&2' ERR
 
 BASE_IMAGE="claude-dev-base"
 PERSONAL_IMAGE="claude-dev-personal"
@@ -36,15 +39,18 @@ examples:
 EOF
 }
 
-# Resolve our own real path (needed before the shared lib is sourced), then load
-# the shared lib (keychain + secret mounts + dot_root) from the sibling libexec dir.
+# Locate the shared lib before it can be sourced. stow may fold the symlink onto the
+# file, onto .local/bin, or onto .local, so resolve every component, not just the leaf.
 resolve_path() {
-  local p="$1" target
-  while [ -L "$p" ]; do
+  local p="$1" target dir
+  while :; do
+    dir="$(cd "$(dirname "$p")" && pwd -P)" || return 1
+    p="$dir/$(basename "$p")"
+    [ -L "$p" ] || break
     target="$(readlink "$p")"
     case "$target" in
     /*) p="$target" ;;
-    *) p="$(cd "$(dirname "$p")" && pwd)/$target" ;;
+    *) p="$dir/$target" ;;
     esac
   done
   printf '%s\n' "$p"
@@ -52,8 +58,7 @@ resolve_path() {
 LIBEXEC="$(dirname "$(resolve_path "$0")")/../libexec/docker-claude"
 source "$LIBEXEC/agent-common.sh"
 
-# Subcommand dispatch — the public interface. The account subcommands map onto the
-# flag parser below for back-compat.
+# Subcommands are the public interface; they map onto the legacy flags for back-compat.
 case "${1:-}" in
 personal)
   shift
@@ -69,7 +74,6 @@ help)
   ;;
 esac
 
-# Parse flags
 while [[ $# -gt 0 ]]; do
   case "$1" in
   -h | --help)
@@ -101,12 +105,9 @@ while [[ $# -gt 0 ]]; do
   esac
 done
 
-# Build images if missing or rebuild requested. (resolve_path + agent-common.sh are
-# loaded at the top, before subcommand dispatch.)
 SCRIPT_DIR="$(dot_root "$(dirname "$(resolve_path "$0")")")/docker/claude"
-# Bake the dot branch you're currently on so a rebuild tests your working branch, not main.
-# The branch must be pushed; Docker caches the clone layer, so re-test a re-pushed branch
-# of the same name with --no-cache.
+# Rebuilds test the branch you're on, not main. It must be pushed, and Docker caches the
+# clone layer — re-test a re-pushed branch of the same name with --no-cache.
 DOT_REF="$(git -C "$SCRIPT_DIR" rev-parse --abbrev-ref HEAD 2>/dev/null || echo main)"
 BUILD_ARGS=(--build-arg HOST_UID="$(id -u)" --build-arg DOT_REF="$DOT_REF")
 
@@ -119,9 +120,7 @@ build_base() {
   fi
 }
 
-# Echo the host's dedicated Remote-Development pubkey, generating the keypair once
-# if missing. Shared by work AND personal — one host identity opens both containers
-# (isolation is per-container/per-port, not per-key).
+# One host identity opens both containers: isolation is per-container/port, not per-key.
 docker_claude_pubkey() {
   local key_path="$HOME/.ssh/docker_claude_id_ed25519"
   if [[ ! -f "$key_path" ]]; then
@@ -178,9 +177,7 @@ if [[ -z "$MODE" ]]; then
   exit 1
 fi
 
-# Register the gh PAT (if stored for $1) as a /run/secrets/gh_token mount. The
-# in-container `gh` CLI reads GH_TOKEN from the env (set by the entrypoint from that
-# file) — stateless (no hosts.yml) and NOT visible in `docker inspect`/host `ps`.
+# A mounted PAT keeps `gh` stateless (no hosts.yml) and out of `docker inspect`/host `ps`.
 resolve_gh_args() {
   local label="$1" token
   token=$(keychain_optional gh "$label" "gh token for '$label' account" \
@@ -190,23 +187,16 @@ resolve_gh_args() {
   add_secret_mount gh_token "$token"
 }
 
-# Persistent volumes for fish history and tmux resurrect (targeted mounts
-# so image-baked binaries like claude and nvim plugins aren't shadowed)
-# SSH agent forwarding
+# Volumes below target .local/share/* rather than $HOME so image-baked binaries and
+# nvim plugins aren't shadowed.
 SSH_AGENT_ARGS=(-v "$SSH_AUTH_SOCK":/ssh-agent -e SSH_AUTH_SOCK=/ssh-agent)
 # Docker Desktop (macOS) mounts sockets as root:root — need group access
 if [[ "$(uname)" == "Darwin" ]]; then
   SSH_AGENT_ARGS+=(--group-add 0)
 fi
 
-# faber run state (personal only). The host-side faber writes every run — journal,
-# box results, --sessions transcripts — under state_dir from ~/.config/faber/host.json
-# (docs/deploy.md), which is set to ~/.local/state/faber: one flat runs/ for all
-# projects, each journal header naming its own config_path and workflow. Binding that
-# real directory at the same XDG path lets the in-container agent read runs live; it
-# is not a copy. Workflow config is NOT mounted: it lives in the dot repo, so the agent
-# edits it in its own /workspace/dot clone and runs `faber validate` there (nix, no
-# daemon). Nothing here grants the docker socket — `faber build`/`run` stay host-side.
+# The host's real state dir, so the in-container agent reads runs live rather than a copy.
+# Workflow config stays unmounted: the agent edits it in its own /workspace/dot clone.
 FABER_STATE_ARGS=()
 if [[ -d "$HOME/.local/state/faber" ]]; then
   FABER_STATE_ARGS=(-v "$HOME/.local/state/faber":/home/dev/.local/state/faber)
@@ -223,12 +213,8 @@ Then store it:
   resolve_gh_args personal
   add_secret_mount claude_code_oauth_token "$TOKEN"
 
-  # Personal usage telemetry -> the per-workstation edge collector (otel-edge,
-  # localhost:4317 on the host), which buffers and forwards to the home
-  # collector. Aggregates only: session/account labels disabled; the per-run
-  # service.instance.id UUID keeps concurrent containers' cumulative counters
-  # from colliding (dashboards sum() over it). Opt out per run with
-  # DOCKER_CLAUDE_NO_TELEMETRY=1. See plans/claude-usage-otel-aggregation.md.
+  # Aggregates only: no session/account labels; the per-run instance id stops concurrent
+  # containers' counters colliding. Opt out: DOCKER_CLAUDE_NO_TELEMETRY=1. See plans/.
   PERSONAL_OTEL_ARGS=()
   if [[ -z "${DOCKER_CLAUDE_NO_TELEMETRY:-}" ]]; then
     PERSONAL_OTEL_ARGS=(
@@ -246,9 +232,9 @@ Then store it:
     [[ "$(uname)" != "Darwin" ]] && PERSONAL_OTEL_ARGS+=(--add-host=host.docker.internal:host-gateway)
   fi
 
-  # NOT exec (was): keep the parent alive so cleanup_secrets runs after the session.
-  # -p on 127.0.0.1 only: sshd for IDE Remote Development, reachable from this host
-  # but not the LAN (work uses 2222; personal uses 2223 so both can run at once).
+  # Not exec: the EXIT trap that shreds the token files only runs if we stay alive.
+  # sshd for IDE Remote Development, loopback-only (work 2222, personal 2223).
+  rc=0
   docker run -it --rm \
     --memory=8g --cpus=4 \
     -v "$PERSONAL_REPO_VOLUME":/workspace \
@@ -259,13 +245,11 @@ Then store it:
     -p 127.0.0.1:2223:2223 \
     ${PERSONAL_OTEL_ARGS[@]+"${PERSONAL_OTEL_ARGS[@]}"} \
     ${SECRET_ARGS[@]+"${SECRET_ARGS[@]}"} \
-    "$PERSONAL_IMAGE"
-  rc=$?
+    "$PERSONAL_IMAGE" || rc=$?
   cleanup_secrets
   exit $rc
 fi
 
-# Common work args (wire mode)
 WORK_REPO_VOLUME="claude-work-repos"
 WORK_COMMON_ARGS=(
   -it --rm
@@ -279,7 +263,6 @@ WORK_COMMON_ARGS=(
 )
 
 if [[ "$MODE" == "work" ]]; then
-  # jbcentral proxy mode (default work mode)
   if ! command -v jbcentral &>/dev/null; then
     echo "Error: jbcentral CLI not found. Install it first."
     exit 1
@@ -295,12 +278,12 @@ if [[ "$MODE" == "work" ]]; then
   # The base URL embeds the jbcentral key — mount it as a secret (not -e / not logged).
   add_secret_mount anthropic_base_url "$JBCENTRAL_BASE_URL"
 
+  rc=0
   docker run \
     "${WORK_COMMON_ARGS[@]}" \
     -e ANTHROPIC_API_KEY=jbcentral-proxy \
     ${SECRET_ARGS[@]+"${SECRET_ARGS[@]}"} \
-    "$WORK_IMAGE"
-  rc=$?
+    "$WORK_IMAGE" || rc=$?
   cleanup_secrets
   exit $rc
 fi

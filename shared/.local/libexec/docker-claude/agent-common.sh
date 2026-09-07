@@ -1,41 +1,23 @@
-# agent-common.sh — shared host-side helpers for docker-claude.
-#
-# Sourced, not executed. Single source of truth for the cross-platform keychain
-# reads, the /run/secrets token mounts, and path resolution. Sourced by
-# docker-claude (the entrypoint); lives next to it in .local/libexec/docker-claude.
+# agent-common.sh — sourced by docker-claude, never executed. Single source of truth
+# for the cross-platform keychain reads and the /run/secrets token mounts.
 
-# Portable `readlink -f` (BSD/macOS readlink lacks -f): walk the symlink chain.
-resolve_path() {
-	local p="$1" target
-	while [ -L "$p" ]; do
-		target="$(readlink "$p")"
-		case "$target" in
-			/*) p="$target" ;;
-			*) p="$(cd "$(dirname "$p")" && pwd)/$target" ;;
-		esac
-	done
-	printf '%s\n' "$p"
-}
-
-# dot_root <start-dir> — walk up until a dir containing docker/claude is found, and
-# print it (the dot repo root). Depth-robust: lets the host launchers live anywhere
-# under the repo (e.g. .local/libexec/docker-claude) without hardcoding `cd ../../..`.
+# Depth-robust: launchers can live anywhere under the repo, no hardcoded `cd ../../..`.
 dot_root() {
 	local d="$1"
 	while [[ "$d" != / && ! -d "$d/docker/claude" ]]; do d="$(dirname "$d")"; done
-	[[ -d "$d/docker/claude" ]] && printf '%s\n' "$d"
+	if [[ ! -d "$d/docker/claude" ]]; then
+		echo "Error: dot repo root not found: no ancestor of '$1' contains docker/claude." >&2
+		return 1
+	fi
+	printf '%s\n' "$d"
 }
 
-# ---- secret files (keep tokens out of `docker inspect` Config.Env + host `ps`) ----
-# Instead of `-e VAR=secret` (visible in docker inspect and the run cmdline), write the
-# secret to a private host tmpfile and bind-mount it read-only at /run/secrets/<name>;
-# the container entrypoint reads /run/secrets/* back into the env (filename uppercased
-# → var name). SECRET_ARGS holds the -v mounts; SECRET_FILES the tmpfiles to clean up.
+# `-e VAR=secret` is visible in `docker inspect` and host `ps`; a 0600 tmpfile mounted
+# read-only at /run/secrets/<name> is not. The container entrypoint reads it back.
 SECRET_FILES=()
 SECRET_ARGS=()
 
-# add_secret_mount <name> <value> — register a secret mounted at /run/secrets/<name>.
-# No-op on an empty value (e.g. an optional, unset token).
+# No-op on an empty value: an optional token that isn't stored simply isn't mounted.
 add_secret_mount() {
 	local name="$1" value="$2" f
 	[[ -n "$value" ]] || return 0
@@ -46,11 +28,13 @@ add_secret_mount() {
 	SECRET_ARGS+=(-v "$f:/run/secrets/$name:ro")
 }
 
-# cleanup_secrets — shred the host tmpfiles (call after `docker run` returns).
+# Registered on EXIT, not left to the call site: `set -e` aborts before reaching
+# it when `docker run` returns non-zero, leaving the token file on disk.
 cleanup_secrets() {
 	[[ ${#SECRET_FILES[@]} -gt 0 ]] && rm -f "${SECRET_FILES[@]}"
 	SECRET_FILES=()
 }
+trap cleanup_secrets EXIT
 
 # Platform-specific "not found" exit code from the keychain CLI.
 if [[ "$(uname)" == "Darwin" ]]; then
@@ -77,7 +61,6 @@ _keychain_read() {
 	fi
 }
 
-# Required secret: prints an Error and aborts if missing or unreadable.
 keychain_require() {
 	local service="$1" account="$2" label="$3" hint="$4" value rc=0
 	value=$(_keychain_read "$service" "$account") || rc=$?
@@ -93,7 +76,6 @@ keychain_require() {
 	fi
 }
 
-# Optional secret: prints a Warning and returns empty if missing or unreadable.
 keychain_optional() {
 	local service="$1" account="$2" label="$3" hint="$4" value rc=0
 	value=$(_keychain_read "$service" "$account") || rc=$?
