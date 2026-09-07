@@ -102,6 +102,9 @@ or fakes it destroys the property entirely.
 It is read later by people and machines that lack today's context, including you
 in a session where none of this conversation survives.
 
+- Comments carry *why*, never *what* — the code already states what it does.
+  Write one only where the reason cannot be recovered from the code; two lines
+  maximum, and none at all is the common case.
 - Before editing a genuinely new part you have not already worked on this
   session, review the change for standard antipatterns: data/config in code
   (policy, budgets, thresholds or settings hardcoded into scripts or source
