@@ -4,9 +4,14 @@
 # arch/.config/omarchy/custom-hyprland.lua. Nothing generates either file -- when a
 # workspace is added or renamed, edit both by hand.
 #
-# Chords are chosen so macOS and Linux share one muscle memory: `option` here and
-# `SUPER` on the Linux box sit in the same physical position, so `alt-t` and `SUPER+T`
-# are the same key under the same finger.
+# Chords are chosen so macOS and Linux share one muscle memory: one external keyboard
+# serves both machines and sends the same LeftAlt keycode to each, so `alt-t` here and
+# `ALT+T` on the Linux box are literally the same key. The Linux side moved to ALT for
+# this reason -- it used to be SUPER, which only lined up while each machine was on its
+# own built-in keyboard.
+#
+# One deliberate exception: alt-tab / alt-shift-tab below stay SUPER on Linux, where
+# those chords are the window switcher. macOS switches on cmd-tab, so nothing is lost.
 #
 # Reference: https://nikitabobko.github.io/AeroSpace/commands
 
@@ -98,8 +103,7 @@ B = 3  # empty built-in display
 alt-slash = 'layout tiles horizontal vertical'
 alt-comma = 'layout accordion horizontal vertical'
 
-# Full screen. Mirrors SUPER+M on Linux ("maximize"), where the letter layer took
-# SUPER+F. There was no fullscreen binding here at all before.
+# Full screen. Mirrors ALT+M on Linux.
 alt-m = 'fullscreen'
 
 # Focus
@@ -114,14 +118,14 @@ alt-shift-j = 'move down'
 alt-shift-k = 'move up'
 alt-shift-l = 'move right'
 
-# Resize. Deliberately alt-, not alt-cmd-: cmd appeared nowhere else in this config, and
-# Hyprland resizes with SUPER+minus / SUPER+equal, so this is now the same chord on both.
+# Resize. Deliberately alt-, not alt-cmd-: cmd appears nowhere else in this config, and
+# Hyprland resizes with ALT+minus / ALT+equal, so this is the same chord on both.
 alt-minus = 'resize smart -50'
 alt-equal = 'resize smart +50'
 
 # Letter workspaces. `alt-<letter>` switches, `alt-shift-<letter>` moves the focused
 # window there and follows it (--focus-follows-window), which is what Hyprland's
-# SUPER+SHIFT+<letter> does; without the flag the same chord would behave differently
+# ALT+SHIFT+<letter> does; without the flag the same chord would behave differently
 # on each machine.
 alt-e = 'workspace E'  # scratch / main empty
 alt-shift-e = 'move-node-to-workspace E --focus-follows-window'
@@ -146,12 +150,13 @@ alt-shift-p = 'move-node-to-workspace P --focus-follows-window'
 alt-b = 'workspace B'  # empty built-in display
 alt-shift-b = 'move-node-to-workspace B --focus-follows-window'
 
-# Hyprland's SUPER+TAB is bound to the same back-and-forth, and SUPER+SHIFT+TAB to the
-# same move-to-next-monitor, so these two chords match on both machines.
+# The exception noted at the top: Hyprland keeps these two verbs on SUPER+TAB and
+# SUPER+SHIFT+TAB, because ALT+TAB there is the window switcher. Same verbs, different
+# modifier -- the only pair in this file that does not match key-for-key.
 alt-tab = 'workspace-back-and-forth'
 alt-shift-tab = 'move-workspace-to-monitor --wrap-around next'
 
-# Window mode. Hyprland binds SUPER+SHIFT+SEMICOLON to an equivalent submap, with the
+# Window mode. Hyprland binds ALT+SHIFT+SEMICOLON to an equivalent submap, with the
 # same inner letters wherever the verb exists on both.
 alt-shift-semicolon = 'mode service'
 

@@ -30,11 +30,17 @@ hl.config({
 -- ---------------------------------------------------------------------------------
 -- Letter workspaces -- one muscle memory with AeroSpace on macOS
 -- ---------------------------------------------------------------------------------
--- `option` on a Mac keyboard and `SUPER` here occupy the same physical position, so
--- AeroSpace's `alt-t` and this `SUPER+T` are one chord under the same finger; only the
--- keycap differs. Named workspaces keep the letter as the workspace's real identity, so
--- there is no letter->digit table to drift out of sync with
--- mac/.config/aerospace/aerospace.toml.
+-- The mirrored layer is on ALT, not SUPER. One external keyboard now serves both
+-- machines, and it sends the same LeftAlt keycode to each, so AeroSpace's `alt-t` and
+-- this `ALT+T` are the same physical key -- not merely the same position on two
+-- different boards, which is what the SUPER version relied on. Named workspaces keep
+-- the letter as the workspace's real identity, so there is no letter->digit table to
+-- drift out of sync with mac/.config/aerospace/aerospace.toml.
+--
+-- ALT+<letter> was free: nothing in omarchy binds a bare ALT letter chord. So unlike
+-- the SUPER version this layer displaces nothing, and the workarounds that existed
+-- only to rehouse displaced SUPER verbs are gone -- SUPER+C/F/G/O/P/S/T and the
+-- SUPER+SHIFT+<letter> launchers are omarchy's again.
 --
 -- Named workspaces get negative ids, so they are a disjoint set from SUPER+1..0. Those
 -- stay bound to numeric workspaces and cannot collide with this layer.
@@ -62,14 +68,14 @@ for _, ws in ipairs(WORKSPACES) do
   local letter = ws.letter
   local name = "name:" .. letter
 
-  -- Displaces omarchy defaults on C F G O P S T, and this machine's app launchers on
-  -- B C E F G O P S. A silent no-op on the letters that were already free.
-  hl.unbind("SUPER + " .. letter)
-  hl.unbind("SUPER + SHIFT + " .. letter)
+  -- Nothing binds these today, so both calls are no-ops. Kept because hl.bind appends:
+  -- if omarchy ever ships an ALT letter chord, binding over it would double-fire.
+  hl.unbind("ALT + " .. letter)
+  hl.unbind("ALT + SHIFT + " .. letter)
 
-  o.bind("SUPER + " .. letter, "Workspace " .. letter .. " -- " .. ws.note,
+  o.bind("ALT + " .. letter, "Workspace " .. letter .. " -- " .. ws.note,
     hl.dsp.focus({ workspace = name }))
-  o.bind("SUPER + SHIFT + " .. letter, "Move window to workspace " .. letter,
+  o.bind("ALT + SHIFT + " .. letter, "Move window to workspace " .. letter,
     hl.dsp.window.move({ workspace = name }))
 
   for _, class in ipairs(ws.classes or {}) do
@@ -78,68 +84,69 @@ for _, ws in ipairs(WORKSPACES) do
 end
 
 -- ---------------------------------------------------------------------------------
--- New homes for the window verbs the letter layer displaced
+-- The rest of the mirrored layer
 -- ---------------------------------------------------------------------------------
+-- omarchy's SUPER equivalents stay bound. ALT and SUPER are distinct chords, so these
+-- are second routes to the same verb rather than competitors.
 
--- Work around Hyprland send_shortcut sometimes leaving synthetic key state stuck.
--- Lifted from default/hypr/bindings/clipboard.lua, where it is a file-local function.
--- https://github.com/hyprwm/Hyprland/discussions/14099
-local function send_shortcut_once(mods, key)
-  return function()
-    hl.dispatch(hl.dsp.send_key_state({ mods = mods, key = key, state = "down", window = "activewindow" }))
+o.bind("ALT + M", "Full screen", hl.dsp.window.fullscreen({ mode = "fullscreen" }))
 
-    hl.timer(function()
-      hl.dispatch(hl.dsp.send_key_state({ mods = mods, key = key, state = "up", window = "activewindow" }))
-    end, { timeout = 50, type = "oneshot" })
-  end
-end
+-- code:20 / code:21 are minus / equal. Direction follows AeroSpace's `alt-minus` /
+-- `alt-equal` (shrink / grow), which is the reverse of how omarchy labels the same two
+-- keycodes on SUPER.
+o.bind("ALT + code:20", "Shrink window", hl.dsp.window.resize({ x = -100, y = 0, relative = true }))
+o.bind("ALT + code:21", "Grow window", hl.dsp.window.resize({ x = 100, y = 0, relative = true }))
 
--- High-frequency verbs stay one keystroke away, on letters the workspace layer left free.
-o.bind("SUPER + M", "Full screen", hl.dsp.window.fullscreen({ mode = "fullscreen" })) -- was SUPER+F
-o.bind("SUPER + D", "Toggle scratchpad", hl.dsp.workspace.toggle_special("scratchpad")) -- was SUPER+S
-o.bind("SUPER + INSERT", "Universal copy", send_shortcut_once("CTRL", "Insert"))       -- was SUPER+C
--- SUPER+V paste and SUPER+X cut are untouched: V and X are not workspace letters.
+-- SUPER, not ALT: macOS locks on ctrl-cmd-q, and SUPER is the key that sends Command
+-- there. omarchy's SUPER+CTRL+L stays bound as a second route.
+o.bind("SUPER + CTRL + Q", "Lock system", "omarchy-system-lock")
 
--- AeroSpace's alt-tab is `workspace-back-and-forth`, but omarchy points SUPER+TAB at
--- "next workspace". Align the chord that actually gets used, on the side not hand-picked:
--- next/prev workspace matters little now that workspaces are addressed by letter, and
--- SUPER+SHIFT+TAB / SUPER+CTRL+TAB still cover prev and former.
+-- ---------------------------------------------------------------------------------
+-- TAB -- the one deliberate exception to the mirror
+-- ---------------------------------------------------------------------------------
+-- AeroSpace puts workspace-back-and-forth and move-to-next-monitor on alt-tab and
+-- alt-shift-tab. Here those two chords are the conventional window switcher, which
+-- macOS has no counterpart to (it switches on cmd-tab), so mirroring would cost a
+-- switcher and buy nothing. Both verbs stay on SUPER instead.
 hl.unbind("SUPER + TAB")
 o.bind("SUPER + TAB", "Former workspace (back and forth)",
   hl.dsp.focus({ workspace = "previous" }))
 
--- Window mode, mirroring AeroSpace's `service` mode. AeroSpace already enters that with
--- alt-shift-semicolon, so the same physical chord now opens the same kind of mode on both
--- machines, with the same inner letters wherever a verb exists on both.
+-- Displaces omarchy's "previous workspace", which matters little now that workspaces
+-- are addressed by letter.
+hl.unbind("SUPER + SHIFT + TAB")
+o.bind("SUPER + SHIFT + TAB", "Move workspace to next monitor",
+  hl.dsp.workspace.move({ monitor = "+1" }))
+
+-- Window mode, mirroring AeroSpace's `service` mode, which it enters with
+-- alt-shift-semicolon -- the same chord, with the same inner letters wherever a verb
+-- exists on both.
 hl.define_submap("window", function()
   o.bind("ESCAPE", "Exit window mode", hl.dsp.submap("reset"))
 
   -- Shared with AeroSpace service mode.
-  o.bind("F", "Toggle window floating/tiling", hl.dsp.window.float({ action = "toggle" })) -- was SUPER+T
+  o.bind("F", "Toggle window floating/tiling", hl.dsp.window.float({ action = "toggle" }))
   o.bind("R", "Toggle workspace layout", "omarchy-hyprland-workspace-layout-toggle")
 
   -- Linux-only verbs, no AeroSpace counterpart.
-  o.bind("G", "Toggle window grouping", hl.dsp.group.toggle())                -- was SUPER+G
-  o.bind("O", "Pop window out (float & pin)", "omarchy-hyprland-window-pop")  -- was SUPER+O
-  o.bind("P", "Pseudo window", hl.dsp.window.pseudo())                        -- was SUPER+P
+  o.bind("G", "Toggle window grouping", hl.dsp.group.toggle())
+  o.bind("O", "Pop window out (float & pin)", "omarchy-hyprland-window-pop")
+  o.bind("P", "Pseudo window", hl.dsp.window.pseudo())
 end)
 
-o.bind("SUPER + SHIFT + SEMICOLON", "Window mode", hl.dsp.submap("window"))
+o.bind("ALT + SHIFT + SEMICOLON", "Window mode", hl.dsp.submap("window"))
 
 -- ---------------------------------------------------------------------------------
 -- App launcher mode
 -- ---------------------------------------------------------------------------------
--- SUPER+SHIFT+<letter> now means "move window to workspace <letter>", which displaced
--- eight app launchers from ~/.config/hypr/bindings.lua (B C E F G O P S). Rather than
--- scatter them across arbitrary free chords, every app gets one uniform path here and
--- keeps its original mnemonic letter. Nothing is lost.
---
--- The seven launchers that did NOT collide (A D M N W X Y) are deliberately left in place
--- in bindings.lua as well, so no relearning is forced -- they simply also work from here.
+-- Every launcher in ~/.config/hypr/bindings.lua gathered under one uniform path, each
+-- keeping its mnemonic letter. This began as a rescue for the eight launchers the old
+-- SUPER+SHIFT+<letter> workspace layer displaced (B C E F G O P S); the layer moved to
+-- ALT and gave them back, so nothing depends on this mode any more. Kept because a
+-- single alphabet of launchers is easier to hold than fifteen scattered chords.
 hl.define_submap("apps", function()
   o.bind("ESCAPE", "Exit app mode", hl.dsp.submap("reset"))
 
-  -- Displaced by the workspace layer -- now reachable only here.
   o.bind("B", "Browser", { omarchy = "browser" })
   o.bind("C", "Calendar", { webapp = "https://app.hey.com/calendar/weeks/" })
   o.bind("E", "Email", { webapp = "https://app.hey.com" })
@@ -149,7 +156,6 @@ hl.define_submap("apps", function()
   o.bind("P", "Google Photos", { webapp = "https://photos.google.com/", focus = true })
   o.bind("S", "Google Maps", { webapp = "https://maps.google.com/", focus = true })
 
-  -- Still on SUPER+SHIFT+<letter> too; mirrored here so the mode is complete.
   o.bind("A", "ChatGPT", { webapp = "https://chatgpt.com" })
   o.bind("D", "Docker", { tui = "lazydocker" })
   o.bind("M", "Music", { omarchy = "or-focus spotify" })

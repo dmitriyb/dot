@@ -28,7 +28,7 @@ Personal configuration files managed with [GNU Stow](https://www.gnu.org/softwar
 
 ```bash
 sudo pacman -S stow fish tmux neovim starship btop git eza fzf bat zoxide direnv lazygit glow ffmpeg imagemagick docker jq python ttf-jetbrains-mono-nerd
-yay -S ghostty tmux-plugin-manager sesh-bin
+yay -S ghostty tmux-plugin-manager sesh-bin bazecor
 cargo install tuicr   # terminal code review; requires the Rust toolchain (rustup)
 ```
 
