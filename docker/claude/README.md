@@ -62,9 +62,9 @@ backstopped by the touch key (anything that slips still needs a physical touch).
 
 ## Installer trust (supply chain)
 
-The `curl … | sh` installers in these Dockerfiles (`starship`, `nix`, `claude`, `beads_rust` in
-base; `rustup` in personal; `bun` in work) are **not script-pinned**. TLS is the trust
-boundary, and that is stated honestly rather than dressed up.
+The `curl … | sh` installers in these Dockerfiles (`starship`, `nix`, `claude`, `beads_rust`,
+`beads_viewer` in base; `rustup` in personal; `bun` in work) are **not script-pinned**. TLS is
+the trust boundary, and that is stated honestly rather than dressed up.
 
 **Why not pin the installer script?** A committed `sha256sum -c` of the installer script is
 *trust-on-first-use (TOFU)*, and its entire root of trust is a single unverified `curl`: you fetch
@@ -97,12 +97,19 @@ stronger), or **transparency-log attestation** (Sigstore/cosign, SLSA).
   pin. `install.sh` then verifies the downloaded archive against the identical key it carries; the
   build-time check adds what the self-check structurally cannot — detection of a *substituted*
   installer. Failure is fail-closed: the script never reaches `bash`.
-- **`lazygit` (and `bv`) — transparency-log verified (implemented).** Installed with `go install`,
+- **`lazygit` — transparency-log verified (implemented).** Installed with `go install`,
   not a `curl … | sh`: the Go toolchain checks every module against `sum.golang.org`, a public
   append-only transparency log that is independent of the download origin, and refuses a mismatch.
   This replaced the `atim/lazygit` COPR, which upstream marked unmaintained and which has no
   successful `fedora-44` build (a signed rpm repo would have been stronger still, but Fedora does
   not package lazygit).
+- **`bv` — same-origin checksum, fail-closed (implemented).** It shared lazygit's transparency-log
+  path until upstream v0.25.0 began vendoring patched dependencies behind `replace` directives;
+  `go install pkg@version` refuses any module whose `go.mod` carries those, and no flag overrides
+  it, so that path is closed. `install.sh` now fetches the prebuilt release archive and verifies it
+  against the release `checksums.txt`, refusing to install on a mismatch — the same TLS trust
+  domain as the script itself, so it catches a corrupted download, not an origin compromise. The
+  layer then runs `bv --version`, so an installer that exits without installing fails the build.
 - **`bun` — PGP signature available, not wired in.** Oven signs `SHASUMS256.txt.asc` with a key
   published on keyservers and pinned in Bun's own repo. Genuinely verifiable, but manual (needs
   `gpg` + keyserver/baked key in the work image) and low-value for an MCP-only tool. Left on TLS.
