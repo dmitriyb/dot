@@ -7,6 +7,9 @@ trap 'rc=$?; [[ $BASHPID == $$ ]] && echo "docker-claude: aborted (rc=$rc) at ${
 BASE_IMAGE="claude-dev-base"
 PERSONAL_IMAGE="claude-dev-personal"
 WORK_IMAGE="claude-dev-work"
+WORK_SSH_PORT=2222
+PERSONAL_SSH_PORT=2223
+KNOWN_HOSTS_FILE="$HOME/.ssh/known_hosts.docker-claude"
 MODE=""
 REBUILD=false
 NO_CACHE=false
@@ -130,6 +133,26 @@ docker_claude_pubkey() {
   cat "$key_path.pub"
 }
 
+# Host keys are baked at image build, so each rebuild is a new container identity.
+# Reading it from the image rather than off the wire is what lets ~/.ssh/config.d
+# keep StrictHostKeyChecking on.
+sync_container_host_key() {
+  local image="$1" port="$2" key tmp recorded
+  key=$(docker run --rm --entrypoint cat "$image" /etc/ssh/ssh_host_ed25519_key.pub | awk '{print $1, $2}')
+  if [[ -z "$key" ]]; then
+    echo "docker-claude: could not read the SSH host key from $image" >&2
+    return 1
+  fi
+  tmp=$(mktemp)
+  [[ -f "$KNOWN_HOSTS_FILE" ]] && { grep -v "^\[localhost\]:$port " "$KNOWN_HOSTS_FILE" || true; } >"$tmp"
+  printf '[localhost]:%s %s\n' "$port" "$key" >>"$tmp"
+  install -m 600 "$tmp" "$KNOWN_HOSTS_FILE"
+  rm -f "$tmp"
+  # Read the entry back rather than trusting install's exit code.
+  recorded=$(ssh-keygen -F "[localhost]:$port" -f "$KNOWN_HOSTS_FILE" 2>/dev/null) || return 1
+  [[ "$recorded" == *"$key"* ]]
+}
+
 build_personal() {
   local pubkey
   pubkey=$(docker_claude_pubkey)
@@ -234,6 +257,7 @@ Then store it:
 
   # Not exec: the EXIT trap that shreds the token files only runs if we stay alive.
   # sshd for IDE Remote Development, loopback-only (work 2222, personal 2223).
+  sync_container_host_key "$PERSONAL_IMAGE" "$PERSONAL_SSH_PORT"
   rc=0
   docker run -it --rm \
     --memory=8g --cpus=4 \
@@ -242,7 +266,7 @@ Then store it:
     -v claude-tmux-data-personal:/home/dev/.local/share/tmux \
     ${FABER_STATE_ARGS[@]+"${FABER_STATE_ARGS[@]}"} \
     "${SSH_AGENT_ARGS[@]}" \
-    -p 127.0.0.1:2223:2223 \
+    -p "127.0.0.1:$PERSONAL_SSH_PORT:$PERSONAL_SSH_PORT" \
     ${PERSONAL_OTEL_ARGS[@]+"${PERSONAL_OTEL_ARGS[@]}"} \
     ${SECRET_ARGS[@]+"${SECRET_ARGS[@]}"} \
     "$PERSONAL_IMAGE" || rc=$?
@@ -259,7 +283,7 @@ WORK_COMMON_ARGS=(
   -v claude-fish-data-work:/home/dev/.local/share/fish
   -v claude-tmux-data-work:/home/dev/.local/share/tmux
   "${SSH_AGENT_ARGS[@]}"
-  -p 2222:2222
+  -p "127.0.0.1:$WORK_SSH_PORT:$WORK_SSH_PORT"
 )
 
 if [[ "$MODE" == "work" ]]; then
@@ -278,6 +302,7 @@ if [[ "$MODE" == "work" ]]; then
   # The base URL embeds the jbcentral key — mount it as a secret (not -e / not logged).
   add_secret_mount anthropic_base_url "$JBCENTRAL_BASE_URL"
 
+  sync_container_host_key "$WORK_IMAGE" "$WORK_SSH_PORT"
   rc=0
   docker run \
     "${WORK_COMMON_ARGS[@]}" \
