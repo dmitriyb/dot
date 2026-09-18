@@ -277,7 +277,7 @@ fi
 WORK_REPO_VOLUME="claude-work-repos"
 WORK_COMMON_ARGS=(
   -it --rm
-  --memory=8g --cpus=4
+  --memory=16g --cpus=8
   -e JETBRAINS_MCP_STREAM_URL=http://host.docker.internal:64342/stream
   -v "$WORK_REPO_VOLUME":/workspace
   -v claude-fish-data-work:/home/dev/.local/share/fish
@@ -312,4 +312,3 @@ if [[ "$MODE" == "work" ]]; then
   cleanup_secrets
   exit $rc
 fi
-
