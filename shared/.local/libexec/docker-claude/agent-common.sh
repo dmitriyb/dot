@@ -1,5 +1,5 @@
-# agent-common.sh — sourced by docker-claude, never executed. Single source of truth
-# for the cross-platform keychain reads and the /run/secrets token mounts.
+# agent-common.sh — sourced by docker-claude and cred-store, never executed. Single source
+# of truth for the host.conf reader, the secret-backend reads and the /run/secrets mounts.
 
 # Depth-robust: launchers can live anywhere under the repo, no hardcoded `cd ../../..`.
 dot_root() {
@@ -36,55 +36,105 @@ cleanup_secrets() {
 }
 trap cleanup_secrets EXIT
 
-# Platform-specific "not found" exit code from the keychain CLI.
-if [[ "$(uname)" == "Darwin" ]]; then
-	KEYCHAIN_NOTFOUND_RC=44 # errSecItemNotFound
-else
-	KEYCHAIN_NOTFOUND_RC=1 # secret-tool / libsecret
-fi
+HOST_CONF="${XDG_CONFIG_HOME:-$HOME/.config}/dot/host.conf"
 
-# Pure passthrough to the OS keychain; stdout + exit code verbatim, no policy.
-_keychain_read() {
-	local service="$1" account="${2:-}"
-	if [[ "$(uname)" == "Darwin" ]]; then
-		if [[ -n "$account" ]]; then
-			security find-generic-password -s "$service" -a "$account" -w 2>/dev/null
-		else
-			security find-generic-password -s "$service" -w 2>/dev/null
+# key=value data stowed by the OS layer; parsed, never sourced.
+host_conf() {
+	local want="$1" key value
+	[[ -f "$HOST_CONF" ]] || return 1
+	while IFS='=' read -r key value || [[ -n "$key" ]]; do
+		[[ "$key" =~ ^[[:space:]]*(#|$) ]] && continue
+		if [[ "$key" == "$want" ]]; then
+			printf '%s\n' "$value"
+			return 0
 		fi
-	else
-		if [[ -n "$account" ]]; then
-			secret-tool lookup service "$service" account "$account" 2>/dev/null
-		else
-			secret-tool lookup service "$service" 2>/dev/null
-		fi
+	done <"$HOST_CONF"
+	return 1
+}
+
+_secrets_backend() {
+	local backend
+	if ! backend="$(host_conf secrets.backend)"; then
+		echo "Error: no secrets backend configured (secrets.backend in $HOST_CONF) — re-run dot's setup.sh." >&2
+		return 1
 	fi
+	case "$backend" in
+	security | secret-tool | systemd-creds) printf '%s\n' "$backend" ;;
+	*)
+		echo "Error: unknown secrets.backend '$backend' in $HOST_CONF." >&2
+		return 1
+		;;
+	esac
+}
+
+# Every backend's "not found" is normalised to this; any other non-zero is a failed lookup.
+SECRET_NOTFOUND_RC=44
+
+_keychain_read() {
+	local backend="$1" service="$2" account="${3:-}" rc=0
+	case "$backend" in
+	security)
+		security find-generic-password -s "$service" ${account:+-a "$account"} -w 2>/dev/null || rc=$?
+		return "$rc" # 44 is errSecItemNotFound
+		;;
+	secret-tool)
+		secret-tool lookup service "$service" ${account:+account "$account"} 2>/dev/null || rc=$?
+		((rc == 1)) && return "$SECRET_NOTFOUND_RC"
+		return "$rc"
+		;;
+	systemd-creds)
+		local dir name file
+		dir="$(host_conf secrets.dir)" || {
+			echo "Error: secrets.dir missing in $HOST_CONF." >&2
+			return 2
+		}
+		name="$service${account:+.$account}"
+		file="$HOME/$dir/$name.cred"
+		[[ -f "$file" ]] || return "$SECRET_NOTFOUND_RC"
+		# systemd-creds exits 1 on any failure, so it must not share the not-found code.
+		systemd-creds decrypt --user --name="$name" "$file" - || return 2
+		;;
+	esac
+}
+
+keychain_store_hint() {
+	local backend="$1" service="$2" account="${3:-}"
+	echo "Store it with:" >&2
+	case "$backend" in
+	security) echo "  security add-generic-password -s $service${account:+ -a $account} -w '<value>'" >&2 ;;
+	secret-tool) echo "  secret-tool store --label='$service${account:+ $account}' service $service${account:+ account $account}" >&2 ;;
+	systemd-creds) echo "  cred-store $service${account:+ $account}    (reads the value from stdin, hidden on a tty)" >&2 ;;
+	esac
 }
 
 keychain_require() {
-	local service="$1" account="$2" label="$3" hint="$4" value rc=0
-	value=$(_keychain_read "$service" "$account") || rc=$?
+	local service="$1" account="$2" label="$3" hint="$4" backend value rc=0
+	backend="$(_secrets_backend)" || exit 1
+	value=$(_keychain_read "$backend" "$service" "$account") || rc=$?
 	if ((rc == 0)); then
 		printf '%s' "$value"
-	elif ((rc == KEYCHAIN_NOTFOUND_RC)); then
-		echo "Error: $label not found in keychain (service=$service${account:+, account=$account})." >&2
+	elif ((rc == SECRET_NOTFOUND_RC)); then
+		echo "Error: $label not found ($backend: service=$service${account:+, account=$account})." >&2
 		[[ -n "$hint" ]] && echo "$hint" >&2
+		keychain_store_hint "$backend" "$service" "$account"
 		exit 1
 	else
-		echo "Error: keychain lookup failed for $label (rc=$rc)." >&2
+		echo "Error: $backend lookup failed for $label (rc=$rc)." >&2
 		exit "$rc"
 	fi
 }
 
 keychain_optional() {
-	local service="$1" account="$2" label="$3" hint="$4" value rc=0
-	value=$(_keychain_read "$service" "$account") || rc=$?
+	local service="$1" account="$2" label="$3" hint="$4" backend value rc=0
+	backend="$(_secrets_backend)" || exit 1
+	value=$(_keychain_read "$backend" "$service" "$account") || rc=$?
 	if ((rc == 0)); then
 		printf '%s' "$value"
-	elif ((rc == KEYCHAIN_NOTFOUND_RC)); then
-		echo "Warning: $label not found in keychain (service=$service${account:+, account=$account}); continuing without it." >&2
+	elif ((rc == SECRET_NOTFOUND_RC)); then
+		echo "Warning: $label not found ($backend: service=$service${account:+, account=$account}); continuing without it." >&2
 		[[ -n "$hint" ]] && echo "$hint" >&2
+		keychain_store_hint "$backend" "$service" "$account"
 	else
-		echo "Warning: keychain lookup failed for $label (rc=$rc); continuing without it." >&2
+		echo "Warning: $backend lookup failed for $label (rc=$rc); continuing without it." >&2
 	fi
 }

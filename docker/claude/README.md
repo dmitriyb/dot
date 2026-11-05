@@ -12,6 +12,11 @@ Isolated Claude Code environments running in Fedora containers with full dotfile
 
 ## Setup
 
+The secret store is declared per host by the stowed `~/.config/dot/host.conf`
+(`secrets.backend`): `security` on macOS, `secret-tool` on Arch desktop, `systemd-creds` on
+headless hosts (see [Remote server](#remote-server)). Without the file docker-claude refuses to
+start — re-run `setup.sh` after pulling.
+
 Store your personal OAuth token (from `claude setup-token`) in the OS keychain:
 
 ```bash
@@ -20,6 +25,9 @@ security add-generic-password -s anthropic -a personal -w '<token>'
 
 # Arch Linux
 secret-tool store --label='anthropic' service anthropic account personal
+
+# headless (systemd-creds)
+cred-store anthropic personal
 ```
 
 Work account credentials are picked up automatically from the OS keychain (stored by `claude login`).
@@ -37,6 +45,55 @@ secret-tool store --label='gh work'     service gh account work
 ```
 
 Tokens are passed in as `GH_TOKEN` at container start. If absent, `gh` just stays unauthenticated — no error.
+On a headless host: `cred-store gh personal`.
+
+docker-claude checks the ssh-agent before every start: an unreachable agent refuses the start, an
+empty one warns.
+
+## Remote server
+
+dcp on a headless Linux host with a TPM2 and a `systemd-creds` that has `--user`, reached over SSH.
+The `headless` layer's `host.conf` selects `systemd-creds` (`host+tpm2`, scoped to your UID) and
+`agent.mount=dir`.
+
+**Secrets** — the server keeps its own tokens; nothing is pushed from the laptop.
+`cred-store` reads the value from stdin (hidden on a tty), encrypts it, and reads it back through
+docker-claude's lookup before reporting success:
+
+```bash
+claude setup-token          # on any authenticated Claude Code; copy the token
+cred-store anthropic personal
+cred-store gh personal      # optional, a PAT for this server only
+```
+
+**Agent** — the laptop forwards its agent to one fixed socket path, and docker-claude mounts that
+socket's directory, so a running dcp gets the agent back after a reconnect. The directory must hold
+only the socket; docker-claude refuses to mount it otherwise.
+
+Server, once (replace `<you>`):
+
+```bash
+mkdir -m 700 ~/.ssh/agent-fwd
+sudo tee /etc/ssh/sshd_config.d/50-agent-fwd.conf <<'EOF'
+StreamLocalBindUnlink yes
+Match User <you>
+    SetEnv SSH_AUTH_SOCK=/home/<you>/.ssh/agent-fwd/agent.sock
+EOF
+sudo sshd -t && sudo systemctl reload sshd
+sudo sshd -T -C user=<you>,host=localhost,addr=127.0.0.1 | grep -iE '^(setenv|streamlocalbindunlink)'
+```
+
+Laptop, in your private `~/.ssh/config` (not in this repo):
+
+```
+Host <server>
+    RemoteForward /home/<you>/.ssh/agent-fwd/agent.sock /Users/<laptop-user>/.ssh/agent.sock
+    ExitOnForwardFailure yes
+    ForwardAgent no
+```
+
+`ExitOnForwardFailure` makes a failed forward abort the connection instead of printing a warning.
+Run dcp inside the server's tmux so it outlives the SSH session.
 
 ## Usage
 
@@ -136,7 +193,7 @@ to add — not more hashing.
 - **Separate auth**: personal uses `CLAUDE_CODE_OAUTH_TOKEN` (keychain), work uses the wire proxy (started host-side via the `jbcentral` CLI; the container reaches it through `host.docker.internal`); `gh` CLI uses `GH_TOKEN` from keychain (optional)
 - **Persistent volumes**: `claude-personal-repos` / `claude-work-repos` (cloned repos; work on native ext4), `claude-fish-data-personal` / `claude-fish-data-work` (fish history), `claude-tmux-data-personal` / `claude-tmux-data-work` (tmux resurrect). Neovim plugins and the Claude binary are baked into the image. Claude Code's own state piggybacks on the repo volume rather than a dedicated volume: session transcripts (`projects/`) and prompt history (`history.jsonl`) are symlinked from `~/.claude` into `/workspace/.claude-state` by the entrypoint, and per-project trust is regenerated into `~/.claude.json` from the `/workspace` subdirectories on every boot (so trust never re-prompts, with no stale entries or cached state).
 - **faber run state mount** (personal only): the host's `~/.local/state/faber` — faber's `state_dir` from `~/.config/faber/host.json`, one flat `runs/` for every project, each journal header carrying its `config_path` and workflow — is bind-mounted at the same path, live, not copied. The agent reads journals, box results and `--sessions` transcripts there; runs are written only by the host-side faber. Workflow config is not mounted: it lives in the dot repo, so edits happen in the `/workspace/dot` clone, where `faber validate` runs (nix, no daemon). `faber build`/`run` do not work in-container, by design.
-- **SSH agent forwarding**: the host agent is forwarded, so YubiKey touch-signing works for git inside the container.
+- **SSH agent forwarding**: the host agent is forwarded, so YubiKey touch-signing works for git inside the container. By default the socket file is mounted; with `agent.mount=dir` (headless) its directory is, so a reconnect's new socket reaches a running container.
 - **IDEA access**: dedicated ed25519 key for SSH, auto-generated per machine at build time; sshd is published on `127.0.0.1` only. The container's own host key is baked per image build, so `docker-claude` reads it out of the image and pins it in `~/.ssh/known_hosts.docker-claude` before each run — rebuilds never trip host-key verification, and `StrictHostKeyChecking` stays on (`shared/.ssh/config.d/docker-claude`).
 - **MCP servers**: work entrypoint filters to only Docker-compatible servers (ijproxy via host IDE, Context7, PluginModelAnalyzer)
 - **Nested tmux**: container uses `C-b` prefix, `ctrl+arrow` for window nav (host uses `C-a`, `shift+arrow`)

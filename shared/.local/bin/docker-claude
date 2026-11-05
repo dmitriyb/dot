@@ -204,15 +204,54 @@ fi
 resolve_gh_args() {
   local label="$1" token
   token=$(keychain_optional gh "$label" "gh token for '$label' account" \
-    "In-container 'gh' CLI will be unauthenticated.
-  macOS: security add-generic-password -s gh -a $label -w '<PAT>'
-  Linux: secret-tool store --label='gh $label' service gh account $label")
+    "In-container 'gh' CLI will be unauthenticated.")
   add_secret_mount gh_token "$token"
 }
 
+# A dead agent otherwise surfaces only later, as a failed signature inside the container.
+agent_preflight() {
+  local rc=0
+  if [[ -z "${SSH_AUTH_SOCK:-}" ]]; then
+    echo "Error: SSH_AUTH_SOCK is not set — no ssh-agent to forward into the container." >&2
+    exit 1
+  fi
+  ssh-add -l >/dev/null 2>&1 || rc=$?
+  case $rc in
+  0) ;;
+  1) echo "Warning: the ssh-agent at $SSH_AUTH_SOCK holds no keys; signing in the container fails until keys are loaded." >&2 ;;
+  *)
+    echo "Error: no ssh-agent reachable at $SSH_AUTH_SOCK (ssh-add -l rc=$rc)." >&2
+    echo "On a remote host, reconnect with the RemoteForward config (docker/claude/README.md, Remote server)." >&2
+    exit 1
+    ;;
+  esac
+}
+agent_preflight
+
+AGENT_MOUNT="$(host_conf agent.mount)" || AGENT_MOUNT=""
+case "$AGENT_MOUNT" in
+"")
+  SSH_AGENT_ARGS=(-v "$SSH_AUTH_SOCK":/ssh-agent -e SSH_AUTH_SOCK=/ssh-agent)
+  ;;
+dir)
+  # The directory, not the socket file, is what a reconnect's new socket appears in.
+  AGENT_DIR="$(dirname "$SSH_AUTH_SOCK")"
+  while IFS= read -r -d '' entry; do
+    if [[ ! -S "$entry" ]]; then
+      echo "Error: $AGENT_DIR holds a non-socket ($entry); refusing to mount it into the container." >&2
+      exit 1
+    fi
+  done < <(find "$AGENT_DIR" -mindepth 1 -maxdepth 1 -print0)
+  SSH_AGENT_ARGS=(-v "$AGENT_DIR":/ssh-agent-dir -e SSH_AUTH_SOCK="/ssh-agent-dir/$(basename "$SSH_AUTH_SOCK")")
+  ;;
+*)
+  echo "Error: unknown agent.mount '$AGENT_MOUNT' in $HOST_CONF." >&2
+  exit 1
+  ;;
+esac
+
 # Volumes below target .local/share/* rather than $HOME so image-baked binaries and
 # nvim plugins aren't shadowed.
-SSH_AGENT_ARGS=(-v "$SSH_AUTH_SOCK":/ssh-agent -e SSH_AUTH_SOCK=/ssh-agent)
 # Docker Desktop (macOS) mounts sockets as root:root — need group access
 if [[ "$(uname)" == "Darwin" ]]; then
   SSH_AGENT_ARGS+=(--group-add 0)
@@ -228,10 +267,7 @@ fi
 if [[ "$MODE" == "personal" ]]; then
   TOKEN=$(keychain_require anthropic personal "personal Anthropic OAuth token" \
     "Generate a setup token from an authenticated Claude Code instance:
-  claude setup-token
-Then store it:
-  macOS: security add-generic-password -s anthropic -a personal -w '<token>'
-  Linux: secret-tool store --label='anthropic' service anthropic account personal")
+  claude setup-token")
   PERSONAL_REPO_VOLUME="claude-personal-repos"
   resolve_gh_args personal
   add_secret_mount claude_code_oauth_token "$TOKEN"
