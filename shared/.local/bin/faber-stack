@@ -333,18 +333,14 @@ for pr in "${PORTITOR_ROLES[@]}"; do
 	ROLE_PUB[$pr]="$pub"
 done
 
-# ---- resolve the GitHub PAT from the keychain (never onto argv/inspect) ----
+# ---- resolve the GitHub PAT from the host's secret backend (never onto argv/inspect) ----
 PAT_SVC="${PAT%%/*}"
 PAT_ACCT="default"; [[ "$PAT" == */* ]] && PAT_ACCT="${PAT#*/}"
-resolve_pat() {
-	if [[ "$(uname)" == "Darwin" ]]; then
-		security find-generic-password -s "$PAT_SVC" -a "$PAT_ACCT" -w 2>/dev/null || true
-	else
-		secret-tool lookup service "$PAT_SVC" account "$PAT_ACCT" 2>/dev/null || true
-	fi
-}
-GH_TOKEN="$(resolve_pat)"
-[[ -n "$GH_TOKEN" ]] || die "no PAT in keychain for service='$PAT_SVC' account='$PAT_ACCT' — store it: security add-generic-password -s $PAT_SVC -a $PAT_ACCT -w '<CONTENTS+PR PAT>' (Linux: secret-tool store --label=$PAT_SVC service $PAT_SVC account $PAT_ACCT)" 1
+SECRETS_LIB="$HOME/.local/libexec/docker-claude/agent-common.sh"
+[[ -f "$SECRETS_LIB" ]] || die "$SECRETS_LIB not found — run dot's setup.sh" 1
+source "$SECRETS_LIB"
+GH_TOKEN="$(keychain_require "$PAT_SVC" "$PAT_ACCT" "scoped GitHub PAT" "A Contents+PR PAT scoped to just $SLUG.")"
+[[ -n "$GH_TOKEN" ]] || die "the PAT for service='$PAT_SVC' account='$PAT_ACCT' is empty" 1
 
 # ---- AGENT_AUTHORIZED_KEY: one `type data` line per role pub ---------------
 AGENT_AUTHORIZED_KEY=""

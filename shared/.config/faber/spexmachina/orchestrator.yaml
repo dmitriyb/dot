@@ -27,7 +27,7 @@ remote:                                  # portitor step: the box's ONLY git rem
   host_key_file: ./keys/portitor_host_key.pub   # portitor step: pin portitor's SSH host key here
 
 credentials:
-  resolver: ../base/hooks/get-token      # host-side get_token(service); reads the macOS keychain
+  resolver: ../base/hooks/get-token      # host-side get_token(service); reads the host.conf secret backend
   services:
     claude_code_oauth_token:             # file mode -> /run/secrets -> env CLAUDE_CODE_OAUTH_TOKEN
       mode: file                         # (the var Claude Code honors); shredded after the run

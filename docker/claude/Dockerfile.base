@@ -186,6 +186,14 @@ USER root
 RUN mkdir -p /etc/claude-code
 COPY harness/managed-settings.base.json /etc/claude-code/managed-settings.json
 RUN chmod 0644 /etc/claude-code/managed-settings.json
+
+# Session plumbing for SSH-entered containers (env restore, injected secrets, agent link).
+COPY save-container-env.fish /etc/docker-claude/save-container-env.fish
+COPY container-session.fish /etc/fish/conf.d/00-docker-claude.fish
+RUN chmod 0644 /etc/docker-claude/save-container-env.fish /etc/fish/conf.d/00-docker-claude.fish
+
+# WORKDIR would create it root-owned, and a fresh volume copies that ownership.
+RUN mkdir -p /workspace && chown dev:dev /workspace
 USER dev
 
 WORKDIR /workspace

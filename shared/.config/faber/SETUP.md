@@ -45,14 +45,17 @@ set -x DOT      ~/dot
 
 ## 0. Prerequisites (verify, don't redo)
 
-docker + nix are on the host; the Anthropic setup-token is in the keychain;
+docker + nix are on the host; faber's own Anthropic setup-token (`anthropic/faber`,
+separate from dcp's `anthropic/personal`) is in the host's secret backend — the one
+`~/.config/dot/host.conf` declares (`security` on macOS, `secret-tool` on Arch,
+`systemd-creds` via `cred-store` on headless hosts);
 `faber`/`faber-box`/`portitor` are installed from their verified releases
 (§1). The faber assets install from dot via **stow**: `faber-stack`/`role-keys`
 → `~/.local/bin`, the gate compose + egress build-context → `~/.local/share/{portitor,egress}`,
 and this project → `~/.config/faber/spexmachina`. Re-stow after `git -C $DOT pull`.
 
 ```fish
-security find-generic-password -s anthropic -a personal -w >/dev/null; and echo "anthropic token OK"
+~/.config/faber/base/hooks/get-token claude_code_oauth_token >/dev/null; and echo "anthropic token OK"
 docker info >/dev/null; and nix --version
 command -v faber-stack; and command -v role-keys; and command -v faber; and command -v portitor
 ```
@@ -223,14 +226,21 @@ identities:
 
 ## 5. Store the scoped PAT
 
-One keychain entry per instance — a Contents+PR token scoped to just this repo.
-Never share a PAT across repos. `faber-stack` reads it by `--pat $PAT` and hands
-it to the gate **only** as a docker file-secret (`/run/secrets/gh_token`) — never
-on argv, never a container env var, so `docker inspect` never reveals it.
+One secret-store entry per instance — a Contents+PR token scoped to just this repo.
+Never share a PAT across repos. `faber-stack` reads it by `--pat $PAT` from the host's
+declared backend and hands it to the gate **only** as a docker file-secret
+(`/run/secrets/gh_token`) — never on argv, never a container env var, so `docker inspect`
+never reveals it. The faber token from §0 is stored the same way, at `anthropic faber`.
 
 ```fish
-security add-generic-password -s $PAT -a default -w '<CONTENTS+PR PAT>'
+security add-generic-password -s $PAT -a default -w '<CONTENTS+PR PAT>'   # macOS
+secret-tool store --label=$PAT service $PAT account default               # Arch
+cred-store $PAT default                                                   # headless
 ```
+
+**Hosts with Docker userns-remap:** not supported yet. Boxes bind-mount faber's role-agent
+socket and writable host directories, which the remapped box user cannot reach; that is
+faber-side work.
 
 ---
 

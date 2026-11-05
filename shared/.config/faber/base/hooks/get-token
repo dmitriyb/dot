@@ -6,14 +6,13 @@
 # only its output is delegated (file mode -> a tmpfs /run/secrets/<service> file
 # the box's secrets phase exports into the agent env, shredded after the run).
 #
-# Personal-account wiring, mirroring dot's dcp: the Claude Code OAuth setup-token
-# lives in the macOS keychain under service=anthropic account=personal. The
-# service name `claude_code_oauth_token` is chosen so the box exports it as
-# CLAUDE_CODE_OAUTH_TOKEN — the env var Claude Code honors for a setup-token.
+# faber's own Claude Code OAuth setup-token, separate from dcp's: service=anthropic
+# account=faber in the host's declared secret backend (dot's host.conf, read through
+# docker-claude's agent-common.sh). The service name `claude_code_oauth_token` is chosen so
+# the box exports it as CLAUDE_CODE_OAUTH_TOKEN — the env var Claude Code honors.
 #
-# Create the token once:
-#   claude setup-token
-#   security add-generic-password -s anthropic -a personal -w '<token>'
+# Create the token once with `claude setup-token`; a missing entry prints the store
+# command for this host's backend.
 set -euo pipefail
 
 # --- diagnostics ------------------------------------------------------------
@@ -54,16 +53,17 @@ service="${1:?usage: get-token <service>}"
 
 case "$service" in
   claude_code_oauth_token)
-    # macOS keychain or Linux secret service — same coordinates on both.
-    if command -v security >/dev/null 2>&1; then
-      security find-generic-password -s anthropic -a personal -w
-    else
-      # faber runs resolvers against a minimal env (PATH/HOME/TMPDIR only);
-      # libsecret needs the session bus, so derive the standard systemd
-      # user-bus path when the address wasn't inherited.
-      export DBUS_SESSION_BUS_ADDRESS="${DBUS_SESSION_BUS_ADDRESS:-unix:path=/run/user/$(id -u)/bus}"
-      secret-tool lookup service anthropic account personal
+    # faber runs resolvers against a minimal env (PATH/HOME/TMPDIR only); libsecret
+    # needs the session bus, so derive the standard systemd user-bus path.
+    export DBUS_SESSION_BUS_ADDRESS="${DBUS_SESSION_BUS_ADDRESS:-unix:path=/run/user/$(id -u)/bus}"
+    lib="$HOME/.local/libexec/docker-claude/agent-common.sh"
+    if [ ! -f "$lib" ]; then
+      echo "get-token: $lib not found — run dot's setup.sh" >&2
+      exit 1
     fi
+    source "$lib"
+    keychain_require anthropic faber "faber's Anthropic OAuth token" \
+      "Generate one from an authenticated Claude Code instance: claude setup-token"
     ;;
   *)
     echo "get-token: no wiring for service '$service'" >&2

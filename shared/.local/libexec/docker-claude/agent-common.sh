@@ -1,5 +1,5 @@
-# agent-common.sh — sourced by docker-claude and cred-store, never executed. Single source
-# of truth for the host.conf reader, the secret-backend reads and the /run/secrets mounts.
+# agent-common.sh — sourced by docker-claude, cred-store, faber's get-token and faber-stack;
+# never executed. Single source of truth for the host.conf reader and the secret-backend reads.
 
 # Depth-robust: launchers can live anywhere under the repo, no hardcoded `cd ../../..`.
 dot_root() {
@@ -12,29 +12,20 @@ dot_root() {
 	printf '%s\n' "$d"
 }
 
-# `-e VAR=secret` is visible in `docker inspect` and host `ps`; a 0600 tmpfile mounted
-# read-only at /run/secrets/<name> is not. The container entrypoint reads it back.
-SECRET_FILES=()
-SECRET_ARGS=()
-
-# No-op on an empty value: an optional token that isn't stored simply isn't mounted.
-add_secret_mount() {
-	local name="$1" value="$2" f
+# Stdin only: `-e` and host files would expose the value to `docker inspect`, `ps` or the host
+# disk, and a host file is unreadable under userns-remap. No-op on an empty value.
+inject_secret() {
+	local ctr="$1" name="$2" value="$3"
 	[[ -n "$value" ]] || return 0
-	f="$(mktemp "${TMPDIR:-/tmp}/dc-secret.XXXXXX")" || return 1
-	chmod 600 "$f"
-	printf '%s' "$value" >"$f"
-	SECRET_FILES+=("$f")
-	SECRET_ARGS+=(-v "$f:/run/secrets/$name:ro")
+	if ! printf '%s' "$value" | docker exec -i -u dev "$ctr" sh -c 'umask 077; cat >"/run/secrets/$1"' sh "$name"; then
+		echo "Error: writing secret '$name' into $ctr failed." >&2
+		return 1
+	fi
+	if ! printf '%s' "$value" | docker exec -i -u dev "$ctr" sh -c 'test "$(sha256sum <"/run/secrets/$1")" = "$(sha256sum)"' sh "$name"; then
+		echo "Error: secret '$name' in $ctr does not match the value sent." >&2
+		return 1
+	fi
 }
-
-# Registered on EXIT, not left to the call site: `set -e` aborts before reaching
-# it when `docker run` returns non-zero, leaving the token file on disk.
-cleanup_secrets() {
-	[[ ${#SECRET_FILES[@]} -gt 0 ]] && rm -f "${SECRET_FILES[@]}"
-	SECRET_FILES=()
-}
-trap cleanup_secrets EXIT
 
 HOST_CONF="${XDG_CONFIG_HOME:-$HOME/.config}/dot/host.conf"
 

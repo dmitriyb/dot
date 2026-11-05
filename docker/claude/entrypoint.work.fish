@@ -1,15 +1,8 @@
 #!/usr/bin/env fish
-# Load mounted secrets into the env: /run/secrets/<lowercase_var> → <UPPERCASE_VAR>
-# (ANTHROPIC_BASE_URL, GH_TOKEN — mounted read-only by docker-claude instead of
-# passing -e, so they never appear in `docker inspect`. ANTHROPIC_API_KEY is not a
-# secret here: the wire proxy authenticates by URL key, so docker-claude passes a
-# placeholder value via -e).
-if test -d /run/secrets
-    for f in /run/secrets/*
-        test -f "$f"; or continue
-        set -gx (string upper (basename "$f")) (cat "$f")
-    end
-end
+# Secrets (ANTHROPIC_BASE_URL, GH_TOKEN) arrive later and sessions enter over SSH, so token
+# loading lives in /etc/fish/conf.d/00-docker-claude.fish. ANTHROPIC_API_KEY is not a secret:
+# the wire proxy authenticates by URL key, so docker-claude passes a placeholder via -e.
+source /etc/docker-claude/save-container-env.fish
 
 # ~/.claude is ephemeral (image-baked settings.json + skills). Persistent state lives on the
 # /workspace repo volume: session transcripts + prompt history are symlinked into
@@ -58,16 +51,6 @@ for p in [ws] + [d for d in sorted(glob.glob(ws + "/*")) if os.path.isdir(d)]:
     projects.setdefault(p, {})["hasTrustDialogAccepted"] = True
 json.dump(cfg, open(cfgp, "w"), indent=2)
 '
-
-# Import SSH public keys from forwarded agent for IDEA Remote Development access
-if test -n "$SSH_AUTH_SOCK"
-    ssh-add -L >> ~/.ssh/authorized_keys 2>/dev/null
-    sort -u -o ~/.ssh/authorized_keys ~/.ssh/authorized_keys
-    chmod 600 ~/.ssh/authorized_keys 2>/dev/null
-end
-
-# Start sshd for IDEA Remote Development
-sudo /usr/sbin/sshd 2>/dev/null
 
 # Create workspace readme on first run
 if not test -f /workspace/README.md
@@ -119,5 +102,6 @@ with open(p, 'w') as f: json.dump(cfg, f, indent=2)
     end
 end
 
-# Start fish interactive shell
-exec fish
+# sshd is the container's main process and docker-claude's readiness signal (port 2222,
+# published on 127.0.0.1); every session, dcw's and IDEA's, enters through it.
+exec sudo /usr/sbin/sshd -D -e

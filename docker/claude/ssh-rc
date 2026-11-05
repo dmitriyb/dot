@@ -1,0 +1,5 @@
+# Installed as ~/.ssh/rc; sshd runs it with /bin/sh at every login, before the shell.
+# One stable agent path for shells that outlive the session that created them.
+if [ -n "$SSH_AUTH_SOCK" ] && [ -S "$SSH_AUTH_SOCK" ]; then
+	ln -sf "$SSH_AUTH_SOCK" "$HOME/.ssh/agent.sock"
+fi
