@@ -38,7 +38,8 @@ options:
   --stop             stop and remove the mode's running container
   -h, --help         show this help
 
-A second invocation while the container runs opens another SSH session into it.
+A second invocation while the container runs opens another SSH session into it, after
+writing the secrets into it again from the host's store.
 
 aliases: dc=docker-claude, dcp=personal, dcw=work.
 EOF
@@ -285,7 +286,10 @@ stop_started_container() {
   return 0
 }
 
-start_container() {
+SECRET_NAMES=()
+SECRET_VALUES=()
+RUN_ARGS=()
+collect_mode_inputs() {
   local -a run_args=() secret_names=() secret_values=()
   case "$MODE" in
   personal)
@@ -348,14 +352,19 @@ start_container() {
       -v claude-tmux-data-work:/home/dev/.local/share/tmux)
     ;;
   esac
+  SECRET_NAMES=("${secret_names[@]}")
+  SECRET_VALUES=("${secret_values[@]}")
+  RUN_ARGS=("${run_args[@]}")
+}
 
+start_container() {
   sync_container_host_key "$IMAGE" "$PORT"
   # A stopped leftover would block the fixed name.
   [[ -n "$(container_state "$CONTAINER")" ]] && docker rm -f "$CONTAINER" >/dev/null
   docker run -d --name "$CONTAINER" \
     --tmpfs "/run/secrets:uid=$(id -u),gid=$(id -g),mode=0700" \
     -p "127.0.0.1:$PORT:$PORT" \
-    "${run_args[@]}" \
+    "${RUN_ARGS[@]}" \
     "$IMAGE" >/dev/null
   STARTED=true
   if [[ "$PERSIST" != true ]]; then
@@ -364,18 +373,18 @@ start_container() {
     trap 'exit 130' INT
     trap 'exit 143' TERM
   fi
-
-  local i
-  for i in "${!secret_names[@]}"; do
-    inject_secret "$CONTAINER" "${secret_names[$i]}" "${secret_values[$i]}"
-  done
 }
 
+collect_mode_inputs
 if [[ "$(container_state "$CONTAINER")" == running ]]; then
   echo "docker-claude: $CONTAINER is already running; opening another session." >&2
 else
   start_container
 fi
+# Also on attach: a start interrupted mid-injection, or a rotated token, is repaired here.
+for i in "${!SECRET_NAMES[@]}"; do
+  inject_secret "$CONTAINER" "${SECRET_NAMES[$i]}" "${SECRET_VALUES[$i]}"
+done
 wait_for_sshd
 
 rc=0

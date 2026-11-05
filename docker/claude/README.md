@@ -47,10 +47,11 @@ If absent, `gh` just stays unauthenticated — no error.
 
 1. The mode is checked against `docker_claude.modes`; the image is built if missing.
 2. The host's ssh-agent is checked: unreachable refuses the start, empty warns.
-3. If the mode's container (`claude-personal` / `claude-work`) is already running, step 4 is
-   skipped and you get another session in it.
-4. The container starts detached with an in-memory `/run/secrets`; each secret is written into it
-   over `docker exec` stdin and its hash compared inside the container. No secret touches argv,
+3. If the mode's container (`claude-personal` / `claude-work`) is already running, it is reused and
+   you get another session in it; otherwise it starts detached with an in-memory `/run/secrets`.
+4. Either way, each secret is read from the host's store, written into the container over
+   `docker exec` stdin and its hash compared inside the container — so an interrupted start or a
+   rotated token is repaired on the next attach (shells already open keep their loaded value). No secret touches argv,
    `docker inspect`, `-e` or the host disk, and nothing depends on host file ownership, so
    userns-remap works unchanged.
 5. docker-claude waits for the container's sshd (`docker_claude.start_timeout` seconds), then runs
@@ -64,8 +65,9 @@ If absent, `gh` just stays unauthenticated — no error.
 
 dcp on a headless Linux host with a TPM2 and a `systemd-creds` that has `--user`, reached over SSH.
 The `headless` layer's `host.conf` selects `systemd-creds` (`host+tpm2`, scoped to your UID) and
-keeps the container running across disconnects; reconnect with `dcp`, stop it with
-`docker-claude personal --stop`.
+keeps the container running across disconnects and `exit`; reconnect with `dcp`, stop it with
+`dcp --stop`. Run long jobs in the container's tmux: a process started directly in a session dies
+with that session.
 
 **Secrets** — the server keeps its own tokens; nothing is pushed from the laptop.
 `cred-store` reads the value from stdin (hidden on a tty), encrypts it, and reads it back through
