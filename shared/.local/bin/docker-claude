@@ -388,5 +388,6 @@ done
 wait_for_sshd
 
 rc=0
-ssh -A -t "$SSH_ALIAS" || rc=$?
+# sshd starts sessions in $HOME and ignores the image's WORKDIR; dcp/dcw sessions belong in /workspace.
+ssh -A -t "$SSH_ALIAS" 'cd /workspace; exec fish -l' || rc=$?
 exit $rc

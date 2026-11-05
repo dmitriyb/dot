@@ -55,7 +55,8 @@ If absent, `gh` just stays unauthenticated — no error.
    `docker inspect`, `-e` or the host disk, and nothing depends on host file ownership, so
    userns-remap works unchanged.
 5. docker-claude waits for the container's sshd (`docker_claude.start_timeout` seconds), then runs
-   `ssh -A docker-personal` / `docker-work`. Login uses the dedicated, touch-free
+   `ssh -A docker-personal` / `docker-work` and starts the login shell in `/workspace` (sshd itself
+   would start it in `$HOME`; other SSH clients, e.g. an editor, choose their own directory). Login uses the dedicated, touch-free
    `~/.ssh/docker_claude_id_ed25519`; the forwarded agent only signs.
 6. Inside, the login shell restores the container's environment and the secrets
    (`container-session.fish`), and `~/.ssh/rc` keeps `~/.ssh/agent.sock` pointing at the newest
