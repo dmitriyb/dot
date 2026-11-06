@@ -15,7 +15,9 @@
 
 services:
   gate:
-    image: ${PORTITOR_IMAGE:-portitor}    # per-instance (portitor-${INSTANCE}); faber-stack builds/refreshes it
+    # Per-instance image with this instance's /etc/portitor baked in (repos.d, allowed_signers,
+    # checks); faber-stack builds it on every up, so a config change is an image change.
+    image: ${PORTITOR_CONFIG_IMAGE:-portitor}
     container_name: portitor-${INSTANCE}   # box reaches it as ssh://git@portitor-${INSTANCE} on the internal net
     restart: unless-stopped
     environment:
@@ -28,12 +30,9 @@ services:
     secrets:
       - gh_token
     volumes:
-      # Config is host-built and mounted read-only: repos.d/<repo>.json,
-      # allowed_signers, egress-filter. Because it is :ro the config MUST be
-      # complete on the host before boot (faber-stack seeds + add-roles it).
-      - ${CONFIG_DIR:?faber-stack must export CONFIG_DIR (host portitor config dir)}:/etc/portitor:ro
-      # Reference the top-level volume by its KEY (instance-repos), NOT its
-      # interpolated name — Compose resolves named mounts against the volumes: map
+      # No host path is mounted anywhere in this stack. Reference the top-level
+      # volume by its KEY (instance-repos), NOT its interpolated name — Compose
+      # resolves named mounts against the volumes: map
       # by key, exactly like the network mount resolves the `instance` key below.
       - instance-repos:/srv/git            # -> name: ${INSTANCE}-repos; bare mirrors + hooks (persist across down/up)
     networks:
@@ -43,15 +42,9 @@ services:
           - portitor-${INSTANCE}           # deterministic net alias the box's remote.url targets
 
   egress:
-    image: egress-proxy                # generic allow-listing forward proxy; only the filter is per-instance
+    image: ${EGRESS_IMAGE:-egress-proxy}   # egress-proxy + this instance's allow-list, baked by faber-stack
     container_name: ${INSTANCE}-egress
     restart: unless-stopped
-    volumes:
-      # Per-instance egress seam: faber-stack writes ${CONFIG_DIR}/egress-filter
-      # from --allow hosts and mounts it over the image's baked default, so this
-      # instance allow-lists exactly the hosts the operator named (default: only
-      # api.anthropic.com).
-      - ${CONFIG_DIR:?faber-stack must export CONFIG_DIR (host portitor config dir)}/egress-filter:/etc/tinyproxy/filter:ro
     networks:
       default: {}
       instance: {}

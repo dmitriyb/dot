@@ -8,9 +8,8 @@
 #
 # All three hashes below are REAL (spex is the v0.1.0 signed release, both arch
 # hashes off its manifest.json; claude-code round-trips a smoke; br is the v0.2.16
-# glibc release). The only stub is br's linux_x86_64 hash — this box targets arm64
-# (the macOS Docker VM); fill the x86_64 hash from the release if you ever build
-# the image on an x86_64 host.
+# glibc release). Every asset carries verified arm64 and x86_64 hashes, so the box
+# builds on either architecture.
 
 final: prev:
 

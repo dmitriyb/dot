@@ -5,11 +5,13 @@
 # internal net to pin the gate's host key, so the image must expose ssh-keyscan
 # and must NOT set an Entrypoint (that run overrides the default Cmd).
 #
-# The baked `filter` is a safe DEFAULT (api.anthropic.com only); per-instance
-# stacks REPLACE it by bind-mounting $CONFIG_DIR/egress-filter over
-# /etc/tinyproxy/filter (see portitor-stack.yml + the egress README).
+# The baked `filter` is a safe DEFAULT (api.anthropic.com only); faber-stack derives a
+# per-instance image (egress-proxy-<instance>) that COPYs that instance's allow-list over
+# /etc/tinyproxy/filter — nothing is bind-mounted.
 #
-#   nix-build egress-image.nix && docker load -i result   # -> egress-proxy:nix
+#   nix-build egress-image.nix [--argstr system x86_64-linux] && docker load -i result   # -> egress-proxy:nix
+
+{ system ? "aarch64-linux" }:
 
 let
   # Pinned nixpkgs from the shared manifest (same pin as the gate + boxes).
@@ -17,7 +19,7 @@ let
   pkgs = import (fetchTarball {
     url = "https://github.com/NixOS/nixpkgs/archive/${versions.nixpkgs.rev}.tar.gz";
     sha256 = versions.nixpkgs.sha256;
-  }) { system = "aarch64-linux"; };
+  }) { inherit system; };
 
   # /bin only: keep the store's /etc out so our /etc/tinyproxy is the real one.
   runtime = pkgs.buildEnv {

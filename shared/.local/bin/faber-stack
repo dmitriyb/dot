@@ -161,6 +161,8 @@ NET="${INSTANCE}-net"
 EGRESS_CT="${INSTANCE}-egress"
 GATE_CT="portitor-${INSTANCE}"
 PORTITOR_IMAGE="portitor-${INSTANCE}"   # per-instance gate image: rmi/rebuild never touches another instance
+PORTITOR_CONFIG_IMAGE="portitor-${INSTANCE}-config"   # PORTITOR_IMAGE + this instance's /etc/portitor
+EGRESS_IMAGE="egress-proxy-${INSTANCE}"               # egress-proxy + this instance's allow-list
 REPOS_VOL="${INSTANCE}-repos"
 
 # Usage-error (exit 2) validation for up/restart BEFORE any filesystem/docker
@@ -208,30 +210,30 @@ if [[ "$VERB" == up || "$VERB" == restart ]]; then
 	$BUILD && ! command -v faber >/dev/null 2>&1 && die "--build needs the faber binary on PATH" 2
 fi
 
-# Config dir (default per-instance under XDG). Absolutize (compose bind source).
+# Config dir (default per-instance under XDG): the host-side build area that gets baked
+# into the instance images; nothing mounts it.
 [[ -n "$CONFIG_DIR" ]] || CONFIG_DIR="${XDG_CONFIG_HOME:-$HOME/.config}/portitor/$INSTANCE"
 mkdir -p "$CONFIG_DIR"
 CONFIG_DIR="$(cd -- "$CONFIG_DIR" && pwd)"
 REPOS_D="$CONFIG_DIR/repos.d"
 SIGNERS_HOST="$CONFIG_DIR/allowed_signers"
 EGRESS_FILTER="$CONFIG_DIR/egress-filter"
-# merge_gate predicate scripts, installed from the project so the gate can read
-# them off its :ro config mount at /etc/portitor/checks. Kept as real files
+# merge_gate predicate scripts, installed from the project and baked with the rest of
+# the config into the gate image at /etc/portitor/checks. Kept as real files
 # rather than shell embedded in policy.json: they are lintable, testable against
 # a live mirror, and produce a readable diff. Invoked as `sh <path>`, so no exec
-# bit is needed (the mount is read-only, and the macOS->Linux permission
-# round-trip is not worth depending on).
+# bit is needed.
 CHECKS_HOST="$CONFIG_DIR/checks"
 
 compose() { docker compose -p "$INSTANCE" -f "$COMPOSE_FILE" "$@"; }
 
 # ---- down / status: thin maps over compose; no slug/pat/project/stdin ------
-# Compose still interpolates ${CONFIG_DIR}/${INSTANCE} and the secret/auth env,
-# so export harmless empties for those (never a real PAT on these paths).
+# Compose still interpolates ${INSTANCE} and the secret/auth env, so export
+# harmless empties for those (never a real PAT on these paths).
 if [[ "$VERB" == status || "$VERB" == down ]]; then
 	command -v docker >/dev/null 2>&1 || die "docker not found on PATH" 1
 	docker info >/dev/null 2>&1 || die "docker is not running — start docker" 1
-	export INSTANCE CONFIG_DIR
+	export INSTANCE
 	export GH_TOKEN="" AGENT_AUTHORIZED_KEY=""
 	case "$VERB" in
 		status) compose ps ;;
@@ -354,7 +356,7 @@ done
 # the append in a command-substitution subshell and leave the parent TMPS empty —
 # the trap would then remove nothing.) Called directly, never in `$(...)`.
 TMPS=()
-cleanup() { local t; for t in ${TMPS[@]+"${TMPS[@]}"}; do rm -f "$t"; done; }
+cleanup() { local t; for t in ${TMPS[@]+"${TMPS[@]}"}; do rm -rf "$t"; done; }
 trap cleanup EXIT INT TERM
 mktmp() { # <dest-varname> <path-prefix>   -> sets $<dest-varname>, appends to TMPS
 	local -n _dest="$1"
@@ -412,8 +414,8 @@ jq --slurpfile pol "$POLICY" --argjson emails "$EMAILS_JSON" \
 	|| die "failed to overlay the gate policy for $REPO" 1
 mv "$ptmp" "$CFG"
 
-# Install the project's merge_gate predicate scripts onto the gate's config
-# mount, re-copied every run so an edited script converges exactly like the
+# Install the project's merge_gate predicate scripts into the config dir,
+# re-copied every run so an edited script converges exactly like the
 # policy overlay above. Absent directory is fine: a policy with no script-backed
 # predicate needs none, and the reference check at startup already caught the
 # mismatched case.
@@ -474,15 +476,10 @@ mktmp etmp "$CONFIG_DIR/.egress-filter"
 		printf '^%s$\n' "${h//./\\.}"
 	done
 } >"$etmp"
-# The egress-filter is bind-mounted and tinyproxy loads it at START; a plain
-# `compose up -d` won't restart it on a content-only change. Record whether the
-# allow-list actually changed so step 8 can force-recreate egress to apply it.
-EGRESS_FILTER_CHANGED=0
-cmp -s "$etmp" "$EGRESS_FILTER" 2>/dev/null || EGRESS_FILTER_CHANGED=1
 mv "$etmp" "$EGRESS_FILTER"
 
 # ---- (6) export the interpolation env for compose --------------------------
-export INSTANCE CONFIG_DIR GH_TOKEN AGENT_AUTHORIZED_KEY PORTITOR_IMAGE
+export INSTANCE GH_TOKEN AGENT_AUTHORIZED_KEY PORTITOR_CONFIG_IMAGE EGRESS_IMAGE
 
 # ---- (7) build / refresh the gate + egress images (Nix dockerTools) ---------
 # Both images are built by Nix from their .nix expressions (dockerTools), NOT
@@ -505,12 +502,19 @@ EGRESS_NIX="$(readlink -f "$EGRESS_CTX")/egress-image.nix"
 [[ -f "$GATE_NIX" ]]   || die "gate image expression not found at $GATE_NIX" 1
 [[ -f "$EGRESS_NIX" ]] || die "egress image expression not found at $EGRESS_NIX" 1
 
+# Build for the daemon's architecture, not the host's: on macOS the daemon is the Linux VM.
+case "$(docker info --format '{{.Architecture}}' 2>/dev/null)" in
+	x86_64 | amd64) NIX_SYSTEM=x86_64-linux ;;
+	aarch64 | arm64) NIX_SYSTEM=aarch64-linux ;;
+	*) die "unsupported Docker daemon architecture '$(docker info --format '{{.Architecture}}' 2>/dev/null)' (gate/egress images build for x86_64 and aarch64)" 1 ;;
+esac
+
 # nix-build <expr> -> docker load -> retag to <target>. The expression names its
 # own image:tag; we parse that from `docker load` and retag it deterministically.
 nix_build_load_tag() {
 	local nix="$1" target="$2" tmp loaded
 	tmp="$(mktemp -d)"
-	nix-build "$nix" -o "$tmp/img" >/dev/null \
+	nix-build "$nix" --argstr system "$NIX_SYSTEM" -o "$tmp/img" >/dev/null \
 		|| { rm -rf "$tmp"; die "nix-build failed for $nix — run it directly to see the error" 1; }
 	loaded="$(docker load -i "$(readlink -f "$tmp/img")" | sed -n 's/^Loaded image: //p' | head -1)"
 	rm -rf "$tmp"
@@ -521,27 +525,48 @@ nix_build_load_tag() {
 
 # Gate: per-instance ($PORTITOR_IMAGE = portitor-$INSTANCE). Missing or --build.
 if ! docker image inspect "$PORTITOR_IMAGE" >/dev/null 2>&1 || $BUILD; then
-	echo "faber-stack: building gate image via Nix ($GATE_NIX) — routes to the aarch64-linux linux-builder..." >&2
+	echo "faber-stack: building gate image via Nix ($GATE_NIX, $NIX_SYSTEM)..." >&2
 	nix_build_load_tag "$GATE_NIX" "$PORTITOR_IMAGE"
-	echo "faber-stack: a running gate applies a new image only on the next recreate (restart / up-after-down)." >&2
 fi
 
 # Egress: generic image (egress-proxy), shared across instances. Missing or --build.
 if ! docker image inspect egress-proxy >/dev/null 2>&1 || $BUILD; then
-	echo "faber-stack: building egress image via Nix ($EGRESS_NIX)..." >&2
+	echo "faber-stack: building egress image via Nix ($EGRESS_NIX, $NIX_SYSTEM)..." >&2
 	nix_build_load_tag "$EGRESS_NIX" egress-proxy
 fi
+
+# ---- (7b) bake this instance's config into derived images ---------------------
+# Nothing on the host is mounted: the containers read config from their image, so it
+# never depends on host file ownership (userns-remap) and a change shows up as a new
+# image, which compose recreates the container for.
+bake_config_image() { # <base-image> <target-image> <context-dir> <COPY line>
+	chmod -R u=rwX,go=rX "$3"
+	printf 'FROM %s\n%s\n' "$1" "$4" | docker build -q -t "$2" -f - "$3" >/dev/null \
+		|| die "docker build of $2 (config layer on $1) failed" 1
+}
+verify_baked() { # <image> <path-in-image> <host-file>
+	docker run --rm --network none --entrypoint cat "$1" "$2" | cmp -s - "$3" \
+		|| die "$1 does not carry $3 at $2 — the baked config does not match the host build" 1
+}
+BAKE_DIR="$(mktemp -d)"; TMPS+=("$BAKE_DIR")
+mkdir -p "$BAKE_DIR/gate/etc/portitor/repos.d" "$BAKE_DIR/egress"
+# Only the config itself: add-role's .lock files and the dot-prefixed temps stay behind.
+cp "$REPOS_D"/*.json "$BAKE_DIR/gate/etc/portitor/repos.d/" || die "no repos.d config to bake under $REPOS_D" 1
+cp "$SIGNERS_HOST" "$BAKE_DIR/gate/etc/portitor/allowed_signers"
+[[ -d "$CHECKS_HOST" ]] && cp -R "$CHECKS_HOST" "$BAKE_DIR/gate/etc/portitor/checks"
+cp "$EGRESS_FILTER" "$BAKE_DIR/egress/filter"
+bake_config_image "$PORTITOR_IMAGE" "$PORTITOR_CONFIG_IMAGE" "$BAKE_DIR/gate" 'COPY --chown=0:0 etc/portitor/ /etc/portitor/'
+bake_config_image egress-proxy "$EGRESS_IMAGE" "$BAKE_DIR/egress" 'COPY --chown=0:0 filter /etc/tinyproxy/filter'
+verify_baked "$PORTITOR_CONFIG_IMAGE" "/etc/portitor/repos.d/$REPO.json" "$CFG"
+verify_baked "$PORTITOR_CONFIG_IMAGE" /etc/portitor/allowed_signers "$SIGNERS_HOST"
+verify_baked "$EGRESS_IMAGE" /etc/tinyproxy/filter "$EGRESS_FILTER"
+echo "faber-stack: config baked into $PORTITOR_CONFIG_IMAGE and $EGRESS_IMAGE" >&2
 
 # ---- (8) bring the stack up -------------------------------------------------
 # restart tears the containers down first (mirror volume persists).
 [[ "$VERB" == restart ]] && compose down >/dev/null 2>&1 || true
+# A changed config is a changed image, so compose recreates exactly the affected container.
 compose up -d || die "docker compose up failed" 1
-# A changed egress allow-list only reaches tinyproxy on a restart: the filter is
-# bind-mounted (content isn't part of compose's recreate check) and read at start.
-# Recreate egress explicitly when it changed (harmless no-op on a fresh create).
-[[ "${EGRESS_FILTER_CHANGED:-0}" == 1 ]] \
-	&& { compose up -d --force-recreate egress \
-		|| die "failed to recreate egress to apply the new allow-list" 1; }
 
 # ---- (9) wait for the gate to be READY, pinning its host key as the probe --
 # `compose up -d` returns when the container is STARTED, not when its sshd is
@@ -609,7 +634,7 @@ faber-stack: instance '$INSTANCE' is up. Orchestrator substrate it satisfies:
     url: ssh://git@$GATE_CT/srv/git
     host_key_file: ./keys/portitor_host_key.pub   # pinned at $PIN
 
-  config dir: $CONFIG_DIR   (mounted :ro at /etc/portitor)
+  config:     $CONFIG_DIR   (baked into $PORTITOR_CONFIG_IMAGE at /etc/portitor)
   mirror:     /srv/git/$REPO.git   (volume $REPOS_VOL)
   egress:     $(grep -v '^#' "$EGRESS_FILTER" | tr '\n' ' ')
 EOF

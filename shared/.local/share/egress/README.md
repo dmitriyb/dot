@@ -19,7 +19,7 @@ data-exfiltration and any REST/libgit2 bypass to arbitrary hosts.
 
 The image is **generic**. `filter` is baked in only as a safe default, so a bare
 `docker run egress-proxy` still allow-lists nothing beyond Anthropic. Each
-faber instance supplies its **own** allow-list without rebuilding the image:
+faber instance supplies its **own** allow-list in a thin derived image:
 
 1. `faber-stack up --instance <name> [--allow <host> …]` writes a per-instance
    filter to `$CONFIG_DIR/egress-filter` (default config dir
@@ -28,13 +28,15 @@ faber instance supplies its **own** allow-list without rebuilding the image:
    validated against `^[A-Za-z0-9._-]+$` first, so a value can never widen into a
    wildcard / open proxy. With no `--allow`, the file holds the single default
    line `^api\.anthropic\.com$`.
-2. `portitor-stack.yml` bind-mounts that file **read-only** over
-   `/etc/tinyproxy/filter` in the `${INSTANCE}-egress` container, overriding the
-   baked default. The mount source must exist before boot — `faber-stack` writes
-   it before `docker compose up`.
+2. `faber-stack` builds `egress-proxy-<name>` = `egress-proxy` plus that file at
+   `/etc/tinyproxy/filter` (root-owned, 0644), reads it back out of the image, and
+   `portitor-stack.yml` runs the `${INSTANCE}-egress` container from it. Nothing is
+   bind-mounted, so the proxy works under Docker userns-remap, and a changed
+   allow-list is a changed image that compose recreates the container for.
 
-So the image never changes per project; only the mounted filter does. The baked
-`filter` remains the fallback for any direct/manual `docker run` of the image.
+So the generic image never changes per project; only the thin per-instance layer
+does. The baked `filter` remains the fallback for any direct/manual `docker run`
+of the generic image.
 
 Regenerating the filter is deterministic and wholesale (never appended), so a
 `faber-stack up` re-run converges to exactly the hosts named by `--allow`.

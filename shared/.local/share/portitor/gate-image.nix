@@ -1,26 +1,34 @@
 # portitor gate image, built with Nix dockerTools instead of the Alpine
-# Dockerfile in this directory. Produces an aarch64-linux OCI image that runs the
+# Dockerfile in this directory. Produces an OCI image for `system` (faber-stack passes the
+# Docker daemon's architecture; default aarch64-linux) that runs the
 # VERIFIED portitor release binary as a git-over-SSH gate, plus `br` for the
 # content_rules bead-close check. The runtime contract (sshd + forced-command
 # wiring) is supplied by gate-entrypoint.sh, copied in unchanged — so no portitor
 # source checkout is needed to build or run the gate.
 #
-#   nix-build gate-image.nix && docker load -i result   # -> portitor-gate:nixtest
+#   nix-build gate-image.nix [--argstr system x86_64-linux] && docker load -i result   # -> portitor-gate:nixtest
 #
 # Everything glibc: the image is a normal glibc userland, so the glibc `br`
 # release runs directly (no gcompat/musl shims the Alpine build needed).
+
+{ system ? "aarch64-linux" }:
 
 let
   # Single source of truth for the externally-sourced tool versions/hashes.
   versions = builtins.fromJSON (builtins.readFile ./../versions.json);
 
-  # Pinned nixpkgs (from versions.json). system is set INSIDE the import so a plain
-  # `nix-build` routes the derivation to the configured aarch64-linux linux-builder
+  # Pinned nixpkgs (from versions.json). system is set INSIDE the import so a Linux
+  # target from a macOS host routes the derivation to the configured linux-builder
   # automatically (a --system CLI flag would be ignored for non-trusted users).
   pkgs = import (fetchTarball {
     url = "https://github.com/NixOS/nixpkgs/archive/${versions.nixpkgs.rev}.tar.gz";
     sha256 = versions.nixpkgs.sha256;
-  }) { system = "aarch64-linux"; };
+  }) { inherit system; };
+
+  isAarch64 = pkgs.stdenv.hostPlatform.isAarch64;
+  # Release asset arch tokens: beads_rust uses arm64 / x86_64, portitor (goreleaser) arm64 / amd64.
+  brArch = if isAarch64 then "arm64" else "x86_64";
+  portitorArch = if isAarch64 then "arm64" else "amd64";
 
   brVersion = versions.br.version;
   portitorVersion = versions.portitor.version;
@@ -36,8 +44,8 @@ let
     pname = "br";
     version = brVersion;
     src = pkgs.fetchurl {
-      url = "https://github.com/Dicklesworthstone/beads_rust/releases/download/v${brVersion}/br-${brVersion}-linux_arm64.tar.gz";
-      sha256 = versions.br.sha256.linux_arm64;
+      url = "https://github.com/Dicklesworthstone/beads_rust/releases/download/v${brVersion}/br-${brVersion}-linux_${brArch}.tar.gz";
+      sha256 = versions.br.sha256."linux_${brArch}";
     };
     sourceRoot = ".";                              # tarball extracts `br` at the root
     nativeBuildInputs = [ pkgs.autoPatchelfHook ];
@@ -55,8 +63,8 @@ let
     pname = "portitor";
     version = portitorVersion;
     src = pkgs.fetchurl {
-      url = "https://github.com/dmitriyb/portitor/releases/download/v${portitorVersion}/portitor_${portitorVersion}_linux_arm64.tar.gz";
-      sha256 = versions.portitor.sha256.linux_arm64;
+      url = "https://github.com/dmitriyb/portitor/releases/download/v${portitorVersion}/portitor_${portitorVersion}_linux_${portitorArch}.tar.gz";
+      sha256 = versions.portitor.sha256."linux_${portitorArch}";
     };
     sourceRoot = ".";
     dontBuild = true;

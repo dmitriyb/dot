@@ -5,7 +5,7 @@
 # (/srv/git/<repo>.git), invoked by portitor before every merge. It is referenced
 # from policy.json as ["/bin/sh", "/etc/portitor/checks/bead-closed.sh"];
 # faber-stack installs this project's portitor/checks/ into the gate's config dir,
-# which is bind-mounted read-only at /etc/portitor. Invoked via `sh <path>`, so it
+# which is baked into the gate image at /etc/portitor. Invoked via `sh <path>`, so it
 # needs no exec bit — the mount is read-only.
 #
 # ARGUMENTS: portitor appends the PR number and the head SHA to the configured

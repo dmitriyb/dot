@@ -36,7 +36,7 @@ re-asserts it onto `repos.d/<repo>.json` on every `up`, so an older config conve
 It is data: no shell lives in it.
 
 `portitor/checks/` holds the shell **predicate scripts** `merge_gate.checks` refers to.
-`faber-stack` installs them into the gate's config dir, which is bind-mounted read-only
+`faber-stack` installs them into the gate's config dir, which it bakes into the gate image
 at `/etc/portitor`, so a predicate is referenced as
 `["/bin/sh", "/etc/portitor/checks/<name>.sh"]` and portitor appends the PR number and
 head SHA as `$1` and `$2`. They are real files rather than shell embedded in JSON so they

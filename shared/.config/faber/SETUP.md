@@ -100,8 +100,9 @@ it inside the gate) — so no portitor checkout is needed at all.
 **Updating later:** `faber upgrade` moves `faber` + `faber-box` forward as a unit
 (they share a contract version); re-run portitor's `install.sh` (above) to move
 `portitor`. The gate image is cached per instance, so to rebuild it against a newer
-portitor, drop it — `docker rmi portitor-<instance>` (e.g. `portitor-spex`) —
-and faber-stack rebuilds it on the next `up`.
+portitor, drop it together with its config layer — `docker rmi portitor-<instance>-config
+portitor-<instance>` (e.g. `portitor-spex`), with the gate stopped — and faber-stack
+rebuilds both on the next `up`.
 
 **Version floor for this config:** the review/fix postludes need a faber
 release with the postlude phase (> 0.1.5; older faber silently ignores the
@@ -110,7 +111,8 @@ release with the postlude phase (> 0.1.5; older faber silently ignores the
 + a `bead-closed` check, no `reviews_log`) needs a portitor release with
 merge-gate v2 transparent-approve (>= 0.1.5; an OLDER gate binary strict-refuses
 `review:none`/`checks` — or the retired `review:internal`/`reviews_log` — at
-boot, so run `docker rmi portitor-<instance>` and the next `up` in one step —
+boot, so run `docker rmi portitor-<instance>-config portitor-<instance>` and the next
+`up` in one step —
 the policy and the new image land together).
 
 ### macOS host notes (skip on Linux)
@@ -238,17 +240,19 @@ secret-tool store --label=$PAT service $PAT account default               # Arch
 cred-store $PAT default                                                   # headless
 ```
 
-**Hosts with Docker userns-remap:** not supported yet. Boxes bind-mount faber's role-agent
-socket and writable host directories, which the remapped box user cannot reach; that is
-faber-side work.
+**Hosts with Docker userns-remap:** the gate stack mounts no host path (config is baked into
+per-instance images), so it is unaffected. faber's boxes are not supported yet: they bind-mount
+the role-agent socket and writable host directories, which the remapped box user cannot reach;
+that is faber-side work.
 
 ---
 
 ## 6. Bring up the gate stack — one command
 
 The heart of the runbook. Pipe `role-keys --json` into `faber-stack up`. It
-validates the inputs, seeds the portitor config and builds the roles **host-side**
-(the `:ro` config mount must be complete before boot). The **static gate policy**
+validates the inputs, seeds the portitor config and builds the roles **host-side**,
+then bakes that config into `portitor-$INSTANCE-config` (and the allow-list into
+`egress-proxy-$INSTANCE`), so no host path is mounted. The **static gate policy**
 — `action_roles` / `merge_gate` / `content_rules` / `identity_only_roles` — comes
 from the declarative `$PROJECT/portitor/policy.json` (override with `--policy`);
 faber-stack overlays only the computed fields (roles map, signer path, slug,
