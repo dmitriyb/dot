@@ -305,9 +305,6 @@ collect_mode_inputs() {
       -v claude-personal-repos:/workspace
       -v claude-fish-data-personal:/home/dev/.local/share/fish
       -v claude-tmux-data-personal:/home/dev/.local/share/tmux)
-    # The host's real state dir, so the in-container agent reads runs live rather than a copy.
-    # Workflow config stays unmounted: the agent edits it in its own /workspace/dot clone.
-    [[ -d "$HOME/.local/state/faber" ]] && run_args+=(-v "$HOME/.local/state/faber":/home/dev/.local/state/faber)
     # Aggregates only: no session/account labels; the per-run instance id stops concurrent
     # containers' counters colliding. Opt out: DOCKER_CLAUDE_NO_TELEMETRY=1. See plans/.
     if [[ -z "${DOCKER_CLAUDE_NO_TELEMETRY:-}" ]]; then
