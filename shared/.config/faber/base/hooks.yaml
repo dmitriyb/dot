@@ -21,7 +21,7 @@ hooks:
   finish-implement: {path: ./hooks/finish-implement}    # postlude (implement*): commit -> push -> PR# -> bead link -> describe -> output.json (all deterministic)
   release-bead:   {path: ./hooks/release-bead}          # on_failure (implement*): host-side, logging no-op
 
-# NOTE: faber bind-mounts hooks ONE FILE PER ROLE (/faber/hooks/{context,prelude,
+# NOTE: faber bakes hooks into the image ONE FILE PER PHASE (/faber/hooks/{context,prelude,
 # postlude}); nothing else from this directory reaches the box. A hook cannot
 # call a sibling helper — sharing logic between two postludes means either one
 # dispatching file or duplication. Learned the hard way: a helper invoked as

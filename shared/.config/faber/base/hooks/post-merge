@@ -26,7 +26,7 @@
 set -euo pipefail
 
 # --- diagnostics ------------------------------------------------------------
-# Duplicated in every hook on purpose: faber bind-mounts ONE FILE PER ROLE, so a
+# Duplicated in every hook on purpose: faber bakes ONE FILE PER PHASE into the image, so a
 # sibling helper is unreachable — hooks.yaml records that a "$(dirname $0)/lib"
 # call exited 127 on every step. The duplication costs ~15 lines; not having it
 # cost a fix round that could not be diagnosed afterwards at all.

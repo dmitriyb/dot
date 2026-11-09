@@ -115,25 +115,18 @@ boot, so run `docker rmi portitor-<instance>-config portitor-<instance>` and the
 `up` in one step —
 the policy and the new image land together).
 
+**faber ≥ 0.8.0 for hosts with Docker userns-remap and for macOS without host knobs:**
+from 0.8.0 no host path reaches a box (faber-box, hooks and skills are image content;
+results and the agent travel over streams). After every `faber upgrade` and every hook or
+skill edit run `faber build` (`faber-stack up --build` and `faber-epic` include it);
+`faber resume` refuses a run whose hooks changed since it started (`--fresh` starts over).
+
 ### macOS host notes (skip on Linux)
 
-Two Docker-Desktop quirks need one explicit file, `~/.config/faber/host.json`
-(faber's per-machine config; strict-decoded, no environment involved):
-
-- the VM presents faber's forwarded agent socket as root-owned, so the box's
-  dropped user needs group-0 membership (`--group-add`; membership, not root
-  powers) — `agent_socket_group`;
-- the VM does not share `/usr/local`, so the default faber-box mount silently
-  becomes an empty directory — keep a real COPY under `~` (a symlink resolves
-  back to the unshared path) and point `box_bin` at it. Refresh the copy after
-  every `faber upgrade`.
-
-```fish
-mkdir -p ~/.local/libexec
-install /usr/local/bin/faber-box ~/.local/libexec/faber-box
-printf '{"agent_socket_group":"0","box_bin":"%s"}\n' ~/.local/libexec/faber-box \
-    > ~/.config/faber/host.json
-```
+Docker Desktop needs no `~/.config/faber/host.json` knob any more. faber 0.8.0 **refuses**
+a `host.json` that still carries `agent_socket_group`: delete that line. `box_bin` and the
+`~/.local/libexec/faber-box` copy it pointed at are no longer needed either — `faber build`
+bakes the Linux `faber-box` installed next to `faber`.
 
 ---
 
@@ -240,10 +233,8 @@ secret-tool store --label=$PAT service $PAT account default               # Arch
 cred-store $PAT default                                                   # headless
 ```
 
-**Hosts with Docker userns-remap:** the gate stack mounts no host path (config is baked into
-per-instance images), so it is unaffected. faber's boxes are not supported yet: they bind-mount
-the role-agent socket and writable host directories, which the remapped box user cannot reach;
-that is faber-side work.
+**Hosts with Docker userns-remap:** supported. The gate stack mounts no host path (config is
+baked into per-instance images), and from faber 0.8.0 neither do the boxes.
 
 ---
 
