@@ -104,14 +104,16 @@ for role in implementer reviewer merger
 end
 ```
 
-If the resident credentials exist on the YubiKey but this host has no handle files, recover
-them with `restore-role-keys` (PIN + one touch). Do **not** use raw `ssh-keygen -K`: it
-stamps every handle "user presence required", and the boxes' autonomous signing then dies
-with "agent refused operation". The `.pub` files must land in `~/.ssh`: `faber-stack`
-needs one per role.
+If the resident credentials exist on the YubiKey but this host has no handle files (the
+YubiKey moved to another host), recover them with `restore-role-keys` (PIN + one touch),
+naming each key by its application without `ssh:`; without arguments it lists what the
+YubiKey holds and asks which to restore. Only the keys you name are restored, because a
+restored handle signs without a touch. Do **not** use raw `ssh-keygen -K`: it stamps every
+handle "user presence required", and the boxes' autonomous signing then dies with "agent
+refused operation". The `.pub` files must land in `~/.ssh`: `faber-stack` needs one per role.
 
 ```fish
-restore-role-keys
+restore-role-keys spex-implementer spex-reviewer spex-merger
 ```
 
 ---
