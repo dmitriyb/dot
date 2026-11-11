@@ -1,0 +1,13 @@
+#!/bin/bash
+# context hook — runs IN the box before the agent. Contract: write a non-empty
+# CONTEXT.md into $FABER_BUNDLE_DIR and exit 0, or the step aborts. Here the
+# prompt body is simply the workflow's task input, passed through verbatim.
+set -euo pipefail
+task="${FABER_INPUT_TASK:?FABER_INPUT_TASK is required}"
+bundle="${FABER_BUNDLE_DIR:?FABER_BUNDLE_DIR is required}"
+{
+  printf '%s\n\n' "$task"
+  # The box contract scores the step on this file; without a skill library the
+  # instruction has to ride in the prompt body.
+  printf 'When the task is complete, write the file "$FABER_RESULT_DIR/output.json" (the FABER_RESULT_DIR environment variable is set) containing a JSON object with exactly one key: "result", a one-line summary of what you did. This file is mandatory.\n'
+} > "$bundle/CONTEXT.md"

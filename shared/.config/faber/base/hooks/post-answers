@@ -1,0 +1,213 @@
+#!/bin/bash
+# postlude hook (fix) — runs IN the box AFTER the agent, BEFORE result
+# extraction. Deterministically posts the agent's per-thread answers through
+# the gate, so "the agent addressed the feedback but never answered it" cannot
+# happen silently. The three failure shapes are distinct on purpose:
+#   - threads existed but answers.json is ABSENT  -> the agent never wrote it
+#   - answers.json is MALFORMED                    -> contract violation, named
+#   - answers.json is EMPTY (replies: [])          -> legal, recorded, no posts
+#
+# Contract with the context hook + skill:
+#   - fetch-pr wrote $FABER_BUNDLE_DIR/threads.json (the unresolved threads at
+#     context time) and UNRESOLVED_THREADS into bundle.env;
+#   - the fix skill wrote $FABER_RESULT_DIR/answers.json:
+#       {"replies": [{"thread": "<id>", "body": "<markdown>"}, ...],
+#        "comment": "<optional markdown for review-body items with no thread>",
+#        "description": "<optional markdown: the PR body, replaced whole>"}
+#     answering EVERY thread listed in threads.json.
+#
+# It also owns the deterministic tail, as finish-implement does for implement:
+# the signed commit of the fixer's tree, the push, the PR-level comment, and
+# output.json. The agent's contract is the edited tree plus answers.json.
+set -euo pipefail
+
+# --- diagnostics ------------------------------------------------------------
+# Duplicated in every hook on purpose: faber bakes ONE FILE PER PHASE into the image, so a
+# sibling helper is unreachable — hooks.yaml records that a "$(dirname $0)/lib"
+# call exited 127 on every step. The duplication costs ~15 lines; not having it
+# cost a fix round that could not be diagnosed afterwards at all.
+#
+# Everything this hook prints to stderr is copied into the attempt's result dir,
+# which faber preserves on EVERY path, success included. Without this a hook's
+# account of what it did survived only when the STEP FAILED (handoff.json's
+# stderr_tail — and only a tail of it), so a warning on a step that succeeded
+# went nowhere, and a call that failed silently left nothing to read.
+#
+# NEVER `set -x` here and never print a secret: the box holds credentials and
+# these files persist on the host for the life of the run directory.
+_hook="post-answers"
+_hooks_dir="${FABER_RESULT_DIR:-}/hooks"
+if [ -n "${FABER_RESULT_DIR:-}" ] && mkdir -p "$_hooks_dir" 2>/dev/null; then
+	exec 2> >(tee -a "$_hooks_dir/$_hook.log" >&2)
+else
+	_hooks_dir=""   # host-side hook, or no result dir: log to stderr only
+fi
+
+# emit <event> [key=value ...] — the machine-readable half of the same record,
+# one JSON object per line in events.jsonl. Makes "how often does X actually
+# fail" a jq across the run directories rather than a reconstruction from
+# whichever side effects happened to survive.
+_emit() {
+	[ -n "${_hooks_dir:-}" ] || return 0
+	_e="$1"; shift
+	jq -cn --arg ts "$(date -u +%Y-%m-%dT%H:%M:%SZ)" --arg hook "$_hook" --arg event "$_e" --args \
+		'{ts:$ts,hook:$hook,event:$event} + ($ARGS.positional|map(split("=")|{(.[0]):(.[1:]|join("="))})|add // {})' \
+		"$@" >> "$_hooks_dir/events.jsonl" 2>/dev/null || true
+}
+
+# verify_push <branch> — confirm the gate's ref actually holds our commit. A
+# push that exits 0 without advancing the remote leaves every later step reading
+# stale state, and the exit code alone cannot tell that from success. One extra
+# ls-remote per push is the whole cost.
+verify_push() {
+	vp_ref="$1"
+	vp_local="$(git rev-parse HEAD)"
+	vp_remote="$(git ls-remote origin "refs/heads/$vp_ref" 2>/dev/null | awk '{print $1}')"
+	if [ "$vp_remote" = "$vp_local" ]; then
+		_emit push_verify ref="$vp_ref" sha="$vp_local" result=ok
+		return 0
+	fi
+	_emit push_verify ref="$vp_ref" want="$vp_local" got="${vp_remote:-none}" result=mismatch
+	return 1
+}
+
+die() { echo "post-answers: $*" >&2; exit 1; }
+bundle="${FABER_BUNDLE_DIR:?FABER_BUNDLE_DIR is required}"
+result="${FABER_RESULT_DIR:?FABER_RESULT_DIR is required}"
+
+# bundle.env carries PR (and UNRESOLVED_THREADS); source it rather than trust
+# ambient env — the file is the contract.
+[ -f "$bundle/bundle.env" ] || die "no bundle.env — fetch-pr contract broken"
+# shellcheck disable=SC1091
+. "$bundle/bundle.env"
+pr="${PR:?bundle.env carries no PR}"
+threads_file="$bundle/threads.json"
+[ -f "$threads_file" ] || die "no threads.json — fetch-pr contract broken (portitor without reviewThreads?)"
+nthreads="$(jq 'length' "$threads_file")"
+
+# --- commit + push the fix ---------------------------------------------------
+# BEFORE the answers are validated, deliberately: a reply saying "Fixed — ..."
+# must not be posted against unpushed work, and a contract violation in
+# answers.json must not throw away a correct fix. An agent that committed or
+# pushed on its own is tolerated (the `dirty` path legitimately does git work),
+# never assumed.
+# An unresolved conflict must never be committed. prepare-fix hands the agent a
+# conflicted tree on the `dirty` path; if the agent did not finish resolving it,
+# `git add -A` would happily stage the conflict markers and this would push them.
+if [ -n "$(git ls-files --unmerged)" ]; then
+  die "the working tree still has unmerged paths — the merge conflict was not resolved: $(git diff --name-only --diff-filter=U | tr '\n' ' ')"
+fi
+git add -A
+if git diff --cached --quiet; then
+  echo "post-answers: working tree clean — the agent committed its own fix, or there was nothing to change"
+else
+  git commit -qS -m "${BEAD_ID:-fix}: address review feedback" || die "signed fix commit failed"
+  echo "post-answers: committed the fixer's tree"
+fi
+git push origin HEAD >/dev/null 2>&1 || die "the gate refused the push (a rebase needs a force push the gate denies — merge the base in instead)"
+verify_push "$(git rev-parse --abbrev-ref HEAD)" || die "the fix push reported success but the gate does not hold it — the replies below would answer for work that never landed"
+echo "post-answers: pushed $(git rev-parse --abbrev-ref HEAD)"
+
+answers="$result/answers.json"
+
+# Every success path ends here: the optional PR-level comment (review-body items
+# have no thread to reply into, and the agent must not post it itself — one
+# channel, one poster) and the step's own record. `status` is synthesized rather
+# than written by the agent: nothing downstream branches on it, and a summary
+# the agent writes can disagree with what was actually posted.
+emit() {
+  if [ -f "$answers" ]; then
+    # The PR body is the durable record of the delivery (the bead's
+    # external_ref points at it), and a review may find it wrong — the observed
+    # case was a body saying "No code change" over a head that rewrote four
+    # files. Only finish-implement had a `describe` lever, so the fixer could
+    # answer that review only in prose (run 20260903-114514). Same channel rule
+    # as the comment below: the agent writes the text, this hook posts it.
+    # Verified by re-reading the PR, not by the exit code: finish-implement
+    # trusts `describe`'s exit status, and a body that did not take would let
+    # the replies below claim a fix the PR does not carry.
+    desc="$(jq -r '.description // ""' "$answers")"
+    if [ -n "$desc" ]; then
+      printf '%s\n' "$desc" | portitor pr describe --pr "$pr" \
+        || die "the gate refused pr describe on PR #$pr"
+      fetched="$(portitor pr fetch --pr "$pr" 2>/dev/null)" || fetched=""
+      if [ -z "$fetched" ]; then
+        echo "post-answers: could not re-read PR #$pr to verify the description" >&2
+        _emit describe_verify pr="$pr" result=unavailable
+      else
+        # Compare modulo line endings and trailing whitespace: GitHub normalizes
+        # CRLF and trims, and neither changes what the body says.
+        norm() { tr -d '\r' | sed 's/[[:space:]]*$//' | sed -e :a -e '/^\n*$/{$d;N;ba' -e '}'; }
+        want_n="$(printf '%s\n' "$desc" | norm)"
+        got_n="$(jq -r '.body // ""' <<<"$fetched" | norm)"
+        if [ "$want_n" = "$got_n" ]; then
+          _emit describe_verify pr="$pr" result=ok bytes="$(printf '%s' "$desc" | wc -c | tr -d ' ')"
+          echo "post-answers: set PR #$pr description (verified)"
+        else
+          _emit describe_verify pr="$pr" result=mismatch
+          die "pr describe reported success but PR #$pr does not carry the new body — the replies below would claim a description the PR does not have"
+        fi
+      fi
+    fi
+    body="$(jq -r '.comment // ""' "$answers")"
+    if [ -n "$body" ]; then
+      printf '%s\n' "$body" | portitor pr comment --pr "$pr" \
+        || die "the gate refused the PR-level comment on PR #$pr"
+      echo "post-answers: posted the PR-level comment on PR #$pr"
+    fi
+  fi
+  jq -cn --arg s "$1" '{status:$s}' > "$result/output.json"
+  echo "post-answers: output.json emitted ($1)"
+  exit 0
+}
+
+if [ ! -f "$answers" ]; then
+  [ "$nthreads" -eq 0 ] || die "answers.json is ABSENT but $nthreads unresolved thread(s) exist — the agent never wrote its answers"
+  emit "no review threads; the fix was committed and pushed"
+fi
+
+jq -e 'type == "object" and (.replies | type == "array")
+       and ((.comment // "") | type == "string")
+       and ((.description // "") | type == "string")' "$answers" >/dev/null 2>&1 \
+  || die "answers.json is MALFORMED — want {\"replies\": [{\"thread\": id, \"body\": md}, ...], \"comment\": md?, \"description\": md?}"
+
+nreplies="$(jq '.replies | length' "$answers")"
+if [ "$nreplies" -eq 0 ]; then
+  echo "post-answers: answers.json carries zero replies (legal; $nthreads thread(s) were open)"
+  emit "no thread replies; $nthreads thread(s) were open"
+fi
+
+# Every reply must target a KNOWN unresolved thread; every reply needs a body.
+bad="$(jq --slurpfile th "$threads_file" -r '
+  ([$th[0][].id]) as $known
+  | [ .replies[]
+      | select((.thread | type != "string") or ((.thread as $t | $known | index($t)) | not)
+               or (.body | type != "string") or (.body | length == 0)) ]
+  | length' "$answers")"
+[ "$bad" -eq 0 ] || die "answers.json is MALFORMED — $bad reply(ies) target an unknown thread id or carry no body (known ids are in threads.json)"
+
+# `Addressed — ...` / `Declined — ...` is the convention the fix skill asks for,
+# and it stays a convention: NOTHING parses this prefix. No hook reads it, no
+# downstream step binds it, and the reviewer it is written for is an agent
+# reading prose — unlike `blocked_by`, which post-merge threads into the step
+# output and ci-fix binds as a typed input. It was a `die` until a fix step lost
+# a 1h33m epic over two replies opening "Confirmed still holds" and "Filed as a
+# non-blocking drift claim" — both legitimate answers, both against code this
+# hook had already committed and pushed. A first-word test cannot separate a
+# real verdict from `Addressed — <evasion>` either, so a deviation is reported
+# and the replies are posted.
+badfmt="$(jq -r '[.replies[] | select((.body | test("^\\s*(Addressed|Declined)\\b")) | not)] | length' "$answers")"
+[ "$badfmt" -eq 0 ] || echo "post-answers: $badfmt reply(ies) open with neither \"Addressed\" nor \"Declined\"; posting anyway (see skills/fix)" >&2
+
+fail=0
+while IFS= read -r idx; do
+  tid="$(jq -r ".replies[$idx].thread" "$answers")"
+  if ! jq -r ".replies[$idx].body" "$answers" | portitor pr reply --pr "$pr" --thread "$tid"; then
+    echo "post-answers: reply to thread $tid failed" >&2
+    fail=$((fail+1))
+  fi
+done < <(jq -r '.replies | keys[]' "$answers")
+
+[ "$fail" -eq 0 ] || die "$fail of $nreplies replies failed to post (gate error above)"
+echo "post-answers: posted $nreplies replies on PR #$pr"
+emit "addressed $nreplies of $nthreads review thread(s)"

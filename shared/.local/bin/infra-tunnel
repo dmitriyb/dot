@@ -1,0 +1,46 @@
+#!/usr/bin/env bash
+# infra-tunnel — the background SSH road to the infra fleet (securehost).
+#
+#   infra-tunnel up|down|status
+#
+# Forwards, on loopback:
+#   14317 -> securehost 4317   otel-edge upstream (edge collector -> home collector)
+#   3000  -> securehost 3000   grafana
+#   9090  -> securehost 9090   prometheus (ad-hoc queries)
+# Uses an SSH control socket, so `up` backgrounds cleanly and `down`/`status`
+# manage the same connection. `up` authenticates over SSH — expect a key
+# touch. Interim transport: replaced by a Pangolin private resource later
+# (plans/pangolin-migration.md in the infra repo); producers never notice —
+# they only ever talk to the edge on localhost.
+set -euo pipefail
+
+die() { echo "infra-tunnel: $1" >&2; exit "${2:-1}"; }
+usage() { sed -n '2,14p' "$0" | sed 's/^# \{0,1\}//' >&2; exit "${1:-0}"; }
+
+HOST_ALIAS="${INFRA_TUNNEL_HOST:-securehost-proxy-token}"
+FORWARDS=(-L 127.0.0.1:14317:127.0.0.1:4317 -L 127.0.0.1:3000:127.0.0.1:3000 -L 127.0.0.1:9090:127.0.0.1:9090)
+SOCK="${XDG_STATE_HOME:-$HOME/.local/state}/infra-tunnel.sock"
+mkdir -p "$(dirname "$SOCK")"
+
+[[ $# -gt 0 ]] || usage 2
+case "$1" in -h|--help) usage 0 ;; esac
+VERB="$1"
+case "$VERB" in
+	up)
+		if ssh -S "$SOCK" -O check "$HOST_ALIAS" 2>/dev/null; then
+			echo "infra-tunnel: already up"; exit 0
+		fi
+		rm -f "$SOCK"
+		echo "infra-tunnel: connecting to $HOST_ALIAS (expect a key touch)" >&2
+		ssh -f -N -M -S "$SOCK" -o ExitOnForwardFailure=yes -o ServerAliveInterval=30 -o ServerAliveCountMax=3 \
+			"${FORWARDS[@]}" "$HOST_ALIAS" || die "ssh failed"
+		echo "infra-tunnel: up — 14317 (edge upstream), 3000 (grafana), 9090 (prometheus)"
+		;;
+	down)
+		ssh -S "$SOCK" -O exit "$HOST_ALIAS" 2>/dev/null && echo "infra-tunnel: closed" || echo "infra-tunnel: not running"
+		;;
+	status)
+		ssh -S "$SOCK" -O check "$HOST_ALIAS" 2>/dev/null && echo "infra-tunnel: up" || { echo "infra-tunnel: down"; exit 1; }
+		;;
+	*) die "unknown verb: $VERB (up|down|status)" 2 ;;
+esac

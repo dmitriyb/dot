@@ -1,0 +1,48 @@
+# Edge collector: the per-workstation store-and-forward relay. Producers on
+# this machine push to localhost:4317/4318; this buffers (disk-backed queue)
+# and forwards upstream to the home collector over whatever transport exists
+# (ssh -L tunnel today, a Pangolin private resource later). The upstream
+# endpoint comes from the launcher env (OTEL_EDGE_UPSTREAM) — committed config
+# carries no real endpoint; a blind copier's telemetry goes nowhere.
+extensions:
+  file_storage:
+    directory: /var/lib/otelcol-queue
+
+receivers:
+  otlp:
+    protocols:
+      grpc:
+        endpoint: 0.0.0.0:4317
+      http:
+        endpoint: 0.0.0.0:4318
+
+processors:
+  batch: {}
+
+exporters:
+  otlp:
+    endpoint: ${env:OTEL_EDGE_UPSTREAM}
+    tls:
+      insecure: true   # transport security = the tunnel / Pangolin, not TLS here
+    retry_on_failure:
+      enabled: true
+      max_elapsed_time: 0   # never give up: the whole point of the edge
+    sending_queue:
+      enabled: true
+      storage: file_storage # queue survives edge restarts
+
+service:
+  extensions: [file_storage]
+  pipelines:
+    metrics:
+      receivers: [otlp]
+      processors: [batch]
+      exporters: [otlp]
+    logs:
+      receivers: [otlp]
+      processors: [batch]
+      exporters: [otlp]
+    traces:
+      receivers: [otlp]
+      processors: [batch]
+      exporters: [otlp]

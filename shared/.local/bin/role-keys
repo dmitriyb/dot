@@ -44,8 +44,8 @@ each, and emits `faber add-key` + `portitor add-role` commands.
               run a role without one, and the forge verifies signatures only
               against an email registered to the key's account.
   --json      NON-INTERACTIVE: emit the roles ALREADY registered in faber's
-              registry (role->fingerprint + ~/.ssh pub) as JSON, for
-              `| faber-stack up`. Assign once with --apply first. Needs jq.
+              registry (role->fingerprint + ~/.ssh pub) as JSON; faber-stack
+              up reads it. Assign once with --apply first. Needs jq.
 EOF
 	exit "${1:-0}"
 }
@@ -158,7 +158,7 @@ fi
 # ---- --json: NON-INTERACTIVE emit from faber's registry --------------------
 # You assign roles ONCE (role-keys --apply, interactive) which writes faber's
 # role->fingerprint registry; --json then just EMITS those registered roles for
-# `| faber-stack up`, joining each to its ~/.ssh pubkey path by fingerprint. No
+# faber-stack up, joining each to its ~/.ssh pubkey path by fingerprint. No
 # prompting — the interactive picker below runs only WITHOUT --json.
 if $JSON; then
 	REGISTRY="${XDG_CONFIG_HOME:-$HOME/.config}/faber/roles.json"

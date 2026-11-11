@@ -1,0 +1,22 @@
+#!/bin/bash
+# prelude hook — runs IN the box as the box user, after the runtime home is
+# created and before the agent starts. Writes the goose config the agent will
+# read: image-baked /home/box content does NOT survive (faber-box creates the
+# home fresh at box start), so this is the only seam that reaches goose's
+# config path. dynamic_task is disabled deliberately: the local model
+# delegates to it and the nested loop wedges against the slow endpoint;
+# prompt-level steering did not stop it.
+set -euo pipefail
+mkdir -p "$HOME/.config/goose"
+cat > "$HOME/.config/goose/config.yaml" <<'EOF'
+extensions:
+  developer:
+    enabled: true
+    type: builtin
+    name: developer
+    timeout: 300
+  dynamic_task:
+    enabled: false
+    type: builtin
+    name: dynamic_task
+EOF

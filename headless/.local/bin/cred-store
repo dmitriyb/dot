@@ -1,0 +1,73 @@
+#!/usr/bin/env bash
+# cred-store — store one secret for the systemd-creds backend (the headless counterpart of
+# `security add-generic-password` / `secret-tool store`), verified through docker-claude's read path.
+set -euo pipefail
+
+die() { echo "cred-store: $*" >&2; exit 1; }
+
+usage() {
+	cat >&2 <<'EOF'
+Usage: cred-store <service> [account]
+
+Reads the value from stdin (hidden prompt on a tty), encrypts it with
+`systemd-creds encrypt --user` using secrets.key from ~/.config/dot/host.conf,
+writes <secrets.dir>/<service>[.<account>].cred, then reads it back the way
+docker-claude does and compares it with the input.
+
+  cred-store anthropic personal      # paste the `claude setup-token` value
+  cred-store gh personal             # paste the PAT
+EOF
+	exit "${1:-0}"
+}
+
+case "${1:-}" in
+-h | --help) usage 0 ;;
+"") usage 2 ;;
+esac
+[[ $# -le 2 ]] || usage 2
+
+service="$1" account="${2:-}"
+[[ "$service" =~ ^[A-Za-z0-9_-]+$ ]] || die "invalid service '$service' (allowed: A-Za-z0-9_-)"
+[[ -z "$account" || "$account" =~ ^[A-Za-z0-9_-]+$ ]] || die "invalid account '$account' (allowed: A-Za-z0-9_-)"
+
+lib="$HOME/.local/libexec/docker-claude/agent-common.sh"
+[[ -f "$lib" ]] || die "$lib not found — run dot's setup.sh"
+# shellcheck source=../../../shared/.local/libexec/docker-claude/agent-common.sh
+source "$lib"
+
+backend="$(_secrets_backend)" || exit 1
+[[ "$backend" == systemd-creds ]] || die "secrets.backend is '$backend'; cred-store only stores for systemd-creds"
+key="$(host_conf secrets.key)" || die "secrets.key missing in $HOST_CONF"
+dir="$(host_conf secrets.dir)" || die "secrets.dir missing in $HOST_CONF"
+
+name="$service${account:+.$account}"
+dest_dir="$HOME/$dir"
+dest="$dest_dir/$name.cred"
+tmp="$dest_dir/.$name.cred.tmp"
+
+if [[ -t 0 ]]; then
+	read -rs -p "value for $name: " value
+	echo >&2
+else
+	value="$(cat)"
+fi
+[[ -n "$value" ]] || die "empty value; nothing stored"
+
+umask 077
+mkdir -p "$dest_dir"
+chmod 700 "$dest_dir"
+rm -f "$tmp"
+trap 'rm -f "$tmp"' EXIT
+
+printf '%s' "$value" | systemd-creds encrypt --user --with-key="$key" --name="$name" - "$tmp" ||
+	die "systemd-creds encrypt failed"
+# Checked before the rename so a bad encryption never replaces a working credential.
+[[ "$(systemd-creds decrypt --user --name="$name" "$tmp" -)" == "$value" ]] ||
+	die "decrypted value differs from the input; $dest left unchanged"
+mv -f "$tmp" "$dest"
+
+rc=0
+got="$(_keychain_read "$backend" "$service" "$account")" || rc=$?
+((rc == 0)) || die "stored $dest, but reading it back failed (rc=$rc)"
+[[ "$got" == "$value" ]] || die "stored $dest, but the read-back value differs from the input"
+echo "cred-store: stored and verified $dest" >&2

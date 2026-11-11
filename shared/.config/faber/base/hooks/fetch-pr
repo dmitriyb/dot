@@ -1,0 +1,332 @@
+#!/bin/bash
+# context hook (review AND fix) — runs IN the box, cwd = the repo clone. Fetches
+# the PR's review state via `portitor pr fetch` (the box has no gh; the portitor
+# client is part of the image toolset and forwards over the pinned SSH channel),
+# checks out the PR branch so the agent works against the PR's code, and
+# writes CONTEXT.md + pr.json into $FABER_BUNDLE_DIR. Serves both the review and
+# fix templates.
+#
+# It also resolves the two things the agents used to derive for themselves: the
+# review MODE (a pure function of pr.json) and the bead's spec leaves (a
+# `spex map context` call). Both are deterministic, so neither belongs in a
+# skill. CONTEXT.md carries facts only — how to review or fix lives in the
+# skills, in one copy.
+set -euo pipefail
+
+# --- diagnostics ------------------------------------------------------------
+# Duplicated in every hook on purpose: faber bakes ONE FILE PER PHASE into the image, so a
+# sibling helper is unreachable — hooks.yaml records that a "$(dirname $0)/lib"
+# call exited 127 on every step. The duplication costs ~15 lines; not having it
+# cost a fix round that could not be diagnosed afterwards at all.
+#
+# Everything this hook prints to stderr is copied into the attempt's result dir,
+# which faber preserves on EVERY path, success included. Without this a hook's
+# account of what it did survived only when the STEP FAILED (handoff.json's
+# stderr_tail — and only a tail of it), so a warning on a step that succeeded
+# went nowhere, and a call that failed silently left nothing to read.
+#
+# NEVER `set -x` here and never print a secret: the box holds credentials and
+# these files persist on the host for the life of the run directory.
+_hook="fetch-pr"
+_hooks_dir="${FABER_RESULT_DIR:-}/hooks"
+if [ -n "${FABER_RESULT_DIR:-}" ] && mkdir -p "$_hooks_dir" 2>/dev/null; then
+	exec 2> >(tee -a "$_hooks_dir/$_hook.log" >&2)
+else
+	_hooks_dir=""   # host-side hook, or no result dir: log to stderr only
+fi
+
+# emit <event> [key=value ...] — the machine-readable half of the same record,
+# one JSON object per line in events.jsonl. Makes "how often does X actually
+# fail" a jq across the run directories rather than a reconstruction from
+# whichever side effects happened to survive.
+_emit() {
+	[ -n "${_hooks_dir:-}" ] || return 0
+	_e="$1"; shift
+	jq -cn --arg ts "$(date -u +%Y-%m-%dT%H:%M:%SZ)" --arg hook "$_hook" --arg event "$_e" --args \
+		'{ts:$ts,hook:$hook,event:$event} + ($ARGS.positional|map(split("=")|{(.[0]):(.[1:]|join("="))})|add // {})' \
+		"$@" >> "$_hooks_dir/events.jsonl" 2>/dev/null || true
+}
+
+die() { echo "fetch-pr: $*" >&2; exit 1; }
+pr="${FABER_INPUT_PR:?FABER_INPUT_PR is required}"
+bundle="${FABER_BUNDLE_DIR:?FABER_BUNDLE_DIR is required}"
+
+command -v portitor >/dev/null 2>&1 || die "the portitor client is not on PATH (portitor-client missing from the image toolset?)"
+
+prjson="$(portitor pr fetch --pr "$pr")" || die "portitor pr fetch --pr $pr failed"
+branch="$(jq -r '.headRefName // empty' <<<"$prjson")"
+[ -n "$branch" ] || die "PR #$pr has no headRefName in the fetch result"
+
+git fetch -q origin "$branch" || die "fetch PR branch $branch failed"
+git checkout -q "$branch" || die "checkout PR branch $branch failed"
+
+printf '%s\n' "$prjson" > "$bundle/pr.json"
+
+# CI diagnosis left by the merge step. When a land attempt hits a red build, the
+# merge agent has already read the job logs and written its conclusion as a PR
+# comment — that analysis is the expensive part, so the fixer consumes it rather
+# than re-deriving it from raw logs. Plain comments only reach pr.json, so it is
+# surfaced into CONTEXT.md below; without this the fix skill would not see it.
+# Newest comment wins: a second land attempt supersedes the first.
+# Wire marker: post-merge prefixes every CI diagnosis it posts with this exact
+# line. Keep the two in sync — it is the whole contract between them.
+CI_COMMENT_MARKER="<!-- faber:ci-report -->"
+ci_comment="$(jq -r --arg m "$CI_COMMENT_MARKER" \
+  '[.comments[]? | select((.body // "") | startswith($m))] | last // empty | .body // empty' <<<"$prjson")"
+
+# --- mode: REVIEW | FOLLOWUP | WAIT -----------------------------------------
+# A pure function of pr.json + the checked-out head, computed once here so no
+# agent re-derives it (and so a wrong refinement cannot send a reviewer at the
+# wrong question).
+#
+#   REVIEW   no prior feedback — judge the diff against the bead and its spec.
+#   FOLLOWUP prior feedback AND the author moved since — verify the fixes.
+#   WAIT     prior feedback and nothing moved — there is nothing new to judge.
+#
+# Feedback = reviewer review-bodies + unresolved inline threads + human PR
+# comments. The machine-authored CI report is excluded: nobody can "respond" to
+# it, so counting it pinned every subsequent cycle at FOLLOWUP forever.
+#
+# "Moved" is SHA-based: post-review stamps every review it posts with
+# `<!-- faber:review event=<event> head=<sha> replies=<n> -->` (its wire marker
+# — keep the two in sync), so the newest request-changes review names the exact
+# head it judged AND how many open-thread comments existed when it judged.
+# FOLLOWUP iff the current head differs from that SHA, or the open-thread
+# comment total has GROWN past the stamped one; WAIT only when neither moved.
+# This is what makes the fixer's own PR comments and this loop's own WAIT posts
+# inert. The previous rule — newest commit timestamp vs newest feedback
+# timestamp — counted both as feedback, so a fix commit pushed seconds before
+# its summary comment stayed "older than feedback" forever and the review loop
+# deadlocked at WAIT until exhaustion (PR#355). The timestamp comparison
+# survives ONLY as a fallback for PRs whose reviews predate the marker.
+#
+# The COUNT, not a boolean, is what breaks the second deadlock (PR#387). Review
+# threads carry no timestamp in the gate's GraphQL shape (id, isResolved, path,
+# line, comments{id, body, author}), so "has a reply" was the only signal used
+# — and it is a latch that never clears: once the fixer answers an open thread
+# that thread has >1 comment forever, so every later round evaluated FOLLOWUP
+# whether or not anything moved, and WAIT became unreachable for the life of
+# the PR. A watermark clears each round because post-review re-stamps it.
+head_sha="$(git rev-parse HEAD)" || die "cannot resolve the checked-out PR head"
+
+# Comments across still-open threads, as of this context. post-review stamps it
+# into its marker so the NEXT round can tell "the fixer replied since" from
+# "the fixer replied at some point in the past".
+open_thread_comments="$(jq -r '[ (.reviewThreads // [])[] | select(.isResolved | not)
+                                 | (.comments // [] | length) ] | add // 0' <<<"$prjson")"
+mode="$(jq -r --arg m "$CI_COMMENT_MARKER" --arg head "$head_sha" '
+  def bodies: [ .reviews[]? | select((.state=="COMMENTED" or .state=="CHANGES_REQUESTED")
+                                     and ((.body//"") | length > 0)) ];
+  def notes:  [ .comments[]? | select(((.body//"") | startswith($m)) | not) ];
+  def open_threads: [ (.reviewThreads // [])[] | select(.isResolved | not) ];
+  "<!-- faber:review event=request-changes head=(?<h>[0-9a-f]{7,40})(?: replies=(?<r>[0-9]+))? -->" as $rx
+  | ((bodies | length) + (notes | length) + (open_threads | length)) as $n
+  | if $n == 0 then "REVIEW"
+    else
+      ([ open_threads[] | select((.comments // [] | length) > 1) ] | length > 0) as $replied
+      | ([ open_threads[] | (.comments // [] | length) ] | add // 0) as $open_comments
+      | ([ bodies[] | select((.body//"") | test($rx))
+           | ((.body//"") | capture($rx)) as $c
+           | {at: (.submittedAt // ""), h: $c.h, r: (($c.r // "0") | tonumber)} ]
+         | sort_by(.at) | last) as $judged
+      | if $judged != null
+        then (if ($head != $judged.h) or ($open_comments > $judged.r) then "FOLLOWUP" else "WAIT" end)
+        else
+          ([ (bodies[].submittedAt // empty), (notes[].createdAt // empty) ] | max // "") as $fb
+          | ([ .commits[]?.committedDate // empty ] | max // "") as $cm
+          | if (($fb != "" and $cm > $fb) or $replied)
+            then "FOLLOWUP" else "WAIT" end
+        end
+    end' <<<"$prjson")"
+prior="$(jq -r --arg m "$CI_COMMENT_MARKER" '
+  [ (.reviews[]? | select((.state=="COMMENTED" or .state=="CHANGES_REQUESTED") and ((.body//"") | length > 0))),
+    (.comments[]? | select(((.body//"") | startswith($m)) | not)),
+    ((.reviewThreads // [])[] | select(.isResolved | not)) ] | length' <<<"$prjson")"
+
+# The two feedback channels that carry no thread, rendered for CONTEXT.md. Same
+# selectors the mode function uses above (reviewer review-bodies with real text;
+# PR comments that are not the machine-authored CI report), so what the fixer
+# is shown and what the mode decision counts can never disagree. post-review's
+# wire marker is stripped from each body — it is plumbing, not feedback.
+bodies_md="$(jq -r '
+  [ .reviews[]? | select((.state=="COMMENTED" or .state=="CHANGES_REQUESTED")
+                         and ((.body//"") | length > 0))
+    | "### review by \(.author.login // "?") (\(.state))\n\n"
+      + ((.body // "") | split("\n")
+         | map(select(startswith("<!-- faber:review") | not)) | join("\n"))
+  ] | join("\n\n")' <<<"$prjson")"
+nbodies="$(jq '[ .reviews[]? | select((.state=="COMMENTED" or .state=="CHANGES_REQUESTED")
+                                     and ((.body//"") | length > 0)) ] | length' <<<"$prjson")"
+notes_md="$(jq -r --arg m "$CI_COMMENT_MARKER" '
+  [ .comments[]? | select(((.body//"") | startswith($m)) | not)
+    | "### comment by \(.author.login // "?")\n\n" + (.body // "")
+  ] | join("\n\n")' <<<"$prjson")"
+nnotes="$(jq --arg m "$CI_COMMENT_MARKER" \
+  '[ .comments[]? | select(((.body//"") | startswith($m)) | not) ] | length' <<<"$prjson")"
+
+# Unresolved review threads (portitor >= 0.1.4 includes reviewThreads in fetch;
+# tolerate absence on an older gate). threads.json is the postlude's contract:
+# the post-answers hook validates the agent's replies against exactly these ids.
+jq '[(.reviewThreads // [])[] | select(.isResolved | not)]' <<<"$prjson" > "$bundle/threads.json"
+nthreads="$(jq 'length' "$bundle/threads.json")"
+# --- bead + spec context ----------------------------------------------------
+# The head branch IS the bead id: claim-bead and claim-next-bead create it as
+# `branch="$bead"`. (The PR title usually is too — finish-implement makes the
+# work commit's subject the bare bead id and the gate titles the PR from it —
+# but an agent that pushed on its own sets that subject, so the branch is the
+# stronger source.) Resolving the spec here, once, is what stops each reviewer
+# from parsing a commit subject and calling `spex map context` for itself.
+#
+# Best-effort, unlike gather-context's `die`: this hook also serves `fix`, whose
+# work does not depend on spec leaves, and a review holding the bead alone still
+# beats no step. Whatever fails says so in CONTEXT.md rather than quietly
+# yielding an empty contract.
+bead="$branch"
+bead_title=""; specs=""; removed=false; ctx_note=""
+if beadjson="$(br show "$bead" --json 2>/dev/null)" && [ "$(jq 'length' <<<"$beadjson")" -gt 0 ]; then
+  bead_title="$(jq -r '.[0].title // ""' <<<"$beadjson")"
+  if mapjson="$(spex map context "$bead" 2>&1)"; then
+    removed="$(jq -r '.removed // false' <<<"$mapjson")"
+    if [ "$removed" != "true" ]; then
+      specs="$(jq -r '[.arch_file] + (.test_files//[]) + (.flow_files//[]) + [.module_file]
+                      | .[] | select(. != null and . != "")' <<<"$mapjson")"
+      [ -n "$specs" ] || ctx_note="the bead resolves to a live node with no spec leaves"
+    fi
+  else
+    ctx_note="spex map context $bead failed: $(head -n1 <<<"$mapjson")"
+  fi
+else
+  bead=""
+  ctx_note="the head branch does not name a known bead — judge against the PR body and diff"
+fi
+
+# NB: deliberately NOT declaring BRANCH here. BRANCH in bundle.env is faber's
+# implement-only side-effect convention (result phase verifies it exists on the
+# gateway). review/fix are already checked out on the PR branch below, so they
+# have no NEW branch to declare. MODE and BEAD_ID are plain sidecar values;
+# post-review reads BEAD_ID to attribute the close; prepare-fix reads BASE to
+# merge the base branch in when the PR is behind it.
+{
+  echo "PR=$pr"
+  echo "MODE=$mode"
+  echo "UNRESOLVED_THREADS=$nthreads"
+  echo "OPEN_THREAD_COMMENTS=$open_thread_comments"
+  echo "BASE=$(jq -r '.baseRefName // "main"' <<<"$prjson")"
+  [ -n "$bead" ] && echo "BEAD_ID=$bead"
+} > "$bundle/bundle.env"
+{
+  echo "# PR #$pr on branch \`$branch\`"
+  echo
+  echo "- mode: **$mode** (prior feedback items: $prior)"
+  [ -n "$bead" ] && echo "- bead: $bead — $bead_title"
+  if [ "$removed" = "true" ]; then
+    # The bead's node left the spec: this PR is a deletion, and the contract it
+    # is judged against is the retired leaf as it stood at before_head. Same
+    # journal lookup next-bead-context does — hooks are bind-mounted one file
+    # per role, so a shared helper is not reachable from here.
+    echo
+    echo "## This PR's bead names a REMOVED spec node (cleanup)"
+    echo
+    jq -r '"- node: \(.name) (\(.node_type)) in module \(.module)\n- removed by proposal: \(.proposal)\n- removal event: \(.eid)"' <<<"$mapjson"
+    bh="$(jq -r '.before_head // empty' <<<"$mapjson")"
+    # The task journal at its resolved location (.spex/, since the state-dir
+    # migration); repos that have not migrated still keep the legacy path.
+    journal=".spex/history.jsonl"
+    [ -f "$journal" ] || journal="spec/.history.jsonl"
+    lp=""
+    [ -f "$journal" ] && lp="$(jq -r --arg e "$(jq -r '.eid' <<<"$mapjson")" \
+      'select(.eid==$e and .event=="removed") | .path // ""' "$journal" | head -n1)"
+    if [ -n "$lp" ] && [ -n "$bh" ]; then
+      echo "- retired spec leaf: $lp"
+      echo
+      echo "The contract the deleted code was written against:"
+      echo
+      echo "    git show $bh:$lp"
+    elif [ -n "$lp" ]; then
+      echo "- retired spec leaf: $lp (no before_head recorded — it cannot be retrieved)"
+    fi
+  elif [ -n "$specs" ]; then
+    echo "- spec leaves (the contract this PR is judged against):"
+    printf '%s\n' "$specs" | sed '/^$/d;s/^/  - /'
+  fi
+  [ -n "$ctx_note" ] && echo "- note: $ctx_note"
+  echo "- full PR state (reviews, comments, commits, threads): \`pr.json\`"
+  if [ "$nthreads" -gt 0 ]; then
+    echo
+    echo "## Unresolved review threads ($nthreads) — address EVERY one"
+    jq -r '.[] | "- thread \(.id) — \(.path // "(no file)"):\(.line // "-")\n\(( [.comments[]?.body] | join("\n  > ")) as $c | "  > " + $c)"' "$bundle/threads.json"
+    echo
+    echo "(Full thread objects: \`threads.json\` in the bundle.)"
+  fi
+  # Review BODIES and loose PR comments, rendered — not merely counted. They are
+  # feedback with no thread to answer into: a reviewer that wants something the
+  # diff does not contain has nowhere to anchor an inline comment, so it says so
+  # in the body instead. Until this section existed CONTEXT.md listed only the
+  # inline threads; the fix skill's "read ALL THREE sources" was the only thing
+  # pointing at `pr.json .reviews[]`, and prose is advisory. So the fixer worked
+  # the thread list, re-answered threads nobody had resolved, and never saw what
+  # the reviewer was actually asking for — the PR#387 deadlock. post-review's
+  # own marker line is stripped (plumbing, not feedback); the machine-authored
+  # CI report has its own section below.
+  if [ -n "$bodies_md" ]; then
+    echo
+    echo "## Review feedback with no thread ($nbodies) — address EVERY one"
+    echo
+    printf '%s\n' "$bodies_md"
+  fi
+  if [ -n "$notes_md" ]; then
+    echo
+    echo "## PR comments ($nnotes) — address EVERY one"
+    echo
+    printf '%s\n' "$notes_md"
+  fi
+  if [ -n "$ci_comment" ]; then
+    echo
+    echo "## CI failure from the last land attempt — fix this"
+    echo
+    echo "The merge step could not land this PR because CI was red. It already read"
+    echo "the failing job's logs; this is its diagnosis. The bead has been reopened,"
+    echo "so a reviewer must approve again before the PR can land."
+    echo
+    printf '%s\n' "$ci_comment"
+  fi
+} > "$bundle/CONTEXT.md"
+
+echo "fetch-pr: PR #$pr on $branch (mode=$mode, bead=${bead:-unresolved}, unresolved threads=$nthreads)"
+
+# --- impasse: the reviewer has now twice refused THIS EXACT tree -------------
+# Review-side only: a fixer must always be allowed to run, and halting it would
+# strand feedback nobody ever answers.
+#
+# Counted off the PR, never carried: each posted review stamps the head it
+# judged, so "how many times has this tree been refused" is re-derivable from
+# pr.json alone and survives a resume, a fresh box, or a run started tomorrow.
+#
+# Two, not one. One request-changes at the current head is legitimate: the fixer
+# may answer `Declined — ...` without touching code, and the reviewer deserves
+# one round to read that answer and reconsider. A SECOND refusal of a tree that
+# has not changed since is the two agents restating themselves, and every
+# further round costs a review plus a fix to reproduce the same disagreement —
+# which is how cycle 5 spent all five iterations of its loop and reported only
+# `loop-exhausted`, a message that names nothing anyone can act on.
+if [ "${FABER_SKILL:-}" = review ]; then
+  refusals="$(jq -r --arg head "$head_sha" '
+    "<!-- faber:review event=request-changes head=(?<h>[0-9a-f]{7,40})(?: replies=(?<r>[0-9]+))? -->" as $rx
+    | [ .reviews[]? | select((.body//"") | test($rx))
+        | select(((.body//"") | capture($rx).h) == $head) ] | length' <<<"$prjson")"
+  if [ "$refusals" -ge 2 ]; then
+    result="${FABER_RESULT_DIR:?FABER_RESULT_DIR is required to record a halt}"
+    jq -n --arg h "$head_sha" --arg n "$refusals" --arg pr "$pr" --arg t "$nthreads" '
+      {reason: "review_impasse",
+       detail: ("PR #" + $pr + ": the reviewer has requested changes " + $n
+                + " times on head " + $h + ", which has not moved between them — "
+                + "the fixer changed no code in answer. " + $t + " thread(s) are still "
+                + "open. Further rounds re-run a review and a fix to restate the same "
+                + "disagreement, so the loop is stopped here instead of exhausting its "
+                + "bound. Read the open threads and the review bodies on the PR and "
+                + "settle it: either the objection is wrong (resolve the thread) or the "
+                + "fix is missing (push it).")}' > "$result/halt.json"
+    echo "fetch-pr: PR #$pr — review impasse at head $head_sha ($refusals refusals, no code change); halting" >&2
+    exit 0
+  fi
+fi

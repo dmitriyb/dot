@@ -59,10 +59,12 @@ RUN GOPATH=/home/dev/go go install github.com/jesseduffield/lazygit@latest \
 # Install beads_rust (pre-built binary). Not script-pinned — see README "Installer trust".
 RUN curl -fsSL https://raw.githubusercontent.com/Dicklesworthstone/beads_rust/main/install.sh | bash
 
-# Install beads_viewer (bv) — graph-aware TUI for the Beads issue tracker. Same
-# transparency-log integrity as lazygit above (sum.golang.org); modcache dropped in-layer.
-RUN GOPATH=/home/dev/go go install github.com/Dicklesworthstone/beads_viewer/cmd/bv@latest \
-    && GOPATH=/home/dev/go go clean -modcache
+# Install beads_viewer (bv) — graph-aware TUI for the Beads issue tracker.
+# Prebuilt release binary, verified against the release checksums.txt (fail-closed).
+# Not script-pinned — see README "Installer trust".
+RUN curl -fsSL https://raw.githubusercontent.com/Dicklesworthstone/beads_viewer/main/install.sh \
+    | INSTALL_DIR=/home/dev/.local/bin bash \
+    && /home/dev/.local/bin/bv --version
 
 # Install spex (structural spec CLI), always the latest release, into ~/.local/bin.
 # Genuinely signature-verified, unlike the curl|sh installers here: the release-signing
@@ -79,6 +81,19 @@ RUN printf '%s\n' 'dvbozhko@gmail.com ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIIhmCW
          -s install.sh.sig < install.sh \
     && bash install.sh \
     && rm -f install.sh install.sh.sig /tmp/spex-signers
+
+# Install faber (the host CLI only in spirit: here it serves `faber validate`, which
+# compiles orchestrator.yaml against nix and needs no docker daemon — the daemon is
+# deliberately NOT reachable from this container). Same verified-installer pattern and
+# the same release-signing key as spex above; the installer also drops `faber-box`
+# beside it, unused here. INSTALL_DIR overrides the installer's /usr/local/bin default.
+RUN printf '%s\n' 'dvbozhko@gmail.com ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIIhmCWVDP/Tcm3CqXNjTQTChbKxr223xMob9zc56Uuny' > /tmp/faber-signers \
+    && curl -fsSLO https://github.com/dmitriyb/faber/releases/latest/download/install.sh \
+    && curl -fsSLO https://github.com/dmitriyb/faber/releases/latest/download/install.sh.sig \
+    && ssh-keygen -Y verify -f /tmp/faber-signers -I dvbozhko@gmail.com -n file \
+         -s install.sh.sig < install.sh \
+    && INSTALL_DIR=/home/dev/.local/bin sh install.sh \
+    && rm -f install.sh install.sh.sig /tmp/faber-signers
 
 # Clone and stow dotfiles. DOT_PROFILE=headless → setup.sh stows shared + headless
 # and skips host-only ssh-agent activation (no init system here; the agent is
@@ -171,6 +186,14 @@ USER root
 RUN mkdir -p /etc/claude-code
 COPY harness/managed-settings.base.json /etc/claude-code/managed-settings.json
 RUN chmod 0644 /etc/claude-code/managed-settings.json
+
+# Session plumbing for SSH-entered containers (env restore, injected secrets, agent link).
+COPY save-container-env.fish /etc/docker-claude/save-container-env.fish
+COPY container-session.fish /etc/fish/conf.d/00-docker-claude.fish
+RUN chmod 0644 /etc/docker-claude/save-container-env.fish /etc/fish/conf.d/00-docker-claude.fish
+
+# WORKDIR would create it root-owned, and a fresh volume copies that ownership.
+RUN mkdir -p /workspace && chown dev:dev /workspace
 USER dev
 
 WORKDIR /workspace

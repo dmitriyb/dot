@@ -1,0 +1,4 @@
+{
+  "overlay": "gate-overlay.nix",
+  "packages": ["br"]
+}

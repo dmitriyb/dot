@@ -1,0 +1,83 @@
+#!/usr/bin/env bash
+# llm-sidecar — bridge a faber internal network to the host's local-LLM
+# endpoint (LM Studio et al.). Boxes on <instance>-net can reach ONLY the gate
+# and the egress proxy (the net is internal:true), and the egress is
+# CONNECT-to-443-only — so a plain-HTTP inference server on the host is
+# unreachable from a box. This sidecar is the same two-network pattern the
+# gate/egress use: a socat forwarder attached to BOTH the default bridge
+# (where host.docker.internal resolves) and the internal net (where boxes
+# name it as <instance>-llm).
+#
+#   llm-sidecar up     --instance spex [--port 1234]
+#   llm-sidecar down   --instance spex
+#   llm-sidecar status --instance spex
+#
+# The goose templates then set OPENAI_HOST=http://<instance>-llm:<port> and the
+# orchestrator's network.no_proxy must list <instance>-llm.
+set -euo pipefail
+
+die() { echo "llm-sidecar: $1" >&2; exit "${2:-1}"; }
+
+usage() {
+	sed -n '2,16p' "$0" | sed 's/^# \{0,1\}//' >&2
+	exit "${1:-0}"
+}
+
+[[ $# -gt 0 ]] || usage 2
+case "$1" in -h|--help) usage 0 ;; esac
+VERB="$1"; shift
+case "$VERB" in up|down|status) ;; *) die "unknown verb: $VERB (want up|down|status)" 2 ;; esac
+
+INSTANCE=""
+PORT="1234"
+IMAGE="alpine/socat"
+
+need_val() { [[ $# -ge 2 ]] || die "$1 needs a value" 2; }
+while [[ $# -gt 0 ]]; do
+	case "$1" in
+		--instance) need_val "$@"; INSTANCE="$2"; shift 2 ;;
+		--port)     need_val "$@"; PORT="$2"; shift 2 ;;
+		--image)    need_val "$@"; IMAGE="$2"; shift 2 ;;
+		-h|--help)  usage 0 ;;
+		*)          die "unknown flag: $1 (see --help)" 2 ;;
+	esac
+done
+
+[[ "$INSTANCE" =~ ^[a-z0-9][a-z0-9-]{0,30}$ ]] || die "invalid or missing --instance" 2
+[[ "$PORT" =~ ^[0-9]{2,5}$ ]] || die "invalid --port '$PORT'" 2
+
+NAME="${INSTANCE}-llm"
+NET="${INSTANCE}-net"
+
+exists() { docker ps -a --format '{{.Names}}' | grep -qx "$NAME"; }
+running() { docker ps --format '{{.Names}}' | grep -qx "$NAME"; }
+
+case "$VERB" in
+	up)
+		docker network inspect "$NET" >/dev/null 2>&1 || die "network $NET does not exist — faber-stack up first" 1
+		if running; then echo "llm-sidecar: $NAME already running"; exit 0; fi
+		exists && docker rm -f "$NAME" >/dev/null
+		# Started on the bridge (host reachability via host-gateway), then joined
+		# to the internal net under the name the boxes use.
+		docker run -d --name "$NAME" --restart unless-stopped \
+			--network bridge \
+			--add-host host.docker.internal:host-gateway \
+			"$IMAGE" \
+			"tcp-listen:${PORT},fork,reuseaddr" "tcp:host.docker.internal:${PORT}" >/dev/null
+		docker network connect "$NET" "$NAME"
+		echo "llm-sidecar: $NAME up — ${NET} -> host:${PORT}"
+		;;
+	down)
+		exists || { echo "llm-sidecar: $NAME not present"; exit 0; }
+		docker rm -f "$NAME" >/dev/null
+		echo "llm-sidecar: $NAME removed"
+		;;
+	status)
+		if running; then
+			docker ps --filter "name=^${NAME}$" --format '{{.Names}}  {{.Status}}  {{.Ports}}'
+			docker inspect -f '{{range $n, $_ := .NetworkSettings.Networks}}{{$n}} {{end}}' "$NAME"
+		else
+			echo "llm-sidecar: $NAME not running"; exit 1
+		fi
+		;;
+esac

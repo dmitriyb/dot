@@ -1,23 +1,7 @@
 #!/usr/bin/env fish
-# Load mounted secrets into the env: /run/secrets/<lowercase_var> → <UPPERCASE_VAR>
-# (CLAUDE_CODE_OAUTH_TOKEN, GH_TOKEN — mounted read-only by docker-claude instead of
-# passing -e, so they never appear in `docker inspect`). Runs before GH_TOKEN is used.
-if test -d /run/secrets
-    for f in /run/secrets/*
-        test -f "$f"; or continue
-        set -gx (string upper (basename "$f")) (cat "$f")
-    end
-end
-
-# Workaround for anthropics/claude-code#79597: a setup-token's profile omits
-# subscriptionType, so the interactive /model picker fail-closes Fable 5 behind a
-# "usage credits" wall. Declaring the real plan tier restores it. Only the token path
-# needs this (ignored when a /login credential drives). Remove once the token flow
-# resolves the tier server-side.
-if set -q CLAUDE_CODE_OAUTH_TOKEN
-    set -gx CLAUDE_CODE_SUBSCRIPTION_TYPE max
-    set -gx CLAUDE_CODE_RATE_LIMIT_TIER default_claude_max_5x
-end
+# Secrets arrive later (docker-claude injects them into /run/secrets) and sessions enter over
+# SSH, so token loading lives in /etc/fish/conf.d/00-docker-claude.fish, not here.
+source /etc/docker-claude/save-container-env.fish
 
 # ~/.claude is ephemeral (image-baked settings.json + skills). Persistent state lives on the
 # /workspace repo volume: session transcripts + prompt history are symlinked into
@@ -80,34 +64,6 @@ if not test -f /workspace/README.md
         > /workspace/README.md
 end
 
-# Agent mode: the forwarded ssh-agent holds only a no-touch signing key. Sign with
-# it, and route GitHub transport over HTTPS + GH_TOKEN so the key signs but never
-# authenticates.
-if test "$AGENT_MODE" = 1
-    # Derive the signing key from the forwarded agent (it holds exactly one key).
-    set -l pub (ssh-add -L 2>/dev/null | head -n1)
-    if test -n "$pub"
-        git config --global user.signingkey "key::$pub"
-    end
-
-    # HTTPS remotes also stop the `git@github.com-personal:` includeIf from pulling
-    # in the touch-key signingkey, so the global key above wins.
-    if test -n "$GH_TOKEN"
-        gh auth setup-git 2>/dev/null
-        git config --global url."https://github.com/".insteadOf "git@github.com-personal:"
-        git config --global url."https://github.com/".insteadOf "git@github.com:"
-    end
-end
-
-# Import SSH public keys from forwarded agent for IDE Remote Development access
-if test -n "$SSH_AUTH_SOCK"
-    ssh-add -L >> ~/.ssh/authorized_keys 2>/dev/null
-    sort -u -o ~/.ssh/authorized_keys ~/.ssh/authorized_keys
-    chmod 600 ~/.ssh/authorized_keys 2>/dev/null
-end
-
-# Start sshd for IDE Remote Development (port 2223; published on 127.0.0.1 by docker-claude)
-sudo /usr/sbin/sshd 2>/dev/null
-
-# Start fish interactive shell
-exec fish
+# sshd is the container's main process and docker-claude's readiness signal (port 2223,
+# published on 127.0.0.1); every session, dcp's and the IDE's, enters through it.
+exec sudo /usr/sbin/sshd -D -e

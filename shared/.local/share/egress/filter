@@ -3,8 +3,8 @@
 # The agent reaches the Anthropic API and nothing else on the internet
 # (portitor is on the internal network, not via this proxy).
 #
-# This is the image's baked DEFAULT (a bare `docker run egress-proxy` uses
-# it). Per-instance stacks REPLACE it wholesale by bind-mounting
-# $CONFIG_DIR/egress-filter over this path; faber-stack generates that file from
-# its --allow hosts, one anchored `^host$` line each. Keep this default minimal.
+# This is the image's baked DEFAULT (a bare `docker run` of the base
+# egress-proxy:<hash> image uses it). Per-instance stacks REPLACE it wholesale: faber-stack bakes an image
+# (egress-proxy-<instance>) carrying $CONFIG_DIR/egress-filter at this path, generated from
+# stack.json's allow list, one anchored `^host$` line each. Keep this default minimal.
 ^api\.anthropic\.com$

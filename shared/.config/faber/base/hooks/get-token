@@ -1,0 +1,72 @@
+#!/usr/bin/env bash
+# faber credentials resolver — get_token(service).
+#
+# faber invokes this HOST-SIDE as `get-token <service>`, stdin closed, and reads
+# the token from stdout (trailing newline trimmed). It NEVER runs inside the box;
+# only its output is delegated (file mode -> a tmpfs /run/secrets/<service> file
+# the box's secrets phase exports into the agent env, shredded after the run).
+#
+# faber's own Claude Code OAuth setup-token, separate from dcp's: service=anthropic
+# account=faber in the host's declared secret backend (dot's host.conf, read through
+# docker-claude's agent-common.sh). The service name `claude_code_oauth_token` is chosen so
+# the box exports it as CLAUDE_CODE_OAUTH_TOKEN — the env var Claude Code honors.
+#
+# Create the token once with `claude setup-token`; a missing entry prints the store
+# command for this host's backend.
+set -euo pipefail
+
+# --- diagnostics ------------------------------------------------------------
+# Duplicated in every hook on purpose: faber bakes ONE FILE PER PHASE into the image, so a
+# sibling helper is unreachable — hooks.yaml records that a "$(dirname $0)/lib"
+# call exited 127 on every step. The duplication costs ~15 lines; not having it
+# cost a fix round that could not be diagnosed afterwards at all.
+#
+# Everything this hook prints to stderr is copied into the attempt's result dir,
+# which faber preserves on EVERY path, success included. Without this a hook's
+# account of what it did survived only when the STEP FAILED (handoff.json's
+# stderr_tail — and only a tail of it), so a warning on a step that succeeded
+# went nowhere, and a call that failed silently left nothing to read.
+#
+# NEVER `set -x` here and never print a secret: the box holds credentials and
+# these files persist on the host for the life of the run directory.
+_hook="get-token"
+_hooks_dir="${FABER_RESULT_DIR:-}/hooks"
+if [ -n "${FABER_RESULT_DIR:-}" ] && mkdir -p "$_hooks_dir" 2>/dev/null; then
+	exec 2> >(tee -a "$_hooks_dir/$_hook.log" >&2)
+else
+	_hooks_dir=""   # host-side hook, or no result dir: log to stderr only
+fi
+
+# emit <event> [key=value ...] — the machine-readable half of the same record,
+# one JSON object per line in events.jsonl. Makes "how often does X actually
+# fail" a jq across the run directories rather than a reconstruction from
+# whichever side effects happened to survive.
+_emit() {
+	[ -n "${_hooks_dir:-}" ] || return 0
+	_e="$1"; shift
+	jq -cn --arg ts "$(date -u +%Y-%m-%dT%H:%M:%SZ)" --arg hook "$_hook" --arg event "$_e" --args \
+		'{ts:$ts,hook:$hook,event:$event} + ($ARGS.positional|map(split("=")|{(.[0]):(.[1:]|join("="))})|add // {})' \
+		"$@" >> "$_hooks_dir/events.jsonl" 2>/dev/null || true
+}
+
+service="${1:?usage: get-token <service>}"
+
+case "$service" in
+  claude_code_oauth_token)
+    # faber runs resolvers against a minimal env (PATH/HOME/TMPDIR only); libsecret
+    # needs the session bus, so derive the standard systemd user-bus path.
+    export DBUS_SESSION_BUS_ADDRESS="${DBUS_SESSION_BUS_ADDRESS:-unix:path=/run/user/$(id -u)/bus}"
+    lib="$HOME/.local/libexec/docker-claude/agent-common.sh"
+    if [ ! -f "$lib" ]; then
+      echo "get-token: $lib not found — run dot's setup.sh" >&2
+      exit 1
+    fi
+    source "$lib"
+    keychain_require anthropic faber "faber's Anthropic OAuth token" \
+      "Generate one from an authenticated Claude Code instance: claude setup-token"
+    ;;
+  *)
+    echo "get-token: no wiring for service '$service'" >&2
+    exit 1
+    ;;
+esac

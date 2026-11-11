@@ -1,0 +1,115 @@
+#!/bin/bash
+# context hook (implement) — runs IN the box, cwd = the repo clone, on the
+# freshly-cloned default branch, BEFORE the prelude. Read-only: it turns the
+# bead input into the agent's prompt body. Contract: write a non-empty
+# CONTEXT.md into $FABER_BUNDLE_DIR and exit 0, or the step aborts before the
+# agent starts.
+#
+# CONTEXT.md carries FACTS ONLY — what is true of this bead and no other. How to
+# implement one lives in the `implement` skill, in one copy. A hook that also
+# narrates the procedure is a second source that drifts from the first, and it
+# did: this block used to instruct the commit/push/PR ceremony the postlude has
+# owned since finish-implement.
+#
+# Grounding follows spexmachina's rule: the bead's title plus `spex map context
+# <bead-id>` resolve the spec leaves that ARE the source of truth. Beads carry
+# empty descriptions by design.
+set -euo pipefail
+
+# --- diagnostics ------------------------------------------------------------
+# Duplicated in every hook on purpose: faber bakes ONE FILE PER PHASE into the image, so a
+# sibling helper is unreachable — hooks.yaml records that a "$(dirname $0)/lib"
+# call exited 127 on every step. The duplication costs ~15 lines; not having it
+# cost a fix round that could not be diagnosed afterwards at all.
+#
+# Everything this hook prints to stderr is copied into the attempt's result dir,
+# which faber preserves on EVERY path, success included. Without this a hook's
+# account of what it did survived only when the STEP FAILED (handoff.json's
+# stderr_tail — and only a tail of it), so a warning on a step that succeeded
+# went nowhere, and a call that failed silently left nothing to read.
+#
+# NEVER `set -x` here and never print a secret: the box holds credentials and
+# these files persist on the host for the life of the run directory.
+_hook="gather-context"
+_hooks_dir="${FABER_RESULT_DIR:-}/hooks"
+if [ -n "${FABER_RESULT_DIR:-}" ] && mkdir -p "$_hooks_dir" 2>/dev/null; then
+	exec 2> >(tee -a "$_hooks_dir/$_hook.log" >&2)
+else
+	_hooks_dir=""   # host-side hook, or no result dir: log to stderr only
+fi
+
+# emit <event> [key=value ...] — the machine-readable half of the same record,
+# one JSON object per line in events.jsonl. Makes "how often does X actually
+# fail" a jq across the run directories rather than a reconstruction from
+# whichever side effects happened to survive.
+_emit() {
+	[ -n "${_hooks_dir:-}" ] || return 0
+	_e="$1"; shift
+	jq -cn --arg ts "$(date -u +%Y-%m-%dT%H:%M:%SZ)" --arg hook "$_hook" --arg event "$_e" --args \
+		'{ts:$ts,hook:$hook,event:$event} + ($ARGS.positional|map(split("=")|{(.[0]):(.[1:]|join("="))})|add // {})' \
+		"$@" >> "$_hooks_dir/events.jsonl" 2>/dev/null || true
+}
+
+die() { echo "gather-context: $*" >&2; exit 1; }
+bead="${FABER_INPUT_BEAD:?FABER_INPUT_BEAD is required}"
+bundle="${FABER_BUNDLE_DIR:?FABER_BUNDLE_DIR is required}"
+
+# The db (.beads/beads.db) is gitignored and rebuilt from the committed jsonl;
+# a fresh clone has none, so import before querying. Best-effort: a repo without
+# .beads still lets the bead lookup fail loudly below.
+br sync --import-only >/dev/null 2>&1 || true
+
+json="$(br show "$bead" --json)" || die "br show $bead failed"
+[ "$(jq 'length' <<<"$json")" -gt 0 ] || die "bead $bead not found"
+
+title="$(jq -r '.[0].title' <<<"$json")"
+
+# ---- resolve the spec context ----------------------------------------------
+# THE BEAD ID IS THE KEY. `spex map context` folds the journal itself — "if the
+# key is not a 12-hex hash, fold the journal and map the task id to its node's
+# hash" (spec/map/arch_context_resolver.md). The bead's `spex:` label is NOT a
+# key: since event-keyed linkage it reads `spex:<git_head>:<op_id>`, the create
+# op's idempotency label, which `spex map context` rejects as not-found. This
+# hook used to pass it and only warn, producing an EMPTY spec context and a
+# cycle that implemented blind — the same defect next-bead-context already
+# fixed. Hence `die`: no spec context is not a degraded run, it is a broken one.
+key="$bead"
+if ! mapjson="$(spex map context "$key" 2>&1)"; then
+  # A legacy cleanup bead (minted before the removal was paired with its task)
+  # answers only to the hash inside its own `spex:cleanup-<hash>` label. This
+  # path refuses cleanup beads either way, so the label is read here purely to
+  # explain the refusal — never as a lookup key for work this hook would do.
+  if jq -e '.[0].labels[]? | select(startswith("spex:cleanup"))' <<<"$json" >/dev/null; then
+    die "bead $bead is a cleanup bead; not an implement bead"
+  fi
+  die "spex map context $key failed for bead $bead — the box cannot implement without spec context: $mapjson"
+fi
+
+# The resolver, not a label, says whether this bead's node still exists. A bead
+# whose node left the spec resolves to {"removed": true, ...} — a biography, no
+# spec leaves. That is the cleanup case, and it is authoritative in a way the
+# retired `spex:cleanup` label is not: the plan-era ChangesetBuilder no longer
+# emits that label, so a check keyed on it silently stops guarding. This path
+# implements a live node; cleanup cycles belong to implement-next.
+if [ "$(jq -r '.removed // false' <<<"$mapjson")" = "true" ]; then
+  die "bead $bead names a REMOVED spec node (cleanup bead); not an implement bead"
+fi
+
+specs="$(jq -r '[.arch_file] + (.test_files//[]) + (.flow_files//[]) + [.module_file]
+                | .[] | select(. != null and . != "")' <<<"$mapjson")"
+[ -n "$specs" ] || die "bead $bead resolved to a live node with no spec leaves — key $key"
+
+# The key that actually resolved, for claim-bead to publish as RECORD_ID. One
+# hook owns resolution: the label is not a key and must never reach an agent as
+# one.
+printf '%s\n' "$key" > "$bundle/context-key"
+
+{
+  echo "# Implement bead $bead"
+  echo
+  echo "- title: $title"
+  echo "- spec leaves (your contract):"
+  printf '%s\n' "$specs" | sed '/^$/d;s/^/  - /'
+} > "$bundle/CONTEXT.md"
+
+echo "gather-context: bead $bead (key $key); $(printf '%s\n' "$specs" | sed '/^$/d' | wc -l | tr -d ' ') spec leaves"

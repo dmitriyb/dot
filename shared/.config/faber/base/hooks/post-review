@@ -1,0 +1,386 @@
+#!/bin/bash
+# postlude hook (review) — runs IN the box AFTER the agent, BEFORE result
+# extraction. Deterministically submits the agent's review through the gate
+# (`portitor pr review --inline`) as a COMMENT-type GitHub review — feedback only.
+# It NEVER casts a real approve/request-changes event: a single PAT account can't
+# review its own PR (GitHub 422). Approval is the reviewer's signed bead close
+# (gated to the reviewer role), read by the merge_gate "bead-closed" predicate; on
+# an approve verdict this hook also resolves the threads its comment-reviews raised,
+# performs that signed close, and writes output.json. The agent decides; every
+# step that follows from the decision is executed here — the same split
+# finish-implement makes on the implement side.
+# The agent never posts the review itself; it only writes the document this hook validates:
+#   $FABER_RESULT_DIR/review.json:
+#     {"event": "approve"|"request-changes"|"comment",
+#      "body": "<markdown summary>",
+#      "comments": [{"path": "...", "line": N, "body": "<md>"}, ...]}
+# Failure shapes are distinct: ABSENT (the agent never wrote its review),
+# MALFORMED (contract violation, named), and a gate refusal (posted verbatim).
+set -euo pipefail
+
+# --- diagnostics ------------------------------------------------------------
+# Duplicated in every hook on purpose: faber bakes ONE FILE PER PHASE into the image, so a
+# sibling helper is unreachable — hooks.yaml records that a "$(dirname $0)/lib"
+# call exited 127 on every step. The duplication costs ~15 lines; not having it
+# cost a fix round that could not be diagnosed afterwards at all.
+#
+# Everything this hook prints to stderr is copied into the attempt's result dir,
+# which faber preserves on EVERY path, success included. Without this a hook's
+# account of what it did survived only when the STEP FAILED (handoff.json's
+# stderr_tail — and only a tail of it), so a warning on a step that succeeded
+# went nowhere, and a call that failed silently left nothing to read.
+#
+# NEVER `set -x` here and never print a secret: the box holds credentials and
+# these files persist on the host for the life of the run directory.
+_hook="post-review"
+_hooks_dir="${FABER_RESULT_DIR:-}/hooks"
+if [ -n "${FABER_RESULT_DIR:-}" ] && mkdir -p "$_hooks_dir" 2>/dev/null; then
+	exec 2> >(tee -a "$_hooks_dir/$_hook.log" >&2)
+else
+	_hooks_dir=""   # host-side hook, or no result dir: log to stderr only
+fi
+
+# emit <event> [key=value ...] — the machine-readable half of the same record,
+# one JSON object per line in events.jsonl. Makes "how often does X actually
+# fail" a jq across the run directories rather than a reconstruction from
+# whichever side effects happened to survive.
+_emit() {
+	[ -n "${_hooks_dir:-}" ] || return 0
+	_e="$1"; shift
+	jq -cn --arg ts "$(date -u +%Y-%m-%dT%H:%M:%SZ)" --arg hook "$_hook" --arg event "$_e" --args \
+		'{ts:$ts,hook:$hook,event:$event} + ($ARGS.positional|map(split("=")|{(.[0]):(.[1:]|join("="))})|add // {})' \
+		"$@" >> "$_hooks_dir/events.jsonl" 2>/dev/null || true
+}
+
+# verify_push <branch> — confirm the gate's ref actually holds our commit. A
+# push that exits 0 without advancing the remote leaves every later step reading
+# stale state, and the exit code alone cannot tell that from success. One extra
+# ls-remote per push is the whole cost.
+verify_push() {
+	vp_ref="$1"
+	vp_local="$(git rev-parse HEAD)"
+	vp_remote="$(git ls-remote origin "refs/heads/$vp_ref" 2>/dev/null | awk '{print $1}')"
+	if [ "$vp_remote" = "$vp_local" ]; then
+		_emit push_verify ref="$vp_ref" sha="$vp_local" result=ok
+		return 0
+	fi
+	_emit push_verify ref="$vp_ref" want="$vp_local" got="${vp_remote:-none}" result=mismatch
+	return 1
+}
+
+die() { echo "post-review: $*" >&2; exit 1; }
+bundle="${FABER_BUNDLE_DIR:?FABER_BUNDLE_DIR is required}"
+result="${FABER_RESULT_DIR:?FABER_RESULT_DIR is required}"
+
+[ -f "$bundle/bundle.env" ] || die "no bundle.env — fetch-pr contract broken"
+# shellcheck disable=SC1091
+. "$bundle/bundle.env"
+pr="${PR:?bundle.env carries no PR}"
+
+review="$result/review.json"
+[ -f "$review" ] || die "review.json is ABSENT — the agent never wrote its review"
+
+jq -e '
+  type == "object"
+  and ((.event == "approve") or (.event == "request-changes") or (.event == "comment"))
+  and (.body | type == "string" and length > 0)
+  and ((.comments // []) | type == "array")
+  and ([ (.comments // [])[]
+         | select((.path | type != "string") or (.line | type != "number")
+                  or (.body | type != "string") or (.body | length == 0)) ] | length == 0)
+  and ((.threads // {}) | type == "object")
+  and ([ (.threads // {}) | to_entries[]
+         | select((.value != "settled") and (.value != "open")) ] | length == 0)
+' "$review" >/dev/null 2>&1 \
+  || die "review.json is MALFORMED — want {event: approve|request-changes|comment, body: md, comments: [{path, line, body}], threads: {<thread-id>: \"settled\"|\"open\"}}"
+
+# --- format, enforced rather than asked ------------------------------------
+# The skill states the rules; these bind them. Both target observed failures: a
+# two-paragraph audit posted as an approval, and a real defect filed as a "nit"
+# that nothing would ever come back to fix.
+#
+# `non-blocking` is deliberately NOT in the banned set: the drift schema owns
+# `blocking` as a field name, so a reviewer judging a drift report has to be able
+# to write it. The advisory TIER is abolished by the skill; this catches the
+# vocabulary that carried it.
+#
+# `minor` and `optional` are ordinary English besides being tier names, so they
+# are matched only where a TIER can be declared: at the head of a line, past an
+# optional list bullet and emphasis. Unanchored, they also matched the word in
+# the middle of a sentence — a review was killed for quoting a requirement
+# ("The flag is required, not optional: a run without it is exit 1"), which is
+# the strongest possible use of the word and the opposite of hedging. `nit` has
+# no such second life in review prose, so it stays matched anywhere.
+#
+# The line anchor is spelled `(?:^|\n)` rather than `^` with a flag: jq's
+# Oniguruma leaves `^` at string start by default, and `(?m)` there means "dot
+# matches newline", so the flag reads as a coincidence rather than a statement.
+if jq -e '[.body, (.comments // [])[].body] | join("\n")
+          | test("\\bnits?\\b|(?:^|\n)[[:space:]]*(?:[-*+][[:space:]]*)?(?:\\*\\*|__|_)?(?:minor|optional)(?:\\*\\*|__|_)?[[:space:]]*:"; "i")' \
+     "$review" >/dev/null 2>&1; then
+  die "review.json hedges a finding (nit / minor: / optional:) — there is no advisory tier: everything you write must be fixed before approval, so either make it a blocker or drop it"
+fi
+# An approve event whose body is more than the one line `Approved.` is not an
+# approval: the skill defines every further line as a blocker, so "approved,
+# except for ..." is a verdict this hook cannot score true or false. It is not
+# a fix round either — the leftover item may be one no fixer can clear (a PR
+# body the fix role had no lever for was the observed case, run 20260903-114514)
+# — and it is not a failure: nothing broke. So it is an OPERATOR STOP: nothing
+# is posted to the PR, the reviewer's body travels as the halt detail, and faber
+# settles the step halted (run exit 3, resumable) instead of failed. Resume
+# re-runs the review with a fresh agent; clear the item on the PR first, or the
+# next reviewer halts here again with the same text.
+if [ "$(jq -r '.event' "$review")" = approve ] \
+   && [ "$(jq -r '.body' "$review" | sed '/^[[:space:]]*$/d' | wc -l | tr -d ' ')" -gt 1 ]; then
+  jq -n --arg pr "$pr" --arg body "$(jq -r '.body' "$review")" '
+    {reason: "approval-not-boolean",
+     detail: ("the reviewer returned an approve verdict with a multi-line body; approved with reservations is not approved, and the reservation may be one no fixer can clear — nothing was posted to PR #" + $pr + ". Clear it on the PR, then resume (the review re-runs). Reviewer body:\n\n" + $body)}
+  ' > "$result/halt.json" || die "could not write halt.json"
+  _emit halt reason=approval-not-boolean pr="$pr"
+  echo "post-review: approve verdict with a multi-line body on PR #$pr — not posting; halting for an operator (see halt.json)" >&2
+  exit 0
+fi
+
+verdict="$(jq -r '.event' "$review")"
+
+# --- wire marker + anchor pre-validation -------------------------------------
+# Marker: fetch-pr's mode function reads `event=request-changes head=<sha>` off
+# posted review bodies to learn WHICH head a review judged, instead of guessing
+# from timestamps (the guess deadlocked PR#355's review loop at WAIT). Keep the
+# regex there in sync with this line — it is the whole contract between them.
+head_sha="$(git rev-parse HEAD)" || die "cannot resolve the reviewed head SHA"
+# `replies` is the watermark fetch-pr compares against next round: the number of
+# comments across still-open threads AS THIS REVIEW SAW THEM. It comes from
+# bundle.env rather than a fresh fetch so the two hooks cannot disagree about
+# what "now" meant. fetch-pr used a boolean "some open thread has a reply",
+# which never cleared once the fixer had answered anything — see the PR#387
+# note there. Older markers carry no `replies=`; fetch-pr reads that as 0.
+marker="<!-- faber:review event=$verdict head=$head_sha replies=${OPEN_THREAD_COMMENTS:-0} -->"
+
+# Anchors: GitHub 422s a review whose inline comment names a line outside the
+# diff, and that 422 used to cost the PR ALL its threads (the fold-all retry
+# below) — leaving fixers nothing to reply to and the mode function without its
+# thread signal. Validate up front instead: a comment on a line the diff does
+# not show is snapped to the nearest shown line of the same file; a comment on
+# a file the diff does not touch is folded into the body. Deterministic, so it
+# lives here and not in the skill.
+prepared="$bundle/review-post.json"
+commentable="$bundle/commentable-lines.txt"
+base="${BASE:-main}"
+git fetch -q origin "$base" 2>/dev/null || true
+if git rev-parse --verify --quiet "origin/$base^{commit}" >/dev/null; then
+  # New-side line numbers the diff shows (added + context), one `path:line` per
+  # row — exactly the set GitHub accepts an inline anchor on.
+  git diff --no-color -U3 "origin/$base"...HEAD | awk '
+    $1 == "+++" { file = ($2 == "/dev/null") ? "" : substr($2, 3); next }
+    /^@@/       { split($3, a, ","); ln = substr(a[1], 2) + 0; next }
+    file != "" && (/^\+/ || /^ /) { print file ":" ln; ln++ }
+  ' > "$commentable"
+else
+  : > "$commentable"   # no base to diff against — pass anchors through as-is
+fi
+jq --arg m "$marker" --rawfile cl "$commentable" '
+  ($cl | split("\n") | map(select(length > 0)
+        | capture("^(?<p>.*):(?<l>[0-9]+)$") | {p, l: (.l | tonumber)})) as $ok
+  | def near($c): ([ $ok[] | select(.p == $c.path) | .l ]) as $ls
+      | if ($ls | length) == 0 then null
+        elif ($ls | index($c.line)) != null then $c.line
+        else ($ls | min_by(if . >= $c.line then . - $c.line else $c.line - . end))
+        end;
+  (if $ok == [] then (.comments // [])
+   else [ (.comments // [])[] | . as $c | near($c) as $l
+          | if $l == null then . + {fold: true} else .line = $l end ]
+   end) as $cs
+  | {body: ($m + "\n" + .body
+            + ([ $cs[] | select(.fold) ]
+               | if length == 0 then "" else
+                   "\n\n---\n**Inline notes** (file not in the diff):\n"
+                   + ([ .[] | "- `\(.path):\(.line)` — \(.body)" ] | join("\n"))
+                 end)),
+     comments: [ $cs[] | select(.fold | not) | {path, line, body} ]}
+' "$review" > "$prepared" || die "anchor pre-validation failed"
+ncomments="$(jq '.comments | length' "$prepared")"
+
+# ALWAYS a comment-type review (feedback + inline threads). The approve/changes
+# distinction is carried by output.json + the bead close, NOT a GitHub event.
+if portitor pr review --pr "$pr" --event comment --inline < "$prepared"; then
+  echo "post-review: posted comment review on PR #$pr ($ncomments inline comment(s); verdict=$verdict)"
+elif [ "$ncomments" -gt 0 ]; then
+  # An anchor the pre-validation could not catch still 422s the whole review.
+  # Retry body-only, folding the inline notes into the body so the feedback
+  # still lands (as one review comment, not per-line threads).
+  echo "post-review: inline review rejected; retrying body-only (comments folded into the body)" >&2
+  jq '{body: (.body + "\n\n---\n**Inline notes** (could not anchor to the diff):\n"
+             + ([.comments[] | "- `\(.path):\(.line)` — \(.body)"] | join("\n"))),
+       comments: []}' "$prepared" \
+    | portitor pr review --pr "$pr" --event comment --inline \
+    || die "the gate refused the review even body-only (see error above)"
+  echo "post-review: posted body-only review on PR #$pr (folded $ncomments inline note(s); verdict=$verdict)"
+else
+  die "the gate refused the review (see error above)"
+fi
+
+# Threads the reviewer judged settled this round, resolved individually and on
+# EVERY verdict — not only on approval. Until this existed, resolution was
+# all-or-nothing at approve time, so a `request-changes` round left every thread
+# open however thoroughly it had been addressed. fetch-pr then re-served those
+# same threads to the next fixer, which could only answer them again ("the
+# working tree already carried this fix"), and post-answers requires one reply
+# per open thread — so the fixer was compelled to restate itself every round
+# while the reviewer's real objection sat in a review body nobody rendered.
+# That is the PR#387 deadlock from the other side.
+#
+# Non-fatal per thread: a stale or already-resolved id must not cost the review
+# that has already been posted above.
+# `threads` is a verdict per open thread — `settled` or `open` — and coverage is
+# total BY CONSTRUCTION rather than by refusing incomplete answers: an id the
+# reviewer did not mention defaults to `open`. That default is the safe side (a
+# thread stays open, exactly as it would have without this field), and it keeps
+# the hook off the one path that has already cost this project a run — failing a
+# step over what an agent did or did not type. Compare post-answers, where the
+# deleted verdict-prefix check had no consumer at all; this one does, so the
+# fatal cases are kept to real contract errors: a value that is not one of the
+# two words (checked above), or a key naming a thread that was never open
+# (checked here). Both mean the reviewer answered about something that does not
+# exist, which no default can repair.
+#
+# The hook never decides WHICH threads settle. It compares two sets of ids and
+# calls the gate. Whether `settled` was the right call is judgement, and lives
+# in the review skill.
+threads_file="$bundle/threads.json"
+if [ -f "$threads_file" ]; then
+  unknown="$(jq -r --slurpfile th "$threads_file" '
+    ([$th[0][].id]) as $known
+    | [ (.threads // {}) | keys[] as $k | select(($known | index($k)) | not) | $k ] | join(", ")' "$review")"
+  [ -z "$unknown" ] || die "review.json names thread id(s) that were never open on this PR: $unknown (open ids are in threads.json)"
+
+  # Missing ids default to open — say so, so a reviewer that skipped the field
+  # is visible in the log rather than silently indistinguishable from one that
+  # judged every thread still open.
+  missing="$(jq -r --slurpfile th "$threads_file" '
+    (.threads // {}) as $t
+    | [ $th[0][].id as $id | select(($t | has($id)) | not) ] | length' "$review")"
+  [ "$missing" -eq 0 ] \
+    || echo "post-review: $missing open thread(s) carry no verdict in review.json; defaulting them to \"open\"" >&2
+fi
+
+# Resolve exactly the settled ones. Non-fatal per thread: a stale or
+# already-resolved id must not cost the review that has already been posted.
+want="$(jq -c '[ (.threads // {}) | to_entries[] | select(.value == "settled") | .key ]' "$review")"
+settled="$(jq -r 'length' <<<"$want")"
+if [ "$settled" -gt 0 ]; then
+	while IFS= read -r tid; do
+		[ -n "$tid" ] || continue
+		# </dev/null is load-bearing: portitor forwards over SSH, ssh drains its
+		# stdin, and this loop's stdin IS the list of thread ids — so without it
+		# `read` hits EOF and only the FIRST id of each round is ever attempted.
+		# Not a failed call: an absent one, which is why it looked like a flaky
+		# gate. Confirmed by the verify below reporting `incomplete 1` on three
+		# consecutive rounds that each marked two threads settled.
+		if portitor pr resolve --pr "$pr" --thread "$tid" </dev/null; then
+			_emit thread_resolve thread="$tid" call=ok
+		else
+			echo "post-review: the gate refused to resolve thread $tid" >&2
+			_emit thread_resolve thread="$tid" call=failed
+		fi
+	done < <(jq -r '.[]' <<<"$want")
+
+	# Verify the EFFECT, not the exit codes above. This is the whole lesson of
+	# PR#391: one resolve took, the other did not, fetch-pr re-served the survivor
+	# to the next fixer as live work, and post-answers obliged that fixer to answer
+	# it — so it re-derived at model cost a verdict the reviewer had already
+	# reached and written down. Nothing recorded which call failed, or that one had.
+	#
+	# An unresolved thread here is not cosmetic: resolution is the SOLE channel
+	# carrying "settled" across the box boundary. The review body and review.json
+	# both die inside this box, and action_roles.reply is implementer-only, so the
+	# reviewer cannot say it in the thread either.
+	fetched="$(portitor pr fetch --pr "$pr" 2>/dev/null)" || fetched=""
+	if [ -z "$fetched" ]; then
+		echo "post-review: could not re-read PR #$pr to verify $settled resolve(s)" >&2
+		_emit thread_resolve_verify result=unavailable want="$settled"
+	else
+		# Bind each id before testing membership: `$open | index(.)` would rebind
+		# `.` to $open and silently match nothing — the bug that made an earlier
+		# version of the unknown-id check accept every input.
+		stuck="$(jq -r --argjson want "$want" '
+			[ (.reviewThreads // [])[] | select(.isResolved | not) | .id ] as $open
+			| [ $want[] | select(. as $id | $open | index($id)) ] | join(" ")' <<<"$fetched")"
+		if [ -z "$stuck" ]; then
+			echo "post-review: resolved $settled settled thread(s) on PR #$pr (verified)"
+			_emit thread_resolve_verify result=ok resolved="$settled"
+		else
+			nstuck="$(printf '%s\n' "$stuck" | wc -w | tr -d ' ')"
+			echo "post-review: WARNING $nstuck of $settled settled thread(s) are STILL OPEN after resolve: $stuck" >&2
+			echo "post-review: the next fixer will be served them as live work and must answer them again" >&2
+			_emit thread_resolve_verify result=incomplete want="$settled" stuck="$nstuck" threads="$stuck"
+		fi
+	fi
+fi
+
+# On approval every prior feedback thread is addressed — resolve the gate's own
+# threads so no open conversation rides into the merge. Non-fatal: a first-pass
+# clean approve has no threads to resolve.
+if [ "$verdict" = approve ]; then
+  if portitor pr resolve --pr "$pr" --gate-threads; then
+    echo "post-review: resolved gate threads on PR #$pr (approval)"
+  else
+    echo "post-review: no gate threads to resolve on PR #$pr (or none open)" >&2
+  fi
+fi
+
+# --- the decision's consequences --------------------------------------------
+# Everything below follows deterministically from `verdict`, so none of it is an
+# agent's job. A close that fails is fatal: the merge gate reads bead-closed off
+# the PR head, so an "approved" verdict whose close never landed would send the
+# merge step at a PR that cannot land. Fail-stop instead, and say why.
+if [ "$verdict" = approve ]; then
+  bead="${BEAD_ID:?approve verdict but bundle.env carries no BEAD_ID — fetch-pr could not resolve the bead, so the close cannot be attributed}"
+  # br owns bead state, so ask br — never pattern-match the jsonl. The gate's own
+  # bead-closed predicate records what that costs: an earlier version grepped the
+  # corpus for any "status":"closed", matched hundreds of beads from previous
+  # epics, and enforced nothing.
+  status="$(br show "$bead" --json 2>/dev/null | jq -r '.[0].status // ""')"
+  case "$status" in
+    "")
+      die "br show $bead returned no bead — cannot decide whether to close it" ;;
+    closed)
+      echo "post-review: bead $bead is already closed" ;;
+    open)
+      # The ONE sanctioned approve-without-close. A bead is `open` at review time
+      # only when the drift protocol deliberately returned it: claim-bead claims
+      # in_progress, and reopen-bead re-opens to in_progress too, so no other path
+      # leaves it here. Closing it would erase the very thing the PR exists to land.
+      #
+      # This asks br instead of re-deriving the gate's drift-only shape rule from
+      # changed paths. The gate matches paths because its image carries no jq and
+      # it must answer a different question ("may this land"); duplicating that
+      # rule here would be a second source of a policy the gate already owns — and
+      # it would get the gate's own documented anomaly wrong, since a NON-blocking
+      # drift PR that happens to touch only drifts/ and .beads/ still has an
+      # in_progress bead and must close.
+      if ! ls drifts/drift-*.json >/dev/null 2>&1; then
+        echo "post-review: WARNING bead $bead is 'open' but the tree carries no drift report — approving without a close anyway; the merge gate will refuse this PR" >&2
+      fi
+      echo "post-review: bead $bead was returned to 'open' (drift protocol) — approving WITHOUT closing it" ;;
+    *)
+      title="$(br show "$bead" --json 2>/dev/null | jq -r '.[0].title // ""')"
+      br close "$bead" --reason "Reviewed and approved in PR#$pr. All review feedback addressed." >/dev/null \
+        || die "br close $bead failed"
+      br epic close-eligible >/dev/null 2>&1 || true
+      git add .beads/issues.jsonl
+      if git diff --cached --quiet; then
+        die "br close $bead changed nothing in .beads/issues.jsonl — the close cannot be signed or pushed"
+      fi
+      # Signed by the REVIEWER key: portitor's role rule admits a bead-close jsonl
+      # change from no other identity, and this box runs as reviewer.
+      git commit -qS -m "Close $bead: $title" || die "signed close commit failed"
+      git push origin HEAD >/dev/null 2>&1 || die "the gate refused the reviewer-signed close push for $bead"
+      verify_push "$(git rev-parse --abbrev-ref HEAD)" || die "the close push for $bead reported success but the gate does not hold it — the merge gate reads bead-closed off the PR head and would refuse this PR"
+      echo "post-review: closed $bead (was '$status', reviewer-signed) and pushed" ;;
+  esac
+  printf '{"verdict":"approved"}\n' > "$result/output.json"
+else
+  printf '{"verdict":"changes"}\n' > "$result/output.json"
+fi
+echo "post-review: output.json emitted (verdict=$verdict)"

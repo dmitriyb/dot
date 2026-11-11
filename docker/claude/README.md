@@ -4,7 +4,7 @@ Isolated Claude Code environments running in Fedora containers with full dotfile
 
 ## What's inside
 
-**Base** (shared): Fish, tmux, neovim (with plugins), starship, eza, bat, fzf, zoxide, lazygit, direnv, glow, Nix (single-user, flakes enabled, with nix-direnv), Claude Code (native binary), and the spec-driven trio — [beads_rust](https://github.com/Dicklesworthstone/beads_rust) (`br`), [beads_viewer](https://github.com/Dicklesworthstone/beads_viewer) (`bv`) and [spex](https://github.com/dmitriyb/spexmachina).
+**Base** (shared): Fish, tmux, neovim (with plugins), starship, eza, bat, fzf, zoxide, lazygit, direnv, glow, Nix (single-user, flakes enabled, with nix-direnv), Claude Code (native binary), and the spec-driven trio — [beads_rust](https://github.com/Dicklesworthstone/beads_rust) (`br`), [beads_viewer](https://github.com/Dicklesworthstone/beads_viewer) (`bv`) and [spex](https://github.com/dmitriyb/spexmachina), plus [faber](https://github.com/dmitriyb/faber) for `faber validate` only (no docker socket in the container, so `build`/`run` stay host-side).
 
 **Personal**: + Zig and Rust. No MCP servers. Fast startup.
 
@@ -12,44 +12,106 @@ Isolated Claude Code environments running in Fedora containers with full dotfile
 
 ## Setup
 
-Store your personal OAuth token (from `claude setup-token`) in the OS keychain:
+Each host declares in the stowed `~/.config/dot/host.conf` which modes it may build and run
+and where its secrets live; docker-claude refuses anything else before it touches Docker:
+
+| Host layer | `docker_claude.modes` | `secrets.backend` | Container on session exit |
+|---|---|---|---|
+| `mac` | `work` | `security` (keychain) | stopped |
+| `arch` | `personal` | `secret-tool` | stopped |
+| `headless` | `personal` | `systemd-creds` (see [Remote server](#remote-server)) | keeps running (`docker_claude.persist`) |
+
+Without the file docker-claude refuses to start — re-run `setup.sh` after pulling.
+
+Store the personal OAuth token (from `claude setup-token`) where the host's backend expects it;
+a missing entry also prints the right command:
 
 ```bash
-# macOS
-security add-generic-password -s anthropic -a personal -w '<token>'
-
-# Arch Linux
-secret-tool store --label='anthropic' service anthropic account personal
+secret-tool store --label='anthropic' service anthropic account personal   # Arch
+cred-store anthropic personal                                               # headless
 ```
 
-Work account credentials are picked up automatically from the OS keychain (stored by `claude login`).
+Work account credentials come from the wire proxy (`jbcentral`) on the Mac.
 
-Optionally, store GitHub CLI tokens so `gh` works in-container without on-disk auth state:
+Optionally, a GitHub CLI token per account so `gh` works in-container without on-disk auth state:
 
 ```bash
-# macOS
-security add-generic-password -s gh -a personal -w '<PAT>'
-security add-generic-password -s gh -a work     -w '<PAT>'
-
-# Arch Linux
-secret-tool store --label='gh personal' service gh account personal
-secret-tool store --label='gh work'     service gh account work
+security add-generic-password -s gh -a work -w '<PAT>'                      # macOS
+secret-tool store --label='gh personal' service gh account personal         # Arch
+cred-store gh personal                                                      # headless
 ```
 
-Tokens are passed in as `GH_TOKEN` at container start. If absent, `gh` just stays unauthenticated — no error.
+If absent, `gh` just stays unauthenticated — no error.
 
-### Agent mode (no-touch commit signing)
+## How a session starts
 
-`--agent` (personal only) forwards an ephemeral signing-only agent holding a single no-touch FIDO2 key, so agents inside the container can sign commits without touch prompts. Push/fetch use `GH_TOKEN` over HTTPS, so the key signs but can't authenticate as you.
+1. The mode is checked against `docker_claude.modes`; the image is built if missing.
+2. The host's ssh-agent is checked: unreachable refuses the start, empty warns.
+3. If the mode's container (`claude-personal` / `claude-work`) is already running, it is reused and
+   you get another session in it; otherwise it starts detached with an in-memory `/run/secrets`.
+4. Either way, each secret is read from the host's store, written into the container over
+   `docker exec` stdin and its hash compared inside the container — so an interrupted start or a
+   rotated token is repaired on the next attach (shells already open keep their loaded value). No secret touches argv,
+   `docker inspect`, `-e` or the host disk, and nothing depends on host file ownership, so
+   userns-remap works unchanged.
+5. docker-claude waits for the container's sshd (`docker_claude.start_timeout` seconds), then runs
+   `ssh -A docker-personal` / `docker-work` and starts the login shell in `/workspace` (sshd itself
+   would start it in `$HOME`; other SSH clients, e.g. an editor, choose their own directory). Login uses the dedicated, touch-free
+   `~/.ssh/docker_claude_id_ed25519`; the forwarded agent only signs.
+6. Inside, the login shell restores the container's environment and the secrets
+   (`container-session.fish`), and `~/.ssh/rc` keeps `~/.ssh/agent.sock` pointing at the newest
+   session's agent, so tmux shells keep signing after a reconnect.
 
-One-time setup: enroll a resident no-touch key, register its **public** key on GitHub as a *Signing Key*, then record its hash so the scripts can find it without storing the name:
+## Remote server
+
+dcp on a headless Linux host with a TPM2 and a `systemd-creds` that has `--user`, reached over SSH.
+The `headless` layer's `host.conf` selects `systemd-creds` (`host+tpm2`, scoped to your UID) and
+keeps the container running across disconnects and `exit`; reconnect with `dcp`, stop it with
+`dcp --stop`. Run long jobs in the container's tmux: a process started directly in a session dies
+with that session.
+
+**Secrets** — the server keeps its own tokens; nothing is pushed from the laptop.
+`cred-store` reads the value from stdin (hidden on a tty), encrypts it, and reads it back through
+docker-claude's lookup before reporting success:
 
 ```bash
-ssh-keygen -t ed25519-sk -O resident -O no-touch-required -O application=ssh:<name> -f /tmp/k && rm /tmp/k*
-printf '%s' '<name>' | sha256sum   # add the digest to ~/.ssh/signing-key-hashes
+claude setup-token          # on any authenticated Claude Code; copy the token
+cred-store anthropic personal
+cred-store gh personal      # optional, a PAT for this server only
 ```
 
-Load your normal (touch) keys into the main agent with `ssh-load-keys`, which excludes any no-touch key listed in `~/.ssh/signing-key-hashes`.
+**Agent** — the laptop forwards its agent to one fixed socket path on the server, which the
+server-side `ssh -A` into the container then forwards again.
+
+Server, once (replace `<you>`):
+
+```bash
+mkdir -m 700 ~/.ssh/agent-fwd
+sudo tee /etc/ssh/sshd_config.d/50-agent-fwd.conf <<'EOF'
+StreamLocalBindUnlink yes
+
+Match User <you>
+    SetEnv SSH_AUTH_SOCK=/home/<you>/.ssh/agent-fwd/agent.sock
+Match all
+EOF
+sudo sshd -t && sudo systemctl reload sshd
+sudo sshd -T -C user=<you>,host=localhost,addr=127.0.0.1 | grep -iE '^(setenv|streamlocalbindunlink)'
+sudo sshd -T -C user=root,host=localhost,addr=127.0.0.1 | grep -iE '^(setenv|streamlocalbindunlink)'
+```
+
+`Include /etc/ssh/sshd_config.d/*.conf` must stand near the top of `/etc/ssh/sshd_config`, before
+any `Match`. The two checks must show `setenv` for you and not for root.
+
+Laptop, in your private `~/.ssh/config` (not in this repo), before any `Host *` block:
+
+```
+Host <server>
+    RemoteForward /home/<you>/.ssh/agent-fwd/agent.sock /Users/<laptop-user>/.ssh/agent.sock
+    ExitOnForwardFailure yes
+    ForwardAgent no
+```
+
+`ExitOnForwardFailure` makes a failed forward abort the connection instead of printing a warning.
 
 ## Usage
 
@@ -57,10 +119,11 @@ Load your normal (touch) keys into the main agent with `ssh-load-keys`, which ex
 
 ```bash
 docker-claude personal             # Personal account (Max subscription via OAuth)
-docker-claude personal --agent     # Personal, agent mode: ephemeral no-touch signing agent
 docker-claude work                 # Work account (via wire proxy)
 docker-claude personal -r          # Rebuild images, then launch personal
 docker-claude personal --no-cache  # Full fresh rebuild (re-downloads everything)
+docker-claude personal --stop      # Stop and remove the running container
+docker-claude -r                   # Rebuild base + this host's allowed images only
 ```
 
 Aliases: `dc` (docker-claude), `dcp` (personal), `dcw` (work).
@@ -76,9 +139,9 @@ backstopped by the touch key (anything that slips still needs a physical touch).
 
 ## Installer trust (supply chain)
 
-The `curl … | sh` installers in these Dockerfiles (`starship`, `nix`, `claude`, `beads_rust` in
-base; `rustup` in personal; `bun` in work) are **not script-pinned**. TLS is the trust
-boundary, and that is stated honestly rather than dressed up.
+The `curl … | sh` installers in these Dockerfiles (`starship`, `nix`, `claude`, `beads_rust`,
+`beads_viewer` in base; `rustup` in personal; `bun` in work) are **not script-pinned**. TLS is
+the trust boundary, and that is stated honestly rather than dressed up.
 
 **Why not pin the installer script?** A committed `sha256sum -c` of the installer script is
 *trust-on-first-use (TOFU)*, and its entire root of trust is a single unverified `curl`: you fetch
@@ -111,12 +174,19 @@ stronger), or **transparency-log attestation** (Sigstore/cosign, SLSA).
   pin. `install.sh` then verifies the downloaded archive against the identical key it carries; the
   build-time check adds what the self-check structurally cannot — detection of a *substituted*
   installer. Failure is fail-closed: the script never reaches `bash`.
-- **`lazygit` (and `bv`) — transparency-log verified (implemented).** Installed with `go install`,
+- **`lazygit` — transparency-log verified (implemented).** Installed with `go install`,
   not a `curl … | sh`: the Go toolchain checks every module against `sum.golang.org`, a public
   append-only transparency log that is independent of the download origin, and refuses a mismatch.
   This replaced the `atim/lazygit` COPR, which upstream marked unmaintained and which has no
   successful `fedora-44` build (a signed rpm repo would have been stronger still, but Fedora does
   not package lazygit).
+- **`bv` — same-origin checksum, fail-closed (implemented).** It shared lazygit's transparency-log
+  path until upstream v0.25.0 began vendoring patched dependencies behind `replace` directives;
+  `go install pkg@version` refuses any module whose `go.mod` carries those, and no flag overrides
+  it, so that path is closed. `install.sh` now fetches the prebuilt release archive and verifies it
+  against the release `checksums.txt`, refusing to install on a mismatch — the same TLS trust
+  domain as the script itself, so it catches a corrupted download, not an origin compromise. The
+  layer then runs `bv --version`, so an installer that exits without installing fails the build.
 - **`bun` — PGP signature available, not wired in.** Oven signs `SHASUMS256.txt.asc` with a key
   published on keyservers and pinned in Bun's own repo. Genuinely verifiable, but manual (needs
   `gpg` + keyserver/baked key in the work image) and low-value for an MCP-only tool. Left on TLS.
@@ -140,10 +210,11 @@ to add — not more hashing.
 ## Architecture
 
 - **Three images**: `claude-dev-base` (shared), `claude-dev-personal`, `claude-dev-work`
-- **Separate auth**: personal uses `CLAUDE_CODE_OAUTH_TOKEN` (keychain), work uses the wire proxy (started host-side via the `jbcentral` CLI; the container reaches it through `host.docker.internal`); `gh` CLI uses `GH_TOKEN` from keychain (optional)
+- **Separate auth**: personal uses `CLAUDE_CODE_OAUTH_TOKEN` (host secret backend), work uses the wire proxy (started host-side via the `jbcentral` CLI; the container reaches it through `host.docker.internal`); `gh` CLI uses `GH_TOKEN` from the host secret backend (optional). All of them are injected over `docker exec` stdin into the container's in-memory `/run/secrets`.
 - **Persistent volumes**: `claude-personal-repos` / `claude-work-repos` (cloned repos; work on native ext4), `claude-fish-data-personal` / `claude-fish-data-work` (fish history), `claude-tmux-data-personal` / `claude-tmux-data-work` (tmux resurrect). Neovim plugins and the Claude binary are baked into the image. Claude Code's own state piggybacks on the repo volume rather than a dedicated volume: session transcripts (`projects/`) and prompt history (`history.jsonl`) are symlinked from `~/.claude` into `/workspace/.claude-state` by the entrypoint, and per-project trust is regenerated into `~/.claude.json` from the `/workspace` subdirectories on every boot (so trust never re-prompts, with no stale entries or cached state).
-- **SSH agent forwarding**: by default the host agent is forwarded (YubiKey touch-signing works for git). With `--agent` (personal only), an ephemeral signing-only agent holding just a no-touch FIDO2 key is forwarded instead, and git transport switches to `GH_TOKEN` over HTTPS — so agents can sign commits without touch prompts but can't authenticate as you. The agent is torn down on container exit; the no-touch key is identified by hash in `~/.ssh/signing-key-hashes` (no key name in the repo).
-- **IDEA access**: dedicated ed25519 key for SSH, auto-generated per machine at build time
+- **No host paths**: neither container mounts a host directory or file — only named volumes, the in-memory `/run/secrets`, and the SSH session. faber's run state on the host is therefore not visible inside dcp. Workflow config lives in the dot repo, so edits happen in the `/workspace/dot` clone, where `faber validate` runs (nix, no daemon). `faber build`/`run` do not work in-container, by design.
+- **SSH agent forwarding**: every session enters with `ssh -A`, so the container's own sshd creates the agent socket inside the container and YubiKey touch-signing works for git there. No host socket or directory is mounted.
+- **SSH access (dcp/dcw sessions and IDEA)**: dedicated ed25519 key for SSH, auto-generated per machine at build time; sshd is the container's main process and is published on `127.0.0.1` only. The container's own host key is baked per image build, so `docker-claude` reads it out of the image and pins it in `~/.ssh/known_hosts.docker-claude` before each run — rebuilds never trip host-key verification, and `StrictHostKeyChecking` stays on (`shared/.ssh/config.d/docker-claude`).
 - **MCP servers**: work entrypoint filters to only Docker-compatible servers (ijproxy via host IDE, Context7, PluginModelAnalyzer)
 - **Nested tmux**: container uses `C-b` prefix, `ctrl+arrow` for window nav (host uses `C-a`, `shift+arrow`)
 - **Images are built per-machine**: `HOST_UID` build arg matches container user to host UID

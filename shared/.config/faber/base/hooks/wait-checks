@@ -1,0 +1,299 @@
+#!/bin/bash
+# prelude hook (merge) — runs IN the box AFTER the context phase and BEFORE the
+# agent, with the delegated merger identity. Decides whether this step can land
+# deterministically, and if so SKIPS THE AGENT: the merge decision was made
+# upstream (a cycle only reaches merge when review approved), so a green PR needs
+# only the postlude. The agent runs solely on the exception branches below, where
+# something genuinely needs judgement.
+#
+# CI state comes from `portitor pr checks` — the box's only route to the Actions
+# API, since its egress reaches GitHub only through the gate. The box names the
+# PR; the gate resolves the run and returns each check's resolved stuck budget
+# (`budgetSeconds`) alongside its state, so stuck-detection here is a comparison.
+#
+# The attempt cap is NOT enforced here: `portitor pr rerun` refuses gate-side at
+# `checks.max_attempts` (and on a stale head, and on an all-FAILURE run when
+# `allow_rerun_failed` is false). A refusal is how this hook learns the cap was
+# reached — box-side limits would be advisory, so the gate owns them.
+#
+# Outcome, written to $FABER_BUNDLE_DIR:
+#   landable  -> FABER_SKIP_AGENT=1 in bundle.env; the postlude lands the PR
+#   otherwise -> BLOCKED_BY + CONTEXT.md for the agent, which decides whether to
+#                route the work back (a diagnosis) or halt.
+#
+# BLOCKED_BY is one of: ci_red | stuck | behind | dirty | merge_state. That set
+# is the contract — post-merge threads it into the step's output and the ci-fix
+# step binds it as an input, so it is data, not prose. CONTEXT.md carries FACTS
+# only: what blocked, the check states, the merge state. What to DO about it is
+# the merge skill, in one copy.
+set -euo pipefail
+
+# --- diagnostics ------------------------------------------------------------
+# Duplicated in every hook on purpose: faber bakes ONE FILE PER PHASE into the image, so a
+# sibling helper is unreachable — hooks.yaml records that a "$(dirname $0)/lib"
+# call exited 127 on every step. The duplication costs ~15 lines; not having it
+# cost a fix round that could not be diagnosed afterwards at all.
+#
+# Everything this hook prints to stderr is copied into the attempt's result dir,
+# which faber preserves on EVERY path, success included. Without this a hook's
+# account of what it did survived only when the STEP FAILED (handoff.json's
+# stderr_tail — and only a tail of it), so a warning on a step that succeeded
+# went nowhere, and a call that failed silently left nothing to read.
+#
+# NEVER `set -x` here and never print a secret: the box holds credentials and
+# these files persist on the host for the life of the run directory.
+_hook="wait-checks"
+_hooks_dir="${FABER_RESULT_DIR:-}/hooks"
+if [ -n "${FABER_RESULT_DIR:-}" ] && mkdir -p "$_hooks_dir" 2>/dev/null; then
+	exec 2> >(tee -a "$_hooks_dir/$_hook.log" >&2)
+else
+	_hooks_dir=""   # host-side hook, or no result dir: log to stderr only
+fi
+
+# emit <event> [key=value ...] — the machine-readable half of the same record,
+# one JSON object per line in events.jsonl. Makes "how often does X actually
+# fail" a jq across the run directories rather than a reconstruction from
+# whichever side effects happened to survive.
+_emit() {
+	[ -n "${_hooks_dir:-}" ] || return 0
+	_e="$1"; shift
+	jq -cn --arg ts "$(date -u +%Y-%m-%dT%H:%M:%SZ)" --arg hook "$_hook" --arg event "$_e" --args \
+		'{ts:$ts,hook:$hook,event:$event} + ($ARGS.positional|map(split("=")|{(.[0]):(.[1:]|join("="))})|add // {})' \
+		"$@" >> "$_hooks_dir/events.jsonl" 2>/dev/null || true
+}
+
+die() { echo "wait-checks: $*" >&2; exit 1; }
+
+pr="${FABER_INPUT_PR:?FABER_INPUT_PR is required}"
+bundle="${FABER_BUNDLE_DIR:?FABER_BUNDLE_DIR is required}"
+
+# Client-side policy, supplied declaratively by the template's run.env (the
+# gate-side budgets live in the per-repo `checks` config). Seconds, so no
+# duration parser is needed in shell.
+ceiling="${CHECKS_CEILING_SECONDS:-720}"   # 12m: ~3 attempts of detect + re-run, with margin
+poll="${CHECKS_POLL_SECONDS:-10}"
+appear="${CHECKS_APPEAR_SECONDS:-60}"      # how long an EMPTY rollup means "not registered yet" (see the loop)
+settle="${CHECKS_SETTLE_SECONDS:-90}"      # how long a non-CLEAN state on an all-green PR reads as forge lag (see the loop)
+api_tries="${CHECKS_API_TRIES:-3}"         # a checks read is a network hop; one blip must not decide the step
+api_retry="${CHECKS_API_RETRY_SECONDS:-5}"
+
+command -v portitor >/dev/null 2>&1 || die "the portitor client is not on PATH"
+
+# `portitor pr checks` is one network hop through the gate to the GitHub API, and
+# a single blip used to end the step outright: a run died here on one
+# `net/http: TLS handshake timeout` from the graphql endpoint, on a PR that was
+# green. A transport error carries no information about the PR, so it is retried
+# a bounded number of times before it is allowed to be fatal. portitor prints its
+# own diagnosis to stderr, which is already tee'd into the hook log, so every
+# attempt stays on the record; only stdout is captured, so the JSON stays clean.
+pr_checks() {
+	local n=1 out=""
+	while :; do
+		if out="$(portitor pr checks --pr "$pr")"; then
+			printf '%s' "$out"
+			return 0
+		fi
+		if [ "$n" -ge "$api_tries" ]; then
+			_emit checks_read pr="$pr" result=exhausted attempts="$n"
+			return 1
+		fi
+		_emit checks_read pr="$pr" result=retry attempt="$n" of="$api_tries"
+		echo "wait-checks: portitor pr checks --pr $pr failed (attempt $n/$api_tries); retrying in ${api_retry}s" >&2
+		n=$(( n + 1 ))
+		sleep "$api_retry"
+	done
+}
+
+# A check is only measurable once it has actually started: `startedAt` comes
+# straight from GitHub, so a QUEUED job waiting for a runner has no elapsed time
+# (the overall ceiling covers that case), and a not-yet-finished job reports the
+# zero time rather than an empty string.
+ZERO_TIME_PREFIX="0001-"
+
+started_epoch() {
+	local t="$1"
+	[ -n "$t" ] || return 1
+	case "$t" in "$ZERO_TIME_PREFIX"*) return 1 ;; esac
+	date -d "$t" +%s 2>/dev/null || return 1
+}
+
+# hand_to_agent <blocked_by> <summary...> — leave the agent enabled and tell it
+# what it is looking at. Deliberately NOT a halt: whether this is fixable or
+# hopeless is the agent's call, made with the logs in front of it.
+hand_to_agent() {
+	local why="$1"; shift
+	{
+		echo "PR=$pr"
+		echo "BLOCKED_BY=$why"
+	} > "$bundle/bundle.env"
+	{
+		echo "# PR #$pr — cannot land: $why"
+		echo
+		printf '%s\n' "$@"
+		echo
+		echo "Check state at the moment the prelude gave up:"
+		echo
+		echo '```'
+		jq -r '.checks[] | "\(.name)\t\(.status)\t\(.conclusion)\tattempt=\(.runAttempt)\tbudget=\(.budgetSeconds)s"' \
+			<<<"$last_json" 2>/dev/null || echo "(check state unavailable)"
+		echo '```'
+		echo
+		echo "mergeStateStatus: $(jq -r '.mergeStateStatus' <<<"$last_json" 2>/dev/null)"
+	} > "$bundle/CONTEXT.md"
+	_emit decision pr="$pr" result=handoff blocked_by="$why" mss="$mss"
+	echo "wait-checks: PR #$pr not landable ($why); agent will triage" >&2
+	exit 0
+}
+
+start="$(date +%s)"
+last_json=""
+settle_start=""   # when the PR first went all-green under a non-CLEAN merge state
+
+while :; do
+	last_json="$(pr_checks)" || die "portitor pr checks --pr $pr failed after $api_tries attempt(s)"
+
+	mss="$(jq -r '.mergeStateStatus // "UNKNOWN"' <<<"$last_json")"
+
+	# A check counts as failed only when it COMPLETED with a conclusion outside
+	# the benign set; SKIPPED/NEUTRAL are not failures.
+	failed="$(jq -r '[.checks[]
+		| select(.status == "COMPLETED")
+		| select((.conclusion | ascii_upcase) as $c
+			| (["SUCCESS","SKIPPED","NEUTRAL"] | index($c)) | not)
+		| .name] | join(", ")' <<<"$last_json")"
+	pending="$(jq -r '[.checks[] | select(.status != "COMPLETED")] | length' <<<"$last_json")"
+	nchecks="$(jq -r '.checks | length' <<<"$last_json")"
+
+	if [ -n "$failed" ]; then
+		hand_to_agent ci_red "Failing checks: $failed" \
+			"Pull their logs with: portitor pr logs --pr $pr"
+	fi
+
+	case "$mss" in
+		DIRTY)  hand_to_agent dirty "The PR conflicts with the base branch." \
+			"Resolving it means writing code no reviewer has seen, so it belongs to a fixer, not to this step." ;;
+		BEHIND) hand_to_agent behind "The PR is behind its base branch and must be updated." \
+			"This step's identity cannot commit, so a fixer has to move the branch." ;;
+	esac
+
+	# An EMPTY rollup is not "everything finished" — it is "GitHub has not
+	# registered this head's workflow runs yet", and `pending` cannot tell the two
+	# apart because both count zero. The distinction is load-bearing here: every
+	# merge lands on the reviewer's bead-close commit (skills/review closes the
+	# bead, commits .beads/issues.jsonl and pushes), and a pull_request's path
+	# filters are evaluated against the PR's whole diff, so that push re-triggers
+	# `pr` like any other. Polling inside the window between the push and the run
+	# appearing yields an empty rollup and a CLEAN state, i.e. "landable" for a
+	# head whose checks have not started — which is how a merge came to be
+	# attempted seconds before the checks registered, and (correctly) refused by
+	# the gate as UNSTABLE.
+	#
+	# Empty is not ALWAYS transient: a drift-only PR touches nothing outside
+	# drifts/ and .beads/ (the shape bead-closed.sh sanctions), matches no path
+	# filter, and so never gets a check at all. Hence a bounded grace rather than
+	# a wait — past it, an empty rollup is taken at face value and the CLEAN test
+	# below decides.
+	if [ "$nchecks" -eq 0 ] && [ $(( $(date +%s) - start )) -lt "$appear" ]; then
+		_emit appear_wait pr="$pr" elapsed="$(( $(date +%s) - start ))" budget="$appear"
+		echo "wait-checks: PR #$pr has no checks yet; waiting up to ${appear}s for them to register" >&2
+		sleep "$poll"
+		continue
+	fi
+
+	# A fresh wave of checks (a push landing mid-poll) restarts the settle window
+	# below: it is a budget for ONE all-green episode, not for the whole run.
+	[ "$pending" -eq 0 ] || settle_start=""
+
+	if [ "$pending" -eq 0 ]; then
+		if [ "$mss" = "CLEAN" ]; then
+			{
+				echo "PR=$pr"
+				echo "FABER_SKIP_AGENT=1"
+			} > "$bundle/bundle.env"
+			# CONTEXT.md is still required even though no agent will read it:
+			# faber loads the bundle (and only then pops FABER_SKIP_AGENT, which
+			# lives in bundle.env) before it knows a skip was requested. Declaring
+			# a prelude also turns off faber's own bundle synthesis, so nothing
+			# else writes one. Only a HALTING prelude is excused.
+			{
+				echo "# PR #$pr — landable"
+				echo
+				echo "Every check passed and mergeStateStatus is CLEAN, so this step needs"
+				echo "no judgement: the prelude requested an agent skip and the postlude"
+				echo "lands the PR. If you are reading this, the skip did not take effect —"
+				echo "check that the merge template still declares \`agent_optional: true\`."
+			} > "$bundle/CONTEXT.md"
+			_emit decision pr="$pr" result=landable mss="$mss" checks="$nchecks"
+			echo "wait-checks: PR #$pr is CLEAN and green; skipping the agent" >&2
+			exit 0
+		fi
+		# Everything settled green but the forge still will not merge. GitHub
+		# recomputes mergeStateStatus from the check-run conclusions
+		# ASYNCHRONOUSLY, so the first read after the last job completes can
+		# still carry the pre-green value: a run died here on an UNSTABLE read
+		# taken 2s after the final check turned green, on a PR that was CLEAN at
+		# the same head moments later. UNKNOWN ("still recomputing") was already
+		# read as lag; UNSTABLE ("mergeable, but a check is not yet green") is
+		# the same lag one step further along, and had no grace at all.
+		#
+		# Both now get a bounded settle window, on the principle CHECKS_APPEAR_
+		# SECONDS already applies above: a value is taken at face value only
+		# once it has had a chance to change. Reachable only when nothing failed
+		# (a red check routed ci_red) and nothing is pending, so the wait cannot
+		# mask a real failure — a state that outlives the window still reaches
+		# the agent, just later. This also bounds UNKNOWN, which previously spun
+		# to the ceiling and then reported the misleading `stuck`.
+		case "$mss" in
+		UNKNOWN|UNSTABLE)
+			[ -n "$settle_start" ] || settle_start="$(date +%s)"
+			if [ $(( $(date +%s) - settle_start )) -lt "$settle" ]; then
+				_emit settle_wait pr="$pr" mss="$mss" elapsed="$(( $(date +%s) - settle_start ))" budget="$settle"
+				echo "wait-checks: PR #$pr all checks green but mergeStateStatus=$mss; waiting up to ${settle}s for it to settle" >&2
+				sleep "$poll"
+				continue
+			fi
+			;;
+		esac
+
+		# Normalized to `merge_state` rather than lowercasing $mss: GitHub's
+		# enum also carries BLOCKED, UNSTABLE, DRAFT and HAS_HOOKS, and passing
+		# those straight through invented blocked_by values nothing documents
+		# and no consumer handles (prepare-fix keys on `behind`; post-merge
+		# already emits `merge_state` for its own refusal path). The specific
+		# state is not lost — it is on the mergeStateStatus line above.
+		hand_to_agent merge_state \
+			"All checks are green but mergeStateStatus is $mss (unchanged for ${settle}s)."
+	fi
+
+	# Stuck: a running check past its gate-resolved budget. Ask for a re-run and
+	# let the gate's refusal tell us the cap is spent.
+	stuck="$(jq -r '.checks[]
+		| select(.status != "COMPLETED")
+		| "\(.name)\t\(.startedAt)\t\(.budgetSeconds)"' <<<"$last_json")"
+	now="$(date +%s)"
+	while IFS=$'\t' read -r name startedAt budget; do
+		[ -n "$name" ] || continue
+		s="$(started_epoch "$startedAt")" || continue          # queued, not yet measurable
+		[ $(( now - s )) -gt "$budget" ] || continue
+		_emit rerun pr="$pr" check="$name" budget="$budget" result=requested
+		echo "wait-checks: $name exceeded ${budget}s; requesting a re-run" >&2
+		# </dev/null for the same reason post-review's resolve loop needs it: this
+		# reads from `$stuck` on stdin and portitor forwards over SSH, which drains
+		# it. Harmless while the unconditional `break` below caps the loop at one
+		# iteration — but the redirect is what makes that a choice rather than an
+		# accident.
+		if ! rerun_err="$(portitor pr rerun --pr "$pr" 2>&1 </dev/null)"; then
+			_emit rerun pr="$pr" check="$name" result=refused
+			hand_to_agent stuck "Check \"$name\" is stuck and the gate refused a re-run." \
+				"Gate said: $rerun_err"
+		fi
+		break                                                   # re-run is run-level; one call covers the run
+	done <<<"$stuck"
+
+	if [ $(( $(date +%s) - start )) -ge "$ceiling" ]; then
+		hand_to_agent stuck "Checks did not settle within ${ceiling}s." \
+			"Nothing failed — the run never finished, which usually means Actions itself is degraded."
+	fi
+
+	sleep "$poll"
+done

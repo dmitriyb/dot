@@ -46,9 +46,9 @@ prune_repo_links() {
 }
 
 # Home-mirror layout: every package mirrors ~ and stows to a single target (~).
-# Pre-create the dirs that must stay real so stow folds *inside* them (links the
-# leaves) instead of replacing the whole directory with a symlink.
-mkdir -p ~/.config ~/.claude/skills ~/.ssh/config.d
+# No folding: directories in ~ stay real and only files are linked, so whatever programs
+# write there (locks, runtime links, machine-local binaries) never lands in the repo.
+stow_pkg() { stow --no-folding -t ~ "$1"; }
 
 # Back up any pre-existing real settings.json so stow can own that path.
 if [ -e ~/.claude/settings.json ] && [ ! -L ~/.claude/settings.json ]; then
@@ -59,29 +59,22 @@ fi
 # Clear stale links from any earlier layout so stow can re-converge cleanly.
 prune_repo_links
 
-# tuicr keeps a machine-specific runtime theme symlink under ~/.config/tuicr/themes
-# (set by theme-set, pointing through themes/current). Its config dir must therefore
-# stay a REAL directory so stow folds config.toml *inside* it and the runtime symlink
-# lives outside the repo — same rationale as the pre-created dirs above. Done after
-# prune so any stale stow dir-symlink at ~/.config/tuicr is already gone.
-mkdir -p ~/.config/tuicr/themes
-
 # Shared layer (every OS): .config, .local/bin, .claude, .ssh.
-stow -t ~ shared
+stow_pkg shared
 echo "Stowed shared."
 
 # OS-specific layer.
 case "$(uname)" in
     Darwin)
-        stow -t ~ mac
+        stow_pkg mac
         echo "Stowed mac."
         ;;
     Linux)
         if is_headless; then
-            stow -t ~ headless
+            stow_pkg headless
             echo "Stowed headless."
         else
-            stow -t ~ arch
+            stow_pkg arch
             echo "Stowed arch."
             # prune_repo_links briefly removes ~/.config/omarchy/custom-hyprland.lua
             # before stow re-creates it. Hyprland watches its config and will have

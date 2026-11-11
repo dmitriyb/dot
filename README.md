@@ -17,7 +17,7 @@ Personal configuration files managed with [GNU Stow](https://www.gnu.org/softwar
 - **aerospace** - AeroSpace window manager (macOS); its letter workspaces mirror the ones in `arch/.config/omarchy/custom-hyprland.lua`
 - **claude** - Claude Code user skills
 - **docker/claude** - [Dockerized Claude Code environment](docker/claude/README.md)
-- **faber** - [faber → portitor gate-stack configs and tooling](shared/.config/faber/README.md) (projects, `faber-stack`/`faber-epic`/`faber-e2e`/`portitor-branch`, gate + egress build contexts)
+- **faber** - [faber → portitor gate-stack configs and tooling](shared/.config/faber/README.md) (projects, `faber-stack`/`secret-get`/`portitor-branch`, the egress build context)
 - **bin** - helper scripts stowed to `~/.local/bin` (`docker-claude`, the faber tooling, `theme-*`, `role-keys`/`restore-role-keys`/`ssh-load-keys`)
 
 ## Installation
@@ -28,7 +28,7 @@ Personal configuration files managed with [GNU Stow](https://www.gnu.org/softwar
 
 ```bash
 sudo pacman -S stow fish tmux neovim starship btop git eza fzf bat zoxide direnv lazygit glow ffmpeg imagemagick docker jq python ttf-jetbrains-mono-nerd
-yay -S ghostty tmux-plugin-manager sesh-bin
+yay -S ghostty tmux-plugin-manager sesh-bin bazecor
 cargo install tuicr   # terminal code review; requires the Rust toolchain (rustup)
 ```
 

@@ -1,6 +1,8 @@
 {
   "model": "opus[1m]",
   "alwaysThinkingEnabled": true,
+  "autoMemoryEnabled": false,
+  "remoteControlAtStartup": false,
   "autoUpdatesChannel": "latest",
   "enableAllProjectMcpServers": true,
   "skipAutoPermissionPrompt": true,

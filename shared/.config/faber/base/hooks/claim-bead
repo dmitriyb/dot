@@ -1,0 +1,96 @@
+#!/bin/bash
+# prelude hook (implement) — runs IN the box, cwd = the repo clone, AFTER the
+# context hook and BEFORE the agent, with the delegated implementer identity
+# (its ssh-agent key already loaded, git signing already configured by the box's
+# signing phase). Deterministic pre-agent setup: create the feature branch off
+# the default, claim the bead in_progress with a SIGNED commit, and declare the
+# branch as this step's side-effect in bundle.env (faber verifies it exists
+# after the agent phase; BRANCH also requires a repo binding, which this step
+# has).
+set -euo pipefail
+
+# --- diagnostics ------------------------------------------------------------
+# Duplicated in every hook on purpose: faber bakes ONE FILE PER PHASE into the image, so a
+# sibling helper is unreachable — hooks.yaml records that a "$(dirname $0)/lib"
+# call exited 127 on every step. The duplication costs ~15 lines; not having it
+# cost a fix round that could not be diagnosed afterwards at all.
+#
+# Everything this hook prints to stderr is copied into the attempt's result dir,
+# which faber preserves on EVERY path, success included. Without this a hook's
+# account of what it did survived only when the STEP FAILED (handoff.json's
+# stderr_tail — and only a tail of it), so a warning on a step that succeeded
+# went nowhere, and a call that failed silently left nothing to read.
+#
+# NEVER `set -x` here and never print a secret: the box holds credentials and
+# these files persist on the host for the life of the run directory.
+_hook="claim-bead"
+_hooks_dir="${FABER_RESULT_DIR:-}/hooks"
+if [ -n "${FABER_RESULT_DIR:-}" ] && mkdir -p "$_hooks_dir" 2>/dev/null; then
+	exec 2> >(tee -a "$_hooks_dir/$_hook.log" >&2)
+else
+	_hooks_dir=""   # host-side hook, or no result dir: log to stderr only
+fi
+
+# emit <event> [key=value ...] — the machine-readable half of the same record,
+# one JSON object per line in events.jsonl. Makes "how often does X actually
+# fail" a jq across the run directories rather than a reconstruction from
+# whichever side effects happened to survive.
+_emit() {
+	[ -n "${_hooks_dir:-}" ] || return 0
+	_e="$1"; shift
+	jq -cn --arg ts "$(date -u +%Y-%m-%dT%H:%M:%SZ)" --arg hook "$_hook" --arg event "$_e" --args \
+		'{ts:$ts,hook:$hook,event:$event} + ($ARGS.positional|map(split("=")|{(.[0]):(.[1:]|join("="))})|add // {})' \
+		"$@" >> "$_hooks_dir/events.jsonl" 2>/dev/null || true
+}
+
+die() { echo "claim-bead: $*" >&2; exit 1; }
+bead="${FABER_INPUT_BEAD:?FABER_INPUT_BEAD is required}"
+bundle="${FABER_BUNDLE_DIR:?FABER_BUNDLE_DIR is required}"
+
+default_branch() {
+  local ref
+  if ref="$(git symbolic-ref --quiet --short refs/remotes/origin/HEAD 2>/dev/null)"; then
+    echo "${ref#origin/}"; return
+  fi
+  for b in main master; do
+    git rev-parse --verify --quiet "refs/remotes/origin/$b^{commit}" >/dev/null 2>&1 && { echo "$b"; return; }
+  done
+  echo main
+}
+
+br sync --import-only >/dev/null 2>&1 || true
+
+json="$(br show "$bead" --json)" || die "br show $bead failed"
+[ "$(jq 'length' <<<"$json")" -gt 0 ] || die "bead $bead not found"
+# No cleanup guard here: the context hook already refused this bead if its node
+# is removed, and it decided that on the resolver's {"removed": true}, not on
+# the retired `spex:cleanup` label the plan-era builder no longer emits. A guard
+# keyed on that label would pass every new cleanup bead while looking like it
+# checked something.
+status="$(jq -r '.[0].status' <<<"$json")"
+case "$status" in
+  open|ready) ;;
+  *) die "bead $bead status is '$status', expected open or ready" ;;
+esac
+
+# The context key gather-context actually resolved with — the bead id. NOT the
+# `spex:` label: that is the create op's idempotency label and `spex map context`
+# rejects it.
+record="$(cat "$bundle/context-key" 2>/dev/null || true)"
+base="origin/$(default_branch)"
+branch="$bead"   # bead id verbatim (git allows the dot in refs); the id is already a safe ref token
+
+# Branch first, so the claim commit never lands on the default branch.
+git checkout -q -b "$branch" "$base" || die "branch $branch off $base failed"
+br update "$bead" --status in_progress >/dev/null || die "br update $bead --status in_progress failed"
+git add .beads/issues.jsonl
+git commit -qS -m "$bead: start implement (claim in_progress)" || die "signed claim commit failed"
+
+{
+  echo "BEAD_ID=$bead"
+  echo "BRANCH=$branch"
+  echo "BASE=$base"
+  [ -n "$record" ] && echo "RECORD_ID=$record"
+} > "$bundle/bundle.env"
+
+echo "claim-bead: $bead claimed in_progress; on branch $branch (off $base)"

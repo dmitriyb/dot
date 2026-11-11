@@ -1,0 +1,22 @@
+# egress-stack.yml — one per faber instance: the instance's internal network and
+# its allow-listing egress proxy. faber-stack exports INSTANCE and EGRESS_IMAGE and
+# runs `docker compose -p ${INSTANCE} -f egress-stack.yml up -d --remove-orphans`;
+# the gate on the same network is portitor deploy's, not this file's.
+#
+# The egress sits on the internal ${INSTANCE}-net (box-facing) and the default
+# bridge (internet). Boxes join ${INSTANCE}-net only, so their sole outbound paths
+# are the gate (git over SSH) and this proxy (allow-listed HTTPS).
+
+services:
+  egress:
+    image: ${EGRESS_IMAGE:-egress-proxy}   # egress-proxy + this instance's allow-list, built by faber-stack
+    container_name: ${INSTANCE}-egress
+    restart: unless-stopped
+    networks:
+      default: {}
+      instance: {}
+
+networks:
+  instance:
+    name: ${INSTANCE}-net
+    internal: true                         # boxes on this net reach only the gate + egress, no direct internet

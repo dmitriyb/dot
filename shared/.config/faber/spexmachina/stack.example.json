@@ -1,7 +1,8 @@
 {
-  "instance": "<instance, e.g. spex — derives network/egress/gate/volume names>",
+  "instance": "spex",
   "slug": "<owner>/<repo>",
-  "pat_service": "<keychain service holding this repo's scoped Contents+PR PAT — a NAME, never the token>",
-  "allow": ["proxy.golang.org", "sum.golang.org"],
-  "commit_email": "<verified account email registered for the role committers>"
+  "pat_service": "portitor-spex",
+  "pat_account": "default",
+  "allow": ["api.anthropic.com", "proxy.golang.org", "sum.golang.org"],
+  "commit_emails": ["<verified account email registered for the role committers>"]
 }

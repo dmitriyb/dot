@@ -1,0 +1,199 @@
+# templates library — the faber-stack-service-li divergence point. Hooks,
+# skills and workflows are the base playground's (referenced); only the agent
+# bindings change:
+#   implement / implement-next / fix  ->  goose + local qwen (goose-spex-box)
+#   review / merge                    ->  unchanged from ../faber-stack-service
+#                                         (review opus/high; merge sonnet/low,
+#                                         deterministic postlude-only)
+#
+# Goose env/config rationale: see ../spexmachina-li/templates.yaml — identical
+# apart from the instance names (gate portitor-faber-stack-service, sidecar
+# faber-stack-service-llm).
+
+templates:
+  implement:
+    image: goose-spex-box
+    identity: implementer
+    run:
+      resources: {memory: 8g, cpus: 4}
+      env:
+        FABER_AGENT_CLI: goose
+        PORTITOR_HOST: portitor-faber-stack-service
+        GOOSE_PROVIDER: openai
+        GOOSE_MODEL: qwen/qwen3.8-27b
+        GOOSE_MODE: auto
+        OPENAI_HOST: http://faber-stack-service-llm:1234
+        OPENAI_BASE_PATH: v1/chat/completions
+        OPENAI_API_KEY: lm-studio
+        GOOSE_DISABLE_KEYRING: "1"
+    skill: implement
+    model: qwen/qwen3.8-27b
+    # <|think_off|> is the froggeric fixed-template's STRUCTURAL thinking-off
+    # switch (the template pre-closes the think block; measured reasoning=0).
+    # The advisory levels (think_low/medium) do NOT bind — long write-turns
+    # still burned the full token cap and retried (measured 2026-08-19 twice).
+    # Requires: the fixed template installed for this model in LM Studio AND
+    # the GGUF variant loaded (MLX's tool parser is start-anchored and fails
+    # on preambled calls; its template override handling is also unreliable).
+    # Quality risk is absorbed by the review->fix loop, same as sonnet@medium.
+    effort: "Follow the operating instructions exactly. Batch independent shell commands into a single call instead of one command per turn. Never output <think> or </think> tags. <|think_off|>"
+    invoke:
+      profile: goose
+    skills: [implement, go-expert]
+    skills_link: .claude/skills          # kept: the skill texts reference ~/.claude/skills/... paths
+    hooks:
+      context: gather-context
+      prelude: claim-bead
+      postlude: finish-implement
+      on_failure: release-bead
+    inputs:
+      repo: {type: string, required: true}
+      bead: {type: string, required: true}
+    output:
+      branch: {type: string, required: true}
+      pr:     {type: int,    required: true}
+
+  implement-next:
+    image: goose-spex-box
+    identity: implementer
+    run:
+      resources: {memory: 8g, cpus: 4}
+      env:
+        FABER_AGENT_CLI: goose
+        PORTITOR_HOST: portitor-faber-stack-service
+        GOOSE_PROVIDER: openai
+        GOOSE_MODEL: qwen/qwen3.8-27b
+        GOOSE_MODE: auto
+        OPENAI_HOST: http://faber-stack-service-llm:1234
+        OPENAI_BASE_PATH: v1/chat/completions
+        OPENAI_API_KEY: lm-studio
+        GOOSE_DISABLE_KEYRING: "1"
+    skill: implement
+    model: qwen/qwen3.8-27b
+    # <|think_off|> is the froggeric fixed-template's STRUCTURAL thinking-off
+    # switch (the template pre-closes the think block; measured reasoning=0).
+    # The advisory levels (think_low/medium) do NOT bind — long write-turns
+    # still burned the full token cap and retried (measured 2026-08-19 twice).
+    # Requires: the fixed template installed for this model in LM Studio AND
+    # the GGUF variant loaded (MLX's tool parser is start-anchored and fails
+    # on preambled calls; its template override handling is also unreliable).
+    # Quality risk is absorbed by the review->fix loop, same as sonnet@medium.
+    effort: "Follow the operating instructions exactly. Batch independent shell commands into a single call instead of one command per turn. Never output <think> or </think> tags. <|think_off|>"
+    invoke:
+      profile: goose
+      # (The former output-contract prompt override is gone: output.json is now
+      # written by the finish-implement postlude, not the agent.)
+    agent_optional: true           # done-cycle: the prelude skips the agent (FABER_SKIP_AGENT); finish-implement emits the sentinel
+    skills: [implement, go-expert]
+    skills_link: .claude/skills
+    hooks:
+      context: next-bead-context
+      prelude: claim-next-bead
+      postlude: finish-implement
+      on_failure: release-bead
+    inputs:
+      repo: {type: string, required: true}
+      epic: {type: string, required: true}
+    output:
+      done:   {type: bool,   required: true}
+      branch: {type: string}
+      pr:     {type: int}
+      halt_reason: {type: string}
+      drift_files: {type: string}
+
+  review:
+    image: spex-box
+    identity: reviewer
+    run:
+      env: {FABER_AGENT_CLI: claude, PORTITOR_HOST: portitor-faber-stack-service}
+    skill: review
+    model: claude-opus-5
+    effort: high
+    invoke:   # inline over the built-in claude profile: session capture only
+      session_dir: .claude/projects
+      resume_argv: ["claude", "--continue"]
+    skills: [review, go-expert]
+    skills_link: .claude/skills
+    hooks:
+      context: fetch-pr
+      postlude: post-review
+    inputs:
+      repo: {type: string, required: true}
+      pr:   {type: int,    required: true}
+    output:
+      verdict: {type: string, enum: [approved, changes], required: true}
+
+  fix:
+    image: goose-spex-box
+    identity: implementer
+    run:
+      env:
+        FABER_AGENT_CLI: goose
+        PORTITOR_HOST: portitor-faber-stack-service
+        GOOSE_PROVIDER: openai
+        GOOSE_MODEL: qwen/qwen3.8-27b
+        GOOSE_MODE: auto
+        OPENAI_HOST: http://faber-stack-service-llm:1234
+        OPENAI_BASE_PATH: v1/chat/completions
+        OPENAI_API_KEY: lm-studio
+        GOOSE_DISABLE_KEYRING: "1"
+    skill: fix
+    model: qwen/qwen3.8-27b
+    # <|think_off|> is the froggeric fixed-template's STRUCTURAL thinking-off
+    # switch (the template pre-closes the think block; measured reasoning=0).
+    # The advisory levels (think_low/medium) do NOT bind — long write-turns
+    # still burned the full token cap and retried (measured 2026-08-19 twice).
+    # Requires: the fixed template installed for this model in LM Studio AND
+    # the GGUF variant loaded (MLX's tool parser is start-anchored and fails
+    # on preambled calls; its template override handling is also unreliable).
+    # Quality risk is absorbed by the review->fix loop, same as sonnet@medium.
+    effort: "Follow the operating instructions exactly. Batch independent shell commands into a single call instead of one command per turn. Never output <think> or </think> tags. <|think_off|>"
+    invoke:
+      profile: goose
+    agent_optional: true           # prepare-fix may resolve a pure `behind` cycle by itself and skip the agent
+    skills: [fix, go-expert, implement]   # implement: the fix skill references its drift protocol rather than keeping a second copy
+    skills_link: .claude/skills
+    hooks:
+      context: fetch-pr
+      prelude: prepare-fix         # reopen a closed bead + merge the base in when behind
+      postlude: post-answers
+    inputs:
+      repo: {type: string, required: true}
+      pr:   {type: int,    required: true}
+      blocked_by: {type: string}   # bound at the ci-fix call sites only
+    output:
+      status: {type: string, required: true}
+
+  merge:
+    image: spex-box
+    identity: merger
+    run:
+      # CHECKS_*: the wait-checks prelude's CLIENT-side policy (overall wait,
+      # poll interval, how long an empty rollup reads as "not registered yet",
+      # how long a non-CLEAN merge state on an all-green PR reads as forge lag,
+      # and the retry budget for a checks read). The per-check stuck budgets and
+      # re-run cap stay GATE-side.
+      env: {FABER_AGENT_CLI: claude, PORTITOR_HOST: portitor-faber-stack-service,
+            CHECKS_CEILING_SECONDS: "720", CHECKS_POLL_SECONDS: "10",
+            CHECKS_APPEAR_SECONDS: "60", CHECKS_SETTLE_SECONDS: "90",
+            CHECKS_API_TRIES: "3", CHECKS_API_RETRY_SECONDS: "5"}
+    skill: merge
+    # The agent runs ONLY on the exception branches — the green path skips it
+    # entirely — so a capable model costs almost nothing in aggregate.
+    model: claude-opus-5
+    effort: high
+    agent_optional: true           # the prelude may skip the agent (FABER_SKIP_AGENT=1)
+    invoke:   # inline over the built-in claude profile: session capture only
+      session_dir: .claude/projects
+      resume_argv: ["claude", "--continue"]
+    skills: [merge]
+    skills_link: .claude/skills
+    hooks:
+      prelude: wait-checks         # classify CI/merge state; land deterministically or hand to the agent
+      postlude: post-merge         # land when the prelude cleared it; otherwise pass the agent's verdict through
+    inputs:
+      repo: {type: string, required: true}
+      pr:   {type: int,    required: true}
+    output:
+      merged: {type: bool, required: true}
+      blocked_by: {type: string}   # ci_red | stuck | behind | dirty | merge_state — set when merged=false

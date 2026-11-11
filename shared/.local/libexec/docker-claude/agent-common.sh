@@ -1,160 +1,131 @@
-# agent-common.sh — shared host-side helpers for docker-claude.
-#
-# Sourced, not executed. Single source of truth for the cross-platform keychain
-# reads, the personal signing-agent bring-up, and path resolution. Sourced by
-# docker-claude (the entrypoint); lives next to it in .local/libexec/docker-claude.
+# agent-common.sh — sourced by docker-claude, cred-store, faber's get-token and secret-get;
+# never executed. Single source of truth for the host.conf reader and the secret-backend reads.
 
-# Portable `readlink -f` (BSD/macOS readlink lacks -f): walk the symlink chain.
-resolve_path() {
-	local p="$1" target
-	while [ -L "$p" ]; do
-		target="$(readlink "$p")"
-		case "$target" in
-			/*) p="$target" ;;
-			*) p="$(cd "$(dirname "$p")" && pwd)/$target" ;;
-		esac
-	done
-	printf '%s\n' "$p"
-}
-
-# dot_root <start-dir> — walk up until a dir containing docker/claude is found, and
-# print it (the dot repo root). Depth-robust: lets the host launchers live anywhere
-# under the repo (e.g. .local/libexec/docker-claude) without hardcoding `cd ../../..`.
+# Depth-robust: launchers can live anywhere under the repo, no hardcoded `cd ../../..`.
 dot_root() {
 	local d="$1"
 	while [[ "$d" != / && ! -d "$d/docker/claude" ]]; do d="$(dirname "$d")"; done
-	[[ -d "$d/docker/claude" ]] && printf '%s\n' "$d"
+	if [[ ! -d "$d/docker/claude" ]]; then
+		echo "Error: dot repo root not found: no ancestor of '$1' contains docker/claude." >&2
+		return 1
+	fi
+	printf '%s\n' "$d"
 }
 
-# ---- secret files (keep tokens out of `docker inspect` Config.Env + host `ps`) ----
-# Instead of `-e VAR=secret` (visible in docker inspect and the run cmdline), write the
-# secret to a private host tmpfile and bind-mount it read-only at /run/secrets/<name>;
-# the container entrypoint reads /run/secrets/* back into the env (filename uppercased
-# → var name). SECRET_ARGS holds the -v mounts; SECRET_FILES the tmpfiles to clean up.
-SECRET_FILES=()
-SECRET_ARGS=()
-
-# add_secret_mount <name> <value> — register a secret mounted at /run/secrets/<name>.
-# No-op on an empty value (e.g. an optional, unset token).
-add_secret_mount() {
-	local name="$1" value="$2" f
+# Stdin only: `-e` and host files would expose the value to `docker inspect`, `ps` or the host
+# disk, and a host file is unreadable under userns-remap. No-op on an empty value.
+inject_secret() {
+	local ctr="$1" name="$2" value="$3"
 	[[ -n "$value" ]] || return 0
-	f="$(mktemp "${TMPDIR:-/tmp}/dc-secret.XXXXXX")" || return 1
-	chmod 600 "$f"
-	printf '%s' "$value" >"$f"
-	SECRET_FILES+=("$f")
-	SECRET_ARGS+=(-v "$f:/run/secrets/$name:ro")
-}
-
-# cleanup_secrets — shred the host tmpfiles (call after `docker run` returns).
-cleanup_secrets() {
-	[[ ${#SECRET_FILES[@]} -gt 0 ]] && rm -f "${SECRET_FILES[@]}"
-	SECRET_FILES=()
-}
-
-# Platform-specific "not found" exit code from the keychain CLI.
-if [[ "$(uname)" == "Darwin" ]]; then
-	KEYCHAIN_NOTFOUND_RC=44 # errSecItemNotFound
-else
-	KEYCHAIN_NOTFOUND_RC=1 # secret-tool / libsecret
-fi
-
-# Pure passthrough to the OS keychain; stdout + exit code verbatim, no policy.
-_keychain_read() {
-	local service="$1" account="${2:-}"
-	if [[ "$(uname)" == "Darwin" ]]; then
-		if [[ -n "$account" ]]; then
-			security find-generic-password -s "$service" -a "$account" -w 2>/dev/null
-		else
-			security find-generic-password -s "$service" -w 2>/dev/null
-		fi
-	else
-		if [[ -n "$account" ]]; then
-			secret-tool lookup service "$service" account "$account" 2>/dev/null
-		else
-			secret-tool lookup service "$service" 2>/dev/null
-		fi
+	if ! printf '%s' "$value" | docker exec -i -u dev "$ctr" sh -c 'umask 077; cat >"/run/secrets/$1"' sh "$name"; then
+		echo "Error: writing secret '$name' into $ctr failed." >&2
+		return 1
+	fi
+	if ! printf '%s' "$value" | docker exec -i -u dev "$ctr" sh -c 'test "$(sha256sum <"/run/secrets/$1")" = "$(sha256sum)"' sh "$name"; then
+		echo "Error: secret '$name' in $ctr does not match the value sent." >&2
+		return 1
 	fi
 }
 
-# Required secret: prints an Error and aborts if missing or unreadable.
+HOST_CONF="${XDG_CONFIG_HOME:-$HOME/.config}/dot/host.conf"
+
+# key=value data stowed by the OS layer; parsed, never sourced.
+host_conf() {
+	local want="$1" key value
+	[[ -f "$HOST_CONF" ]] || return 1
+	while IFS='=' read -r key value || [[ -n "$key" ]]; do
+		[[ "$key" =~ ^[[:space:]]*(#|$) ]] && continue
+		if [[ "$key" == "$want" ]]; then
+			printf '%s\n' "$value"
+			return 0
+		fi
+	done <"$HOST_CONF"
+	return 1
+}
+
+_secrets_backend() {
+	local backend
+	if ! backend="$(host_conf secrets.backend)"; then
+		echo "Error: no secrets backend configured (secrets.backend in $HOST_CONF) — re-run dot's setup.sh." >&2
+		return 1
+	fi
+	case "$backend" in
+	security | secret-tool | systemd-creds) printf '%s\n' "$backend" ;;
+	*)
+		echo "Error: unknown secrets.backend '$backend' in $HOST_CONF." >&2
+		return 1
+		;;
+	esac
+}
+
+# Every backend's "not found" is normalised to this; any other non-zero is a failed lookup.
+SECRET_NOTFOUND_RC=44
+
+_keychain_read() {
+	local backend="$1" service="$2" account="${3:-}" rc=0
+	case "$backend" in
+	security)
+		security find-generic-password -s "$service" ${account:+-a "$account"} -w 2>/dev/null || rc=$?
+		return "$rc" # 44 is errSecItemNotFound
+		;;
+	secret-tool)
+		secret-tool lookup service "$service" ${account:+account "$account"} 2>/dev/null || rc=$?
+		((rc == 1)) && return "$SECRET_NOTFOUND_RC"
+		return "$rc"
+		;;
+	systemd-creds)
+		local dir name file
+		dir="$(host_conf secrets.dir)" || {
+			echo "Error: secrets.dir missing in $HOST_CONF." >&2
+			return 2
+		}
+		name="$service${account:+.$account}"
+		file="$HOME/$dir/$name.cred"
+		[[ -f "$file" ]] || return "$SECRET_NOTFOUND_RC"
+		# systemd-creds exits 1 on any failure, so it must not share the not-found code.
+		systemd-creds decrypt --user --name="$name" "$file" - || return 2
+		;;
+	esac
+}
+
+keychain_store_hint() {
+	local backend="$1" service="$2" account="${3:-}"
+	echo "Store it with:" >&2
+	case "$backend" in
+	security) echo "  security add-generic-password -s $service${account:+ -a $account} -w '<value>'" >&2 ;;
+	secret-tool) echo "  secret-tool store --label='$service${account:+ $account}' service $service${account:+ account $account}" >&2 ;;
+	systemd-creds) echo "  cred-store $service${account:+ $account}    (reads the value from stdin, hidden on a tty)" >&2 ;;
+	esac
+}
+
 keychain_require() {
-	local service="$1" account="$2" label="$3" hint="$4" value rc=0
-	value=$(_keychain_read "$service" "$account") || rc=$?
+	local service="$1" account="$2" label="$3" hint="$4" backend value rc=0
+	backend="$(_secrets_backend)" || exit 1
+	value=$(_keychain_read "$backend" "$service" "$account") || rc=$?
 	if ((rc == 0)); then
 		printf '%s' "$value"
-	elif ((rc == KEYCHAIN_NOTFOUND_RC)); then
-		echo "Error: $label not found in keychain (service=$service${account:+, account=$account})." >&2
+	elif ((rc == SECRET_NOTFOUND_RC)); then
+		echo "Error: $label not found ($backend: service=$service${account:+, account=$account})." >&2
 		[[ -n "$hint" ]] && echo "$hint" >&2
+		keychain_store_hint "$backend" "$service" "$account"
 		exit 1
 	else
-		echo "Error: keychain lookup failed for $label (rc=$rc)." >&2
+		echo "Error: $backend lookup failed for $label (rc=$rc)." >&2
 		exit "$rc"
 	fi
 }
 
-# Optional secret: prints a Warning and returns empty if missing or unreadable.
 keychain_optional() {
-	local service="$1" account="$2" label="$3" hint="$4" value rc=0
-	value=$(_keychain_read "$service" "$account") || rc=$?
+	local service="$1" account="$2" label="$3" hint="$4" backend value rc=0
+	backend="$(_secrets_backend)" || exit 1
+	value=$(_keychain_read "$backend" "$service" "$account") || rc=$?
 	if ((rc == 0)); then
 		printf '%s' "$value"
-	elif ((rc == KEYCHAIN_NOTFOUND_RC)); then
-		echo "Warning: $label not found in keychain (service=$service${account:+, account=$account}); continuing without it." >&2
+	elif ((rc == SECRET_NOTFOUND_RC)); then
+		echo "Warning: $label not found ($backend: service=$service${account:+, account=$account}); continuing without it." >&2
 		[[ -n "$hint" ]] && echo "$hint" >&2
+		keychain_store_hint "$backend" "$service" "$account"
 	else
-		echo "Warning: keychain lookup failed for $label (rc=$rc); continuing without it." >&2
-	fi
-}
-
-# ---- resident no-touch signing key (the role identity for autonomous runs) ----
-
-# Committed list of SHA-256 hashes identifying the sign-only / no-touch resident
-# key(s). Only hashes are stored, never the key name.
-SIGNING_HASH_FILE="$HOME/.ssh/signing-key-hashes"
-
-_sha256() {
-	if command -v sha256sum >/dev/null 2>&1; then
-		sha256sum | awk '{print $1}'
-	else
-		shasum -a 256 | awk '{print $1}'
-	fi
-}
-
-# True if the given key handle's application suffix is listed in SIGNING_HASH_FILE.
-_is_signing_key() {
-	local suffix h
-	suffix="${1##*_sk_rk_}"
-	h="$(printf '%s' "$suffix" | _sha256)"
-	grep -vE '^[[:space:]]*(#|$)' "$SIGNING_HASH_FILE" 2>/dev/null | grep -qix "$h"
-}
-
-# start_personal_signing_agent — interactive `docker-claude --agent` (personal) mode.
-# Loads ONLY the personal no-touch sign-only key, identified by HASH (SIGNING_HASH_FILE).
-# The resident key is pulled off the YubiKey at launch (PIN + 1 touch); the handle file
-# is removed once loaded; the agent + socket are torn down on exit (trap), so nothing is
-# left at rest.
-start_personal_signing_agent() {
-	if [[ ! -s "$SIGNING_HASH_FILE" ]] || ! grep -qiE '^[[:space:]]*[0-9a-f]{64}[[:space:]]*$' "$SIGNING_HASH_FILE"; then
-		echo "Error: no signing-key hash configured in $SIGNING_HASH_FILE." >&2
-		echo "Add one with: printf '%s' '<app-suffix>' | sha256sum" >&2
-		exit 1
-	fi
-	SIGN_SOCK="$(mktemp -u "${TMPDIR:-/tmp}/dc-agent.XXXXXX.sock")"
-	eval "$(ssh-agent -a "$SIGN_SOCK")" >/dev/null
-	SIGN_PID="$SSH_AGENT_PID"
-	trap 'kill "$SIGN_PID" 2>/dev/null; rm -f "$SIGN_SOCK"' EXIT
-	local dir key; dir="$(mktemp -d)"
-	( cd "$dir" && ssh-keygen -K -N "" >/dev/null ) # download resident creds (PIN + touch)
-	shopt -s nullglob
-	for key in "$dir"/id_*_sk_rk_*; do
-		[[ "$key" == *.pub ]] && continue
-		if _is_signing_key "$key"; then
-			SSH_AUTH_SOCK="$SIGN_SOCK" ssh-add "$key" >/dev/null 2>&1
-		fi
-	done
-	rm -rf "$dir"
-	if [[ "$(SSH_AUTH_SOCK="$SIGN_SOCK" ssh-add -L 2>/dev/null | grep -c .)" != 1 ]]; then
-		echo "Warning: signing agent does not hold exactly one key." >&2
+		echo "Warning: $backend lookup failed for $label (rc=$rc); continuing without it." >&2
 	fi
 }
