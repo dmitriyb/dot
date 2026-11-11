@@ -17,7 +17,7 @@ Personal configuration files managed with [GNU Stow](https://www.gnu.org/softwar
 - **aerospace** - AeroSpace window manager (macOS); its letter workspaces mirror the ones in `arch/.config/omarchy/custom-hyprland.lua`
 - **claude** - Claude Code user skills
 - **docker/claude** - [Dockerized Claude Code environment](docker/claude/README.md)
-- **faber** - [faber → portitor gate-stack configs and tooling](shared/.config/faber/README.md) (projects, `faber-stack`/`faber-epic`/`faber-e2e`/`portitor-branch`, gate + egress build contexts)
+- **faber** - [faber → portitor gate-stack configs and tooling](shared/.config/faber/README.md) (projects, `faber-stack`/`secret-get`/`portitor-branch`, the egress build context)
 - **bin** - helper scripts stowed to `~/.local/bin` (`docker-claude`, the faber tooling, `theme-*`, `role-keys`/`restore-role-keys`/`ssh-load-keys`)
 
 ## Installation

@@ -1,34 +1,20 @@
 #!/usr/bin/env bash
-# faber-stack — stand up (or tear down) ONE portitor gate instance per faber repo.
+# faber-stack — the environment one faber project's boxes run against: its
+# internal network, its allow-listing egress proxy and its portitor gate.
 #
-# The faber box model is one gate PER repo: its own internal network, egress
-# proxy, gate container, mirror volume, and scoped PAT, so a compromised box for
-# repo A cannot reach repo B's mirror or PAT. faber-stack makes that a
-# one-command, idempotent, parameterized operation.
+#   faber-stack up      <project>             converge: images, config, egress, gate
+#   faber-stack down    <project> [--volumes] remove the containers (and, with
+#                                             --volumes, the gate's volumes and pin)
+#   faber-stack status  <project>             containers, images, volumes, pin
+#   faber-stack prune   <project>             remove this instance's unused images
 #
-# ONE knob — `--instance <name>` — derives every object name, so the box side and
-# the gate side cannot drift:
+# <project> is a name under ~/.config/faber or a path. Everything about the
+# instance is data in <project>/stack.json (host-local, gitignored; see
+# stack.example.json) and <project>/portitor/policy.json; the role keys come from
+# faber's registry via `role-keys --json`. The gate itself is `portitor deploy`.
 #
-#   network  ${name}-net (internal)   egress  ${name}-egress
-#   gate     portitor-${name}         volume  ${name}-repos     project ${name}
-#
-# `--instance spex` therefore produces exactly what spexmachina/orchestrator.yaml
-# already references (spex-net / spex-egress / portitor-spex / spex-repos).
-#
-#   role-keys --repo <repo> --json \
-#     | faber-stack up --instance <name> --slug <owner/repo> --pat <svc>[/acct] --project <dir> [--allow <host> ...]
-#   faber-stack status|down|restart --instance <name>
-#
-# What faber-stack does NOT do: create SSH keys (role-keys / ssh-keygen), register
-# faber identities (faber add-key), run faber, or store PATs (the operator stores
-# them once in the keychain). It consumes those artifacts.
-#
-# Non-interactive, so `set -e` is appropriate — with careful guards around greps
-# and `docker image inspect` that legitimately return non-zero.
-#
-# This script uses associative arrays + namerefs (bash >= 4). macOS ships bash
-# 3.2, so re-exec under a newer bash if one is installed, else fail clearly —
-# BEFORE `set -u` trips over the first associative-array assignment.
+# What faber-stack does NOT do: create keys, register identities, store secrets,
+# or run faber workflows (`faber run`, or faber's live view).
 if (( ${BASH_VERSINFO[0]:-0} < 4 )); then
 	for _b in /opt/homebrew/bin/bash /usr/local/bin/bash; do
 		[[ -x "$_b" ]] && exec "$_b" "${BASH_SOURCE[0]}" "$@"
@@ -38,604 +24,404 @@ if (( ${BASH_VERSINFO[0]:-0} < 4 )); then
 fi
 set -euo pipefail
 
-# Assets are installed under $XDG_DATA_HOME (stowed from the dot repo to
-# ~/.local/share): the gate compose and the egress build context. Resolve them
-# via standard XDG — no repo path, no self-location, no env to set.
-DATA_HOME="${XDG_DATA_HOME:-$HOME/.local/share}"
-COMPOSE_FILE="$DATA_HOME/portitor/portitor-stack.yml"
-GATE_CTX="$DATA_HOME/portitor"      # self-contained gate image build context (gate-image.nix + gate-entrypoint.sh)
-EGRESS_CTX="$DATA_HOME/egress"      # egress image build context (egress-image.nix + tinyproxy.conf + filter)
-if [[ ! -f "$COMPOSE_FILE" || ! -f "$GATE_CTX/gate-image.nix" || ! -f "$EGRESS_CTX/egress-image.nix" ]]; then
-	echo "faber-stack: faber assets not found under $DATA_HOME (need portitor/{portitor-stack.yml,gate-image.nix} + egress/egress-image.nix) — install them (stow the dot repo so ~/.local/share/{portitor,egress} exist)" >&2
-	exit 1
-fi
-
-# Validation patterns (all match the tools faber-stack feeds).
-INSTANCE_RE='^[a-z0-9][a-z0-9-]{0,30}$'          # docker/DNS/path-safe, <=31 chars
-SLUG_RE='^[^/ ]+/[^/ ]+$'                         # owner/repo
-FP_RE='^SHA256:[A-Za-z0-9+/]{43}$'                # portitor addrole.go's own regex (no '=', exactly 43)
-HOST_RE='^[A-Za-z0-9._-]+$'                       # egress allow-list host (no metachars)
-EMAIL_RE='^[^[:space:]@]+@[^[:space:]@]+$'        # committer email shape (gate compares byte-exact)
-
-CONTAINER_SIGNERS="/etc/portitor/allowed_signers" # the in-container allowed_signers path the gate reads
-
-# portitor per-repo policy (repos.d/<repo>.json). The STATIC gate policy —
-# format_version, action_roles, merge_gate, content_rules, identity_only_roles — is
-# DECLARATIVE and lives in the project's own $PROJECT/portitor/policy.json (loaded via
-# --policy below), re-asserted onto the config every run so an older config converges.
-# faber-stack only COMPUTES the runtime-derived fields (roles map, allowed_signers path,
-# upstream_slug/remote, default_branch, allowed_committer_emails). The policy itself and
-# its rationale (default-deny action_roles; the reviewer-only bead-close content rule
-# whose semantic check shells `br` in the gate image; the merge_gate bead-closed
-# predicate) now live next to that JSON, not here.
-
-# Signing roles get --pub (enter allowed_signers); merger is identity-only
-# (must match policy.json identity_only_roles).
-PORTITOR_ROLES=(implementer reviewer merger)
-declare -A IS_SIGNER=([implementer]=1 [reviewer]=1 [merger]=0)
-
 die() { echo "faber-stack: $1" >&2; exit "${2:-1}"; }
+say() { echo "faber-stack: $*" >&2; }
 
 usage() {
-	cat >&2 <<'EOF'
-Usage:
-  role-keys --repo <repo> --json | \
-    faber-stack up --instance <name> --slug <owner/repo> --pat <svc>[/acct] --project <dir> [flags]
-  faber-stack restart --instance <name> --slug <owner/repo> --pat <svc>[/acct] --project <dir> [flags]
-  faber-stack status  --instance <name>
-  faber-stack down    --instance <name>
-
-Verbs: up | down | status | restart   (verb is the first positional arg)
-
-Flags:
-  --instance <name>     identity knob; derives every object name. ^[a-z0-9][a-z0-9-]{0,30}$   (all verbs)
-  --slug <owner/repo>   GitHub slug for the mirror upstream + repo config           (up/restart, required)
-  --pat <svc>[/acct]    keychain coordinates for the scoped GitHub PAT; no default  (up/restart, required)
-  --project <dir>       faber orchestrator dir; host-key pin lands in <dir>/keys/   (up/restart, required)
-  --allow <host>        extra egress host beyond api.anthropic.com, which is ALWAYS
-                        allowed (the agent's API lifeline); repeatable, converged per up
-  --commit-email <e>    allowed committer email for the gate's email allowlist (repeatable;
-                        CONVERGED like --allow: omitted on a later run = field dropped, check off;
-                        requires a portitor release that knows allowed_committer_emails)
-  --build               also run `faber validate` + `faber build` against
-                        <project>/orchestrator.yaml before bringing the stack up —
-                        one command yields images + gate, leaving only `faber run`.
-                        Under --build the gate image is audited for staleness vs the
-                        installed portitor and rebuilt (prompted) if it lags.
-  --force-portitor-rebuild  under --build, auto-confirm the stale-gate rmi + --no-cache
-                        rebuild (non-interactive; otherwise a /dev/tty Y/n prompt gates it)
-  --config-dir <dir>    override config dir (default $XDG_CONFIG_HOME/portitor/<instance>)
-  --repo <name>         portitor repo id / repos.d basename (default: repo half of --slug)
-  --map <p>=<a>         map portitor role <p> to a differently-named stdin role <a> (repeatable)
-  --portitor-bin <path> the verified-release portitor binary for host-side add-role; default:
-                        the first real `portitor` on PATH (install the signed portitor release)
-  --policy <file>       declarative static gate policy (action_roles / merge_gate /
-                        content_rules / identity_only_roles); default $PROJECT/portitor/policy.json
-  -h, --help            this help
-
-Roles for up/restart are read as `role-keys --json` on stdin. Exit: 0 ok, 1 runtime, 2 usage.
-EOF
+	sed -n '4,9p' "${BASH_SOURCE[0]}" | sed 's/^# \{0,1\}//' >&2
 	exit "${1:-0}"
 }
 
-# ---- argument parsing -----------------------------------------------------
-[[ $# -gt 0 ]] || usage 2
-case "$1" in -h|--help) usage 0 ;; esac
+[[ $# -ge 1 ]] || usage 2
+case "$1" in -h | --help) usage 0 ;; esac
 VERB="$1"; shift
-case "$VERB" in up|down|status|restart) ;; *) die "unknown verb: $VERB (want up|down|status|restart)" 2 ;; esac
-
-INSTANCE="" SLUG="" PAT="" PROJECT="" CONFIG_DIR="" REPO=""
-ALLOW=() MAP_ARGS=() COMMIT_EMAILS=()
-PORTITOR_BIN_ARG=""
-POLICY_ARG=""
-BUILD=false
-FORCE_PORTITOR_REBUILD=false
-
-need_val() { [[ $# -ge 2 ]] || die "$1 needs a value" 2; }
+case "$VERB" in up | down | status | prune) ;; *) die "unknown verb: $VERB (want up|down|status|prune)" 2 ;; esac
+[[ $# -ge 1 ]] || usage 2
+case "$1" in -h | --help) usage 0 ;; -*) die "the project comes first: faber-stack $VERB <project> ..." 2 ;; esac
+PROJECT_ARG="$1"; shift
+WITH_VOLUMES=false
 while [[ $# -gt 0 ]]; do
 	case "$1" in
-		--instance)     need_val "$@"; INSTANCE="$2"; shift 2 ;;
-		--slug)         need_val "$@"; SLUG="$2"; shift 2 ;;
-		--pat)          need_val "$@"; PAT="$2"; shift 2 ;;
-		--project)      need_val "$@"; PROJECT="$2"; shift 2 ;;
-		--config-dir)   need_val "$@"; CONFIG_DIR="$2"; shift 2 ;;
-		--repo)         need_val "$@"; REPO="$2"; shift 2 ;;
-		--allow)        need_val "$@"; ALLOW+=("$2"); shift 2 ;;
-		--commit-email) need_val "$@"; COMMIT_EMAILS+=("$2"); shift 2 ;;
-		--build)        BUILD=true; shift ;;
-		--force-portitor-rebuild) FORCE_PORTITOR_REBUILD=true; shift ;;
-		--map)          need_val "$@"; MAP_ARGS+=("$2"); shift 2 ;;
-		--portitor-bin)  need_val "$@"; PORTITOR_BIN_ARG="$2"; shift 2 ;;
-		--policy)        need_val "$@"; POLICY_ARG="$2"; shift 2 ;;
-		-h|--help)      usage 0 ;;
-		*)              die "unknown flag: $1 (see --help)" 2 ;;
+		--volumes) [[ "$VERB" == down ]] || die "--volumes is a down flag" 2; WITH_VOLUMES=true; shift ;;
+		*) die "unknown argument: $1" 2 ;;
 	esac
 done
 
-# ---- instance name discipline (first line of defense; before ANY side effect) ----
-[[ -n "$INSTANCE" ]] || die "--instance is required" 2
-[[ "$INSTANCE" =~ $INSTANCE_RE ]] || die "invalid --instance '$INSTANCE' (want ^[a-z0-9][a-z0-9-]{0,30}\$: lowercase alnum + hyphen, <=31 chars)" 2
+for t in docker jq; do command -v "$t" >/dev/null 2>&1 || die "$t not found on PATH"; done
 
-# Derived names — every object keyed off INSTANCE.
+# ---- the project and its manifest ------------------------------------------
+# A bare name resolves under ~/.config/faber only, never against the CWD.
+if [[ "$PROJECT_ARG" == */* ]]; then PROJECT="$PROJECT_ARG"
+else PROJECT="${XDG_CONFIG_HOME:-$HOME/.config}/faber/$PROJECT_ARG"; fi
+[[ -d "$PROJECT" ]] || die "project dir not found: $PROJECT" 2
+PROJECT="$(cd -- "$PROJECT" && pwd)"
+MANIFEST="$PROJECT/stack.json"
+[[ -f "$MANIFEST" ]] || die "no $MANIFEST — copy stack.example.json and fill it in" 2
+jq -e 'type == "object"' "$MANIFEST" >/dev/null 2>&1 || die "$MANIFEST is not a JSON object" 2
+
+# An unknown key is refused, not ignored: a renamed field (commit_email →
+# commit_emails) would otherwise silently drop the policy it carried.
+problems="$(jq -r '
+	def strs: type == "array" and all(.[]; type == "string");
+	(keys - ["instance", "slug", "pat_service", "pat_account", "repo", "policy", "config_dir",
+	         "allow", "commit_emails", "map"] | .[] | "unknown key \(.)"),
+	(if has("allow") and (.allow | strs | not) then "allow must be an array of strings" else empty end),
+	(if (.commit_emails | strs and length > 0 and all(.[]; test("^[^@\\s<>]+@[^@\\s<>]+\\.[^@\\s<>]+$"))) | not
+	 then "commit_emails must be a non-empty array of email addresses" else empty end),
+	(if has("map") and ((.map | type) != "object" or (.map | [.[]] | strs | not)) then "map must be an object of strings" else empty end)
+	' "$MANIFEST")"
+[[ -z "$problems" ]] || die "$MANIFEST: ${problems//$'\n'/; } (see stack.example.json)" 2
+
+field() { jq -r --arg k "$1" '.[$k] // empty | if type == "string" then . else error("not a string") end' "$MANIFEST" 2>/dev/null \
+	|| die "$MANIFEST: $1 must be a string" 2; }
+req() { local v; v="$(field "$1")"; [[ -n "$v" ]] || die "$MANIFEST: $1 is required" 2; printf '%s' "$v"; }
+in_project() { if [[ "$1" == /* ]]; then printf '%s' "$1"; else printf '%s' "$PROJECT/$1"; fi; }
+
+INSTANCE="$(req instance)"
+# The gate is named portitor-<instance>, and portitor deploy refuses a name that
+# ends in a separator or doubles one.
+[[ "$INSTANCE" =~ ^[a-z0-9]+(-[a-z0-9]+)*$ ]] \
+	|| die "instance '$INSTANCE' must be lowercase words joined by single hyphens" 2
+SLUG="$(req slug)"
+[[ "$SLUG" =~ ^[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+$ ]] || die "slug '$SLUG' is not owner/name" 2
+PAT_SERVICE="$(req pat_service)"
+PAT_ACCOUNT="$(field pat_account)"; PAT_ACCOUNT="${PAT_ACCOUNT:-default}"
+REPO="$(field repo)"; REPO="${REPO:-${SLUG#*/}}"
+{ [[ "$REPO" =~ ^[A-Za-z0-9._-]+$ ]] && [[ "$REPO" != . && "$REPO" != .. ]]; } || die "repo '$REPO' is not a portitor repo name" 2
+POLICY="$(field policy)"; POLICY="$(in_project "${POLICY:-portitor/policy.json}")"
+CONFIG_DIR="$(field config_dir)"
+if [[ -n "$CONFIG_DIR" ]]; then CONFIG_DIR="$(in_project "$CONFIG_DIR")"
+else CONFIG_DIR="${XDG_CONFIG_HOME:-$HOME/.config}/portitor/$INSTANCE"; fi
+mapfile -t ALLOW < <(jq -r '.allow // [] | .[]' "$MANIFEST")
+for h in ${ALLOW[@]+"${ALLOW[@]}"}; do
+	[[ "$h" =~ ^[A-Za-z0-9._-]+$ ]] || die "allow host '$h' is not a plain host name" 2
+done
+
+# ---- every object name derives from the instance ---------------------------
 NET="${INSTANCE}-net"
 EGRESS_CT="${INSTANCE}-egress"
-GATE_CT="portitor-${INSTANCE}"
-PORTITOR_IMAGE="portitor-${INSTANCE}"   # per-instance gate image: rmi/rebuild never touches another instance
-PORTITOR_CONFIG_IMAGE="portitor-${INSTANCE}-config"   # PORTITOR_IMAGE + this instance's /etc/portitor
-EGRESS_IMAGE="egress-proxy-${INSTANCE}"               # egress-proxy + this instance's allow-list
+GATE="portitor-${INSTANCE}"
 REPOS_VOL="${INSTANCE}-repos"
-
-# Usage-error (exit 2) validation for up/restart BEFORE any filesystem/docker
-# side effect — a bad flag never leaves a half-built config dir behind.
-if [[ "$VERB" == up || "$VERB" == restart ]]; then
-	[[ -n "$SLUG" ]]    || die "--slug <owner/repo> is required for $VERB" 2
-	[[ "$SLUG" =~ $SLUG_RE ]] || die "invalid --slug '$SLUG' (want owner/repo)" 2
-	[[ -n "$PAT" ]]     || die "--pat <service>[/account] is required for $VERB" 2
-	[[ -n "$PROJECT" ]] || die "--project <dir> is required for $VERB" 2
-	[[ -d "$PROJECT" ]] || die "--project dir does not exist: $PROJECT" 2
-	# Static gate policy: a declarative file in the project (override with --policy).
-	[[ -n "$POLICY_ARG" ]] && POLICY="$POLICY_ARG" || POLICY="$PROJECT/portitor/policy.json"
-	[[ -f "$POLICY" ]] || die "gate policy not found: $POLICY (expected \$PROJECT/portitor/policy.json or --policy)" 2
-	jq -e 'type=="object" and has("format_version") and has("action_roles")
-	       and has("merge_gate") and has("content_rules") and has("identity_only_roles")' \
-		"$POLICY" >/dev/null 2>&1 \
-		|| die "gate policy $POLICY malformed or missing keys (format_version, action_roles, merge_gate, content_rules, identity_only_roles)" 2
-	# merge_gate predicates may reference a script the gate reads from its config
-	# mount (/etc/portitor/checks/<name>, installed from $PROJECT/portitor/checks
-	# below). portitor cannot validate that path — a missing script makes the
-	# command exit non-zero, which the gate reports as "did not pass", i.e. a
-	# missing file is indistinguishable from a policy violation at merge time.
-	# Catch it here instead, while the operator is watching.
-	CHECKS_SRC="$PROJECT/portitor/checks"
-	while IFS= read -r ref; do
-		[[ -n "$ref" ]] || continue
-		[[ -f "$CHECKS_SRC/${ref##*/}" ]] \
-			|| die "gate policy references $ref but $CHECKS_SRC/${ref##*/} does not exist" 2
-	done < <(jq -r '.merge_gate.checks[]?.command[]? | select(startswith("/etc/portitor/checks/"))' "$POLICY")
-	# repo id defaults to the repo half of the slug.
-	[[ -n "$REPO" ]] || REPO="${SLUG#*/}"
-	# Match portitor config.ValidName exactly: [A-Za-z0-9._-]+ but never '.'/'..'
-	# (those pass the charclass yet portitor's ValidName rejects them — catch it
-	# here, before any repos.d/<repo>.json seed file is written).
-	{ [[ "$REPO" =~ ^[A-Za-z0-9._-]+$ ]] && [[ "$REPO" != . && "$REPO" != .. ]]; } \
-		|| die "invalid --repo '$REPO' (allowed: A-Za-z0-9._-; not '.' or '..')" 2
-	# egress hosts: reject any regex metacharacter now (fail-fast, before mutation).
-	for h in ${ALLOW[@]+"${ALLOW[@]}"}; do
-		[[ "$h" =~ $HOST_RE ]] || die "invalid --allow host '$h' (allowed: A-Za-z0-9._-; no regex metacharacters — a host must never widen into a wildcard)" 2
-	done
-	# committer emails: gate compares byte-exact; catch obviously broken values here.
-	for e in ${COMMIT_EMAILS[@]+"${COMMIT_EMAILS[@]}"}; do
-		[[ "$e" =~ $EMAIL_RE ]] || die "invalid --commit-email '$e' (want local@domain, no whitespace)" 2
-	done
-	$BUILD && ! command -v faber >/dev/null 2>&1 && die "--build needs the faber binary on PATH" 2
-fi
-
-# Config dir (default per-instance under XDG): the host-side build area that gets baked
-# into the instance images; nothing mounts it.
-[[ -n "$CONFIG_DIR" ]] || CONFIG_DIR="${XDG_CONFIG_HOME:-$HOME/.config}/portitor/$INSTANCE"
-mkdir -p "$CONFIG_DIR"
-CONFIG_DIR="$(cd -- "$CONFIG_DIR" && pwd)"
-REPOS_D="$CONFIG_DIR/repos.d"
-SIGNERS_HOST="$CONFIG_DIR/allowed_signers"
+HOSTKEY_VOL="${INSTANCE}-hostkey"
+PIN="$PROJECT/keys/portitor_host_key.pub"
+GATE_CFG="$CONFIG_DIR/gate"
 EGRESS_FILTER="$CONFIG_DIR/egress-filter"
-# merge_gate predicate scripts, installed from the project and baked with the rest of
-# the config into the gate image at /etc/portitor/checks. Kept as real files
-# rather than shell embedded in policy.json: they are lintable, testable against
-# a live mirror, and produce a readable diff. Invoked as `sh <path>`, so no exec
-# bit is needed.
-CHECKS_HOST="$CONFIG_DIR/checks"
+DEPLOY_CFG="$CONFIG_DIR/deploy.json"
+CONTAINER_SIGNERS="/etc/portitor/allowed_signers"
 
-compose() { docker compose -p "$INSTANCE" -f "$COMPOSE_FILE" "$@"; }
+DATA_HOME="${XDG_DATA_HOME:-$HOME/.local/share}"
+EGRESS_DIR="$DATA_HOME/egress"
+EGRESS_STACK="$EGRESS_DIR/egress-stack.yml"
+[[ -f "$EGRESS_STACK" && -f "$EGRESS_DIR/egress-image.nix" ]] \
+	|| die "egress assets not found under $EGRESS_DIR — stow the dot repo" 1
+EGRESS_PORT="$(awk '$1 == "Port" { print $2; exit }' "$EGRESS_DIR/tinyproxy.conf")"
+[[ "$EGRESS_PORT" =~ ^[0-9]+$ ]] || die "no Port in $EGRESS_DIR/tinyproxy.conf" 1
 
-# ---- down / status: thin maps over compose; no slug/pat/project/stdin ------
-# Compose still interpolates ${INSTANCE} and the secret/auth env, so export
-# harmless empties for those (never a real PAT on these paths).
-if [[ "$VERB" == status || "$VERB" == down ]]; then
-	command -v docker >/dev/null 2>&1 || die "docker not found on PATH" 1
-	docker info >/dev/null 2>&1 || die "docker is not running — start docker" 1
-	export INSTANCE
-	export GH_TOKEN="" AGENT_AUTHORIZED_KEY=""
-	case "$VERB" in
-		status) compose ps ;;
-		down)   compose down ;;   # keeps the ${INSTANCE}-repos volume (mirrors persist)
-	esac
-	exit $?
-fi
+docker info >/dev/null 2>&1 || die "docker is not running — start docker"
 
-# ============================================================================
-# up / restart  (required-flag/shape validation already done above)
-# ============================================================================
-command -v docker >/dev/null 2>&1 || die "docker not found on PATH — install/start docker" 1
-command -v jq >/dev/null 2>&1     || die "jq not found on PATH — install jq" 1
-docker info >/dev/null 2>&1       || die "docker is not running — start docker" 1
-
-# ---- --build: validate + build the box images first ------------------------
-# Fail-fast ordering: a config error dies here, before any gate/network
-# mutation. The config path is passed ABSOLUTE on purpose — with a relative
-# --config faber resolves hook/skill paths against the CWD and every gated box
-# dies at docker's bind-mount guard.
-if $BUILD; then
-	cfg="$(cd -- "$PROJECT" && pwd)/orchestrator.yaml"
-	[[ -f "$cfg" ]] || die "--build: no orchestrator.yaml under --project ($cfg)" 2
-	echo "faber-stack: faber validate + build ($cfg)" >&2
-	faber validate --config "$cfg" || die "faber validate failed" 1
-	faber build    --config "$cfg" || die "faber build failed" 1
-fi
-
-# The gh_token secret is environment-sourced (secrets.gh_token.environment in
-# portitor-stack.yml). That feature landed in Docker Compose 2.20; on anything
-# older `compose up` fails with a cryptic secret error. Probe + fail clearly now.
-COMPOSE_VER="$(docker compose version --short 2>/dev/null || true)"
-COMPOSE_VER="${COMPOSE_VER#v}"
-[[ "$COMPOSE_VER" =~ ^([0-9]+)\.([0-9]+) ]] \
-	|| die "could not determine 'docker compose' version ('${COMPOSE_VER:-none}') — the stack needs the Docker Compose v2 plugin (>=2.20), not docker-compose v1" 1
-if (( BASH_REMATCH[1] < 2 || (BASH_REMATCH[1] == 2 && BASH_REMATCH[2] < 20) )); then
-	die "docker compose $COMPOSE_VER is too old — the gh_token secret is environment-sourced, which requires Docker Compose >= 2.20; upgrade the compose plugin" 1
-fi
-
-# ---- resolve the REAL portitor binary (the VERIFIED RELEASE, never a build) --
-# Host-side add-role needs the real portitor binary. We CONSUME the signed
-# release — install it once with portitor's own signed install.sh (it verifies the
-# archive with `ssh-keygen -Y verify` against the shared release key) so `portitor`
-# lands on PATH at $INSTALL_DIR (default /usr/local/bin). faber-stack does NOT
-# build portitor from source. Resolution: --portitor-bin <path> > the first REAL
-# `portitor` on PATH (dot's `#!` SSH wrapper is skipped) > error.
-PORTITOR_BIN="$PORTITOR_BIN_ARG"
-resolve_portitor_bin() {
-	if [[ -z "$PORTITOR_BIN" ]]; then
-		local c
-		while IFS= read -r c; do
-			[[ -x "$c" ]] || continue
-			# Skip dot's SSH-forwarding wrapper (a `#!` script that `exec ssh`es to
-			# the gate); the real binary is an ELF/mach-o.
-			[[ "$(head -c2 "$c" 2>/dev/null)" == '#!' ]] && continue
-			PORTITOR_BIN="$c"; break
-		done < <(type -aP portitor 2>/dev/null)
-	fi
-	[[ -n "$PORTITOR_BIN" ]] || die "no real portitor binary found — install the verified portitor release (run portitor's signed install.sh, which does the ssh-keygen -Y verify) so 'portitor' is on PATH, or pass --portitor-bin <path>. faber-stack does not build portitor from source." 1
-	[[ -x "$PORTITOR_BIN" ]] || die "portitor binary not executable: $PORTITOR_BIN" 1
-	if [[ "$(head -c2 "$PORTITOR_BIN" 2>/dev/null)" == '#!' ]]; then
-		die "--portitor-bin ($PORTITOR_BIN) is a shell script, not the real portitor binary (looks like the SSH wrapper) — point it at the installed release binary" 1
-	fi
+export INSTANCE EGRESS_IMAGE="${EGRESS_IMAGE:-unset}"
+compose() { docker compose -p "$INSTANCE" -f "$EGRESS_STACK" "$@"; }
+gate_ids() { docker ps -aq --filter "label=portitor.deploy=$GATE"; }
+# Containers on the instance network other than the stack's own: running faber
+# boxes, or a portitor deploy in progress.
+net_others() {
+	docker network inspect "$NET" >/dev/null 2>&1 || return 0
+	docker network inspect -f '{{range .Containers}}{{.Name}}{{"\n"}}{{end}}' "$NET" \
+		| grep -vx -e "$GATE" -e "$EGRESS_CT" -e '' || true
 }
-resolve_portitor_bin
 
-# ---- read + parse role assignments from stdin (role-keys --json) -----------
-[[ ! -t 0 ]] || die "roles must be piped on stdin: role-keys --repo $REPO --json | faber-stack $VERB ..." 2
-ROLES_JSON="$(cat)"
-echo "$ROLES_JSON" | jq -e '.assignments | type == "array"' >/dev/null 2>&1 \
-	|| die "stdin is not role-keys --json ({\"assignments\":[...]})" 2
+owned_images() {
+	docker images --format '{{.Repository}}:{{.Tag}}' "egress-proxy-$INSTANCE"
+	docker images --format '{{.Repository}}:{{.Tag}}' "portitor-gate/$GATE"
+}
+image_in_use() { [[ -n "$(docker ps -aq --filter "ancestor=$1")" ]]; }
 
-# --map <portitor-role>=<assignment-role> (default identity).
-declare -A ROLE_MAP
-for r in "${PORTITOR_ROLES[@]}"; do ROLE_MAP[$r]="$r"; done
-for m in ${MAP_ARGS[@]+"${MAP_ARGS[@]}"}; do
-	[[ "$m" == *=* ]] || die "invalid --map '$m' (want <portitor-role>=<assignment-role>)" 2
-	p="${m%%=*}" a="${m#*=}"
-	[[ -n "${ROLE_MAP[$p]:-}" ]] || die "invalid --map '$m': '$p' is not a portitor role (want one of ${PORTITOR_ROLES[*]})" 2
-	[[ -n "$a" ]] || die "invalid --map '$m': empty assignment role" 2
-	ROLE_MAP[$p]="$a"
+# ---- status ------------------------------------------------------------------
+if [[ "$VERB" == status ]]; then
+	echo "instance $INSTANCE (project $PROJECT)"
+	echo "-- egress"; compose ps -a
+	echo "-- gate"; docker ps -a --filter "label=portitor.deploy=$GATE" --format '{{.Names}}  {{.Status}}  {{.Image}}'
+	echo "-- images"
+	while IFS= read -r img; do
+		[[ -n "$img" ]] || continue
+		if image_in_use "$img"; then echo "$img  in use"; else echo "$img  unused (prune removes it)"; fi
+	done < <(owned_images)
+	echo "-- volumes"
+	for v in "$REPOS_VOL" "$HOSTKEY_VOL"; do
+		if docker volume inspect "$v" >/dev/null 2>&1; then echo "$v  present"; else echo "$v  absent"; fi
+	done
+	echo "-- pin"; if [[ -f "$PIN" ]]; then echo "$PIN  present"; else echo "$PIN  absent"; fi
+	exit 0
+fi
+
+# ---- prune -------------------------------------------------------------------
+if [[ "$VERB" == prune ]]; then
+	while IFS= read -r img; do
+		[[ -n "$img" ]] || continue
+		if image_in_use "$img"; then say "keeping $img (in use)"; continue; fi
+		docker rmi "$img" >/dev/null || die "docker rmi $img failed"
+		docker image inspect "$img" >/dev/null 2>&1 && die "$img is still present after docker rmi"
+		say "removed $img"
+	done < <(owned_images)
+	exit 0
+fi
+
+# ---- down --------------------------------------------------------------------
+# The mirror may be dropped only when GitHub holds every commit of every mirror
+# branch. Tips alone cannot tell: the mirror's default branch lags GitHub after
+# each merge, so the check fetches GitHub's branches and PR heads and asks
+# whether anything in the mirror is unreachable from them.
+CHECK_NS=refs/faber-stack-check
+gx() { docker exec -u git "$GATE" git -C "/srv/git/$REPO.git" "$@"; }
+clear_check_refs() {
+	gx for-each-ref --format='delete %(refname)' "$CHECK_NS" | docker exec -i -u git "$GATE" git -C "/srv/git/$REPO.git" update-ref --stdin
+}
+# Runs in a $(…) subshell: the trap clears the temporary refs however it exits,
+# and they are cleared before the fetch too, so refs left by an interrupted run
+# can never vouch for a branch GitHub no longer has.
+unforwarded_branches() {
+	local remote heads sha name n ns="$CHECK_NS"
+	clear_check_refs || die "cannot clear the temporary $ns refs in $GATE's mirror"
+	trap 'clear_check_refs >/dev/null 2>&1 || true' EXIT
+	remote="$(jq -r '.upstream_remote // "upstream"' "$GATE_CFG/repos.d/$REPO.json" 2>/dev/null || echo upstream)"
+	heads="$(gx for-each-ref --format='%(objectname) %(refname:short)' refs/heads)" \
+		|| die "cannot read the mirror's branches from $GATE"
+	gx fetch --quiet --no-write-fetch-head "$remote" "+refs/heads/*:$ns/heads/*" "+refs/pull/*/head:$ns/pull/*" \
+		|| die "cannot fetch $SLUG's branches and pull requests into $GATE"
+	while read -r sha name; do
+		[[ -n "$sha" ]] || continue
+		n="$(gx rev-list --count "$sha" --not --glob="$ns/*")" || die "cannot compare $name with $SLUG"
+		[[ "$n" == 0 ]] || echo "$name ($n commit(s) not on GitHub)"
+	done <<<"$heads"
+}
+
+if [[ "$VERB" == down ]]; then
+	# A box on the network is a running faber step; removing its gate and egress
+	# would fail it mid-push.
+	others="$(net_others)"
+	[[ -z "$others" ]] || die "containers are still on $NET (running faber boxes, or a deploy in progress); stop them first:
+$others"
+	if $WITH_VOLUMES; then
+		[[ -n "$(docker ps -q --filter "label=portitor.deploy=$GATE")" ]] \
+			|| die "--volumes checks the mirror against GitHub through the running gate; start it with 'faber-stack up', or remove $REPOS_VOL by hand once you know nothing in it is unforwarded"
+		missing="$(unforwarded_branches)"
+		[[ -z "$missing" ]] || die "these mirror branches hold commits GitHub does not have; re-forward them (portitor reconcile --repo $REPO, inside $GATE) or delete them (portitor-branch delete) before removing the mirror:
+$missing"
+	fi
+	# The gate goes first: the network cannot be removed while it is attached.
+	ids="$(gate_ids)"; [[ -z "$ids" ]] || docker rm -f $ids >/dev/null || die "docker rm of the gate failed"
+	compose down --remove-orphans || die "docker compose down of the egress failed"
+	[[ -z "$(gate_ids)" ]] || die "gate containers remain: $(gate_ids | tr '\n' ' ')"
+	if docker inspect "$EGRESS_CT" >/dev/null 2>&1; then die "$EGRESS_CT remains after compose down"; fi
+	if docker network inspect "$NET" >/dev/null 2>&1; then die "$NET remains after compose down"; fi
+	say "removed $GATE, $EGRESS_CT and $NET"
+	if $WITH_VOLUMES; then
+		for v in "$REPOS_VOL" "$HOSTKEY_VOL"; do
+			docker volume inspect "$v" >/dev/null 2>&1 || continue
+			docker volume rm "$v" >/dev/null || true
+			if docker volume inspect "$v" >/dev/null 2>&1; then die "volume $v could not be removed; the pin $PIN is kept"; fi
+			say "removed volume $v"
+		done
+		rm -f "$PIN"
+		[[ ! -e "$PIN" ]] || die "could not remove the pin $PIN"
+		say "removed the pin $PIN"
+	else
+		say "kept volumes $REPOS_VOL, $HOSTKEY_VOL and the pin $PIN; remove them with: faber-stack down $PROJECT_ARG --volumes"
+	fi
+	exit 0
+fi
+
+# ============================================================================
+# up — every input is checked before anything is built, written or started.
+# ============================================================================
+for t in faber nix-build role-keys secret-get portitor; do command -v "$t" >/dev/null 2>&1 || die "$t not found on PATH"; done
+PORTITOR_BIN="$(command -v portitor)"
+
+# portitor deploy replaces the gate on every run, and a changed allow-list
+# recreates the egress: either would cut a running box off mid-push.
+others="$(net_others)"
+[[ -z "$others" ]] || die "containers are on $NET (running faber boxes, or a deploy in progress); up replaces the gate, so wait for them:
+$others"
+
+# ---- 1a. the project's faber config must name exactly this instance ----------
+# orchestrator.yaml's network/remote blocks and templates.yaml's PORTITOR_HOST
+# restate names derived here; a mismatch would only show up as a dead run.
+ORCH="$PROJECT/orchestrator.yaml"
+[[ -f "$ORCH" ]] || die "no orchestrator.yaml in $PROJECT" 2
+
+unquote() { local v="$1"; [[ "$v" =~ ^\"(.*)\"$ || "$v" =~ ^\'(.*)\'$ ]] && v="${BASH_REMATCH[1]}"; printf '%s' "$v"; }
+block_value() { # <block> <key>
+	unquote "$(awk -v blk="$1" -v key="$2" '
+		/^[^ #]/ { inblk = ($0 ~ "^" blk ":") ; next }
+		inblk && $0 ~ "^[ ]+" key ":" {
+			v = $0; sub("^[ ]+" key ":[ ]*", "", v); sub("[ ]+#.*$", "", v); sub("[ ]+$", "", v)
+			print v; exit
+		}' "$ORCH")"
+}
+expect() { # <what> <got> <want>
+	[[ "$2" == "$3" ]] || die "$ORCH: $1 is '$2', want '$3' for instance $INSTANCE" 2
+}
+expect network.name "$(block_value network name)" "$NET"
+expect network.proxy "$(block_value network proxy)" "http://$EGRESS_CT:$EGRESS_PORT"
+expect remote.url "$(block_value remote url)" "ssh://git@$GATE/srv/git"
+no_proxy="$(block_value network no_proxy)"
+[[ "$no_proxy" =~ ^\[.*\]$ ]] || die "$ORCH: network.no_proxy must be an inline [list]" 2
+for need in "$GATE" localhost 127.0.0.1; do
+	tr -d "[] \"'" <<<"$no_proxy" | tr ',' '\n' | grep -qx "$need" || die "$ORCH: network.no_proxy lacks $need" 2
 done
+hkf="$(in_project "$(block_value remote host_key_file)")"
+[[ "$(cd -- "$(dirname -- "$hkf")" 2>/dev/null && pwd)/$(basename -- "$hkf")" == "$PIN" ]] \
+	|| die "$ORCH: remote.host_key_file must be ./keys/portitor_host_key.pub, the pin portitor deploy writes" 2
+if [[ -f "$PROJECT/templates.yaml" ]]; then
+	while IFS= read -r host; do
+		expect "templates.yaml PORTITOR_HOST" "$(unquote "$host")" "$GATE"
+	done < <(sed -e 's/^[[:space:]]*#.*//' -e 's/[[:space:]]#.*//' "$PROJECT/templates.yaml" \
+		| grep -o 'PORTITOR_HOST:[ ]*[^,} ]*' | sed 's/^PORTITOR_HOST:[ ]*//')
+fi
+say "faber validate ($ORCH)"
+(cd "$PROJECT" && faber validate --config "$ORCH") || die "faber validate failed"
 
-# Resolve each portitor role -> its fingerprint + host pub path from stdin.
+# ---- 1b. the gate policy -----------------------------------------------------
+# The schema is portitor's (validate-config, step 2); here only what faber-stack
+# itself relies on: the roles it registers, and the fields it computes.
+[[ -f "$POLICY" ]] || die "gate policy not found: $POLICY" 2
+jq -e 'type == "object"' "$POLICY" >/dev/null 2>&1 || die "$POLICY is not a JSON object" 2
+computed="$(jq -r '[keys[] | select(IN("upstream_slug", "allowed_signers", "roles", "allowed_committer_emails"))] | join(", ")' "$POLICY")"
+[[ -z "$computed" ]] || die "$POLICY sets $computed; faber-stack computes those from stack.json and the role registry" 2
+CHECKS_SRC="$PROJECT/portitor/checks"
+while IFS= read -r ref; do
+	[[ -n "$ref" ]] || continue
+	[[ -f "$CHECKS_SRC/${ref##*/}" ]] || die "$POLICY references $ref but $CHECKS_SRC/${ref##*/} does not exist" 2
+done < <(jq -r '.merge_gate.checks[]?.command[]? | select(startswith("/etc/portitor/checks/"))' "$POLICY")
+# Identity-only roles sign nothing, so they never enter allowed_signers.
+mapfile -t ROLES < <(jq -r '[(.action_roles // {})[][]] + (.identity_only_roles // []) | unique[]' "$POLICY")
+[[ ${#ROLES[@]} -gt 0 ]] || die "$POLICY grants no role" 2
+
+# ---- 1c. the role keys ---------------------------------------------------------
+ROLES_JSON="$(role-keys --json)" || die "role-keys --json failed"
+jq -e '.assignments | type == "array"' <<<"$ROLES_JSON" >/dev/null 2>&1 || die "role-keys --json did not emit {\"assignments\":[...]}"
 declare -A ROLE_FP ROLE_PUB
-lookup_role() { # <assignment-role> <field>
-	echo "$ROLES_JSON" | jq -r --arg r "$1" --arg f "$2" \
-		'.assignments | map(select(.role==$r)) | .[0][$f] // ""'
-}
-for pr in "${PORTITOR_ROLES[@]}"; do
-	ar="${ROLE_MAP[$pr]}"
-	fp="$(lookup_role "$ar" fingerprint)"
-	pub="$(lookup_role "$ar" pub)"
-	[[ -n "$fp" ]]  || die "stdin has no assignment for portitor role '$pr' (looked for role '$ar'; map it with --map $pr=<name>)" 2
-	[[ "$fp" =~ $FP_RE ]] || die "role '$pr' fingerprint is not the SHA256:<43 base64> form portitor requires: $fp" 2
-	[[ -n "$pub" ]] || die "role '$pr' (assignment '$ar') has no pub path — put its pubkey in ~/.ssh so role-keys emits a 'pub' field (needed for AGENT_AUTHORIZED_KEY and allowed_signers)" 2
-	[[ -f "$pub" ]] || die "role '$pr' pub file does not exist: $pub" 2
-	ROLE_FP[$pr]="$fp"
-	ROLE_PUB[$pr]="$pub"
+for r in "${ROLES[@]}"; do
+	a="$(jq -r --arg r "$r" '.map[$r] // $r' "$MANIFEST")"
+	fp="$(jq -r --arg a "$a" '.assignments | map(select(.role == $a)) | .[0].fingerprint // ""' <<<"$ROLES_JSON")"
+	pub="$(jq -r --arg a "$a" '.assignments | map(select(.role == $a)) | .[0].pub // ""' <<<"$ROLES_JSON")"
+	[[ "$fp" =~ ^SHA256:[A-Za-z0-9+/]{43}$ ]] || die "no usable fingerprint for role '$r' in faber's registry (looked for '$a'; map it in stack.json .map)"
+	[[ -f "$pub" ]] || die "role '$r' has no public key file in ~/.ssh ('$pub')"
+	ROLE_FP[$r]="$fp"; ROLE_PUB[$r]="$pub"
 done
 
-# ---- resolve the GitHub PAT from the host's secret backend (never onto argv/inspect) ----
-PAT_SVC="${PAT%%/*}"
-PAT_ACCT="default"; [[ "$PAT" == */* ]] && PAT_ACCT="${PAT#*/}"
-SECRETS_LIB="$HOME/.local/libexec/docker-claude/agent-common.sh"
-[[ -f "$SECRETS_LIB" ]] || die "$SECRETS_LIB not found — run dot's setup.sh" 1
-source "$SECRETS_LIB"
-GH_TOKEN="$(keychain_require "$PAT_SVC" "$PAT_ACCT" "scoped GitHub PAT" "A Contents+PR PAT scoped to just $SLUG.")"
-[[ -n "$GH_TOKEN" ]] || die "the PAT for service='$PAT_SVC' account='$PAT_ACCT' is empty" 1
-
-# ---- AGENT_AUTHORIZED_KEY: one `type data` line per role pub ---------------
-AGENT_AUTHORIZED_KEY=""
-for pr in "${PORTITOR_ROLES[@]}"; do
-	AGENT_AUTHORIZED_KEY+="$(awk '{print $1, $2}' "${ROLE_PUB[$pr]}")"$'\n'
-done
-
-# ---- temp-file cleanup -----------------------------------------------------
-# mktmp assigns the new path into a caller-named variable AND registers it in the
-# parent's TMPS, so cleanup() actually sees it. (A `$(mktmp ...)` form would run
-# the append in a command-substitution subshell and leave the parent TMPS empty —
-# the trap would then remove nothing.) Called directly, never in `$(...)`.
-TMPS=()
-cleanup() { local t; for t in ${TMPS[@]+"${TMPS[@]}"}; do rm -rf "$t"; done; }
-trap cleanup EXIT INT TERM
-mktmp() { # <dest-varname> <path-prefix>   -> sets $<dest-varname>, appends to TMPS
-	local -n _dest="$1"
-	_dest="$(mktemp "$2.XXXXXX")" || die "failed to create a temp file under $2" 1
-	TMPS+=("$_dest")
-}
-
-# ---- (3) seed repos.d/<repo>.json host-side, atomic, only if absent --------
-# allowed_signers field is seeded to the HOST path so host-side add-role can
-# write+os.Stat-validate the real file; it is swapped to the in-container path
-# just before compose up (§4.3). Never clobber a roles map a prior run filled.
-mkdir -p "$REPOS_D"
-CFG="$REPOS_D/$REPO.json"
-if [[ ! -f "$CFG" ]]; then
-	mktmp tmp "$REPOS_D/.$REPO.json"
-	jq -n --argjson fv 1 --arg db main --arg as "$SIGNERS_HOST" --arg ur upstream --arg us "$SLUG" \
-	      --argjson up true --argjson roles '{}' \
-		'{format_version:$fv, default_branch:$db, allowed_signers:$as, upstream_remote:$ur,
-		  upstream_slug:$us, require_up_to_date_with_default:$up, roles:$roles}' >"$tmp" \
-		|| die "failed to render seed config for $REPO" 1
-	mv "$tmp" "$CFG"
-else
-	# Re-run: reconcile the flag-derived upstream fields to the CURRENT flags (a
-	# changed --slug otherwise leaves a stale upstream_slug while the in-container
-	# add-repo mirrors from the new slug — silent divergence). Preserve the roles
-	# map and everything else a prior run filled.
-	mktmp rtmp "$REPOS_D/.$REPO.json"
-	jq --arg db main --arg us "$SLUG" '.default_branch=$db | .upstream_slug=$us' "$CFG" >"$rtmp" \
-		|| die "failed to reconcile upstream fields for $REPO" 1
-	mv "$rtmp" "$CFG"
+# ---- 1d. the gate image's extra tools -------------------------------------------
+# Beside the policy, because the policy's commands are what need them.
+GATE_IMAGE="$(dirname -- "$POLICY")/gate-image.json"
+GATE_OVERLAY="" GATE_PACKAGES="[]"
+if [[ -f "$GATE_IMAGE" ]]; then
+	problems="$(jq -r '
+		def strs: type == "array" and all(.[]; type == "string");
+		if type != "object" then "not a JSON object"
+		else (keys - ["overlay", "packages"] | .[] | "unknown key \(.)"),
+		     (if has("overlay") and (.overlay | type) != "string" then "overlay must be a string" else empty end),
+		     (if has("packages") and (.packages | strs | not) then "packages must be an array of strings" else empty end)
+		end' "$GATE_IMAGE" 2>&1)" || problems="not valid JSON"
+	[[ -z "$problems" ]] || die "$GATE_IMAGE: ${problems//$'\n'/; }" 2
+	GATE_OVERLAY="$(jq -r '.overlay // empty' "$GATE_IMAGE")"
+	if [[ -n "$GATE_OVERLAY" ]]; then
+		[[ "$GATE_OVERLAY" == /* ]] || GATE_OVERLAY="$(dirname -- "$GATE_IMAGE")/$GATE_OVERLAY"
+		[[ -f "$GATE_OVERLAY" ]] || die "$GATE_IMAGE: overlay $GATE_OVERLAY does not exist" 2
+		GATE_OVERLAY="$(cd -- "$(dirname -- "$GATE_OVERLAY")" && pwd)/$(basename -- "$GATE_OVERLAY")"
+	fi
+	GATE_PACKAGES="$(jq -c '.packages // []' "$GATE_IMAGE")"
 fi
 
-# Overlay the STATIC gate policy from $POLICY onto the computed config, and DROP the
-# retired role_rules / reviews_log keys so an older repos.d config converges here
-# instead of failing the gate's format_version guard or its "config carries the
-# retired role_rules key" refusal. Preserves the computed fields already in $CFG
-# (roles map, allowed_signers, upstream_*, default_branch). allowed_committer_emails
-# converges with the --commit-email flags: present when any were given, DELETED when
-# none (not an empty list) — a gate release predating the key strict-decode-rejects
-# any config carrying it, so an absent field keeps a flagless run compatible.
-EMAILS_JSON="$(jq -cn '$ARGS.positional' --args ${COMMIT_EMAILS[@]+"${COMMIT_EMAILS[@]}"})" \
-	|| die "failed to render the committer-email list" 1
-mktmp ptmp "$REPOS_D/.$REPO.json"
-jq --slurpfile pol "$POLICY" --argjson emails "$EMAILS_JSON" \
-	'($pol[0]) as $p
-	 | del(.role_rules) | del(.reviews_log)
-	 | .format_version      = $p.format_version
-	 | .action_roles        = $p.action_roles
-	 | .content_rules       = $p.content_rules
-	 | .merge_gate          = $p.merge_gate
-	 | .identity_only_roles = $p.identity_only_roles
-	 | if ($p | has("checks")) then .checks = $p.checks else del(.checks) end
-	 | if ($emails | length) > 0 then .allowed_committer_emails=$emails
-	   else del(.allowed_committer_emails) end' "$CFG" >"$ptmp" \
-	|| die "failed to overlay the gate policy for $REPO" 1
-mv "$ptmp" "$CFG"
-
-# Install the project's merge_gate predicate scripts into the config dir,
-# re-copied every run so an edited script converges exactly like the
-# policy overlay above. Absent directory is fine: a policy with no script-backed
-# predicate needs none, and the reference check at startup already caught the
-# mismatched case.
-if [[ -d "$PROJECT/portitor/checks" ]]; then
-	mkdir -p "$CHECKS_HOST"
-	# `/.` copies the directory's CONTENTS and tolerates an empty one; a `*` glob
-	# would pass a literal asterisk to cp and fail the run.
-	cp -R "$PROJECT/portitor/checks/." "$CHECKS_HOST"/ \
-		|| die "failed to install merge_gate check scripts into $CHECKS_HOST" 1
-fi
-
-touch "$SIGNERS_HOST"
-
-# ---- swap allowed_signers field to the HOST path around the add-role loop ---
-swap_signers_field() { # <target-path>
-	local tmp; mktmp tmp "$REPOS_D/.$REPO.json"
-	jq --arg as "$1" '.allowed_signers=$as' "$CFG" >"$tmp" || die "failed to swap allowed_signers field" 1
-	mv "$tmp" "$CFG"
-}
-swap_signers_field "$SIGNERS_HOST"
-
-# ---- (4) build roles HOST-side via the real portitor binary ----------------
-# add-role resolves its repos dir from PORTITOR_REPOS_DIR (no --config-dir flag),
-# writes to the WRITABLE host config, and post-validates allowed_signers (os.Stat
-# of the host path, which is why the field points host-side here). Idempotent.
-export PORTITOR_REPOS_DIR="$REPOS_D"
-# add-role UPSERTS but never removes, so a rotated/removed key would linger in the
-# roles map + allowed_signers on re-run (a widening authorization gap). Reset both
-# to empty first so the loop below rebuilds EXACTLY the current fingerprints —
-# the stack converges to the roles on stdin rather than accumulating stale ones.
-mktmp rtmp "$REPOS_D/.$REPO.json"
-jq '.roles={}' "$CFG" >"$rtmp" || die "failed to reset roles map for $REPO" 1
-mv "$rtmp" "$CFG"
-: >"$SIGNERS_HOST"
-for pr in "${PORTITOR_ROLES[@]}"; do
-	args=(add-role --repo "$REPO" --role "$pr" --fingerprint "${ROLE_FP[$pr]}")
-	[[ "${IS_SIGNER[$pr]}" == 1 ]] && args+=(--pub "${ROLE_PUB[$pr]}")
-	"$PORTITOR_BIN" "${args[@]}" >&2 || die "portitor add-role failed for role '$pr'" 1
+# ---- 2. the gate's config, staged and validated before it replaces the old one --
+# Built fresh on every up from policy.json + stack.json + the registry, so a key
+# removed from either never lingers.
+mkdir -p "$CONFIG_DIR"
+STAGE="$(mktemp -d "$CONFIG_DIR/.gate.new.XXXXXX")"
+trap 'rm -rf "$STAGE"' EXIT
+mkdir -p "$STAGE/repos.d"
+CFG="$STAGE/repos.d/$REPO.json"
+jq --arg us "$SLUG" --arg as "$STAGE/allowed_signers" \
+	--argjson emails "$(jq -c '.commit_emails // []' "$MANIFEST")" \
+	'. + {upstream_slug: $us, allowed_signers: $as, roles: {}}
+	 + (if ($emails | length) > 0 then {allowed_committer_emails: $emails} else {} end)' "$POLICY" >"$CFG" \
+	|| die "failed to write $CFG"
+[[ -d "$CHECKS_SRC" ]] && cp -R "$CHECKS_SRC" "$STAGE/checks"
+: >"$STAGE/allowed_signers"
+for r in "${ROLES[@]}"; do
+	args=(add-role --repo "$REPO" --role "$r" --fingerprint "${ROLE_FP[$r]}")
+	jq -e --arg r "$r" '(.identity_only_roles // []) | index($r)' "$POLICY" >/dev/null || args+=(--pub "${ROLE_PUB[$r]}")
+	PORTITOR_REPOS_DIR="$STAGE/repos.d" "$PORTITOR_BIN" "${args[@]}" >&2 || die "portitor add-role failed for role '$r'"
 done
+"$PORTITOR_BIN" validate-config --config "$CFG" >&2 || die "the gate config built from $POLICY is invalid"
+t="$(mktemp "$STAGE/repos.d/.$REPO.json.XXXXXX")"
+jq --arg as "$CONTAINER_SIGNERS" '.allowed_signers = $as' "$CFG" >"$t" && mv "$t" "$CFG" || die "failed to update $CFG"
+chmod 0755 "$STAGE"
+OLD="$CONFIG_DIR/.gate.old.$$"
+if [[ -e "$GATE_CFG" ]]; then mv "$GATE_CFG" "$OLD"; fi
+mv "$STAGE" "$GATE_CFG"
+rm -rf "$OLD"
 
-# ---- swap allowed_signers field to the IN-CONTAINER path (at rest) ----------
-swap_signers_field "$CONTAINER_SIGNERS"
+# ---- 3. the box images (faber skips what is already built) -------------------
+say "faber build ($ORCH)"
+(cd "$PROJECT" && faber build --config "$ORCH") || die "faber build failed"
 
-# ---- (5) write the per-instance egress filter (atomic) ---------------------
-# Each --allow host becomes one anchored ^host$ line with '.' escaped; hosts are
-# validated first so a value can never widen into a wildcard / open proxy.
-# api.anthropic.com is the agent's lifeline — EVERY box runs the agent, so it is
-# ALWAYS in the allow-list; --allow only ADDS extras (module proxy, etc.). The old
-# empty-default form dropped anthropic the moment any --allow was passed, silently
-# blocking the agent's API — a box with a --allow set could never reach Anthropic.
-ALLOW=(api.anthropic.com ${ALLOW[@]+"${ALLOW[@]}"})
-mktmp etmp "$CONFIG_DIR/.egress-filter"
+# ---- 4. egress: network + allow-listing proxy ----------------------------------
+[[ ${#ALLOW[@]} -gt 0 ]] || say "warning: stack.json lists no 'allow' hosts — boxes reach nothing outside, not even the model API"
 {
-	echo "# Per-instance egress allow-list for '$INSTANCE' (extended regex, FilterDefaultDeny=Yes)."
-	echo "# Generated by faber-stack from --allow; each line is an anchored ^host\$. Do not edit."
-	for h in "${ALLOW[@]}"; do
-		[[ "$h" =~ $HOST_RE ]] || die "invalid --allow host '$h' (allowed: A-Za-z0-9._-; no regex metacharacters)" 2
+	echo "# egress allow-list for $INSTANCE, from stack.json .allow (extended regex, FilterDefaultDeny)"
+	for h in ${ALLOW[@]+"${ALLOW[@]}"}; do
 		printf '^%s$\n' "${h//./\\.}"
 	done
-} >"$etmp"
-mv "$etmp" "$EGRESS_FILTER"
+} >"$EGRESS_FILTER"
 
-# ---- (6) export the interpolation env for compose --------------------------
-export INSTANCE GH_TOKEN AGENT_AUTHORIZED_KEY PORTITOR_CONFIG_IMAGE EGRESS_IMAGE
-
-# ---- (7) build / refresh the gate + egress images (Nix dockerTools) ---------
-# Both images are built by Nix from their .nix expressions (dockerTools), NOT
-# `docker build` of Alpine Dockerfiles. Each expression pins its tools via the
-# shared versions.json it reads, so "staleness" is just a changed input:
-# nix-build is content-addressed and near-free when nothing changed. We load the
-# result and retag it for docker. Build when the image is missing or under
-# --build; a running container applies a new image only on the next recreate
-# (restart, or up after down). Everything is glibc now — no musl/gcompat, and the
-# gate reuses the boxes' own `br` derivation.
-#
-# Resolve the *_CTX to their REAL paths: they are stow symlinks into the dot repo,
-# and nix resolves the expressions' relative imports (../versions.json,
-# ./gate-entrypoint.sh, ./tinyproxy.conf) against the LITERAL path — through the
-# symlink they would land in ~/.local/share (no versions.json there) and fail.
-# readlink -f is a no-op on a non-symlinked dir, so this is safe either way.
-command -v nix-build >/dev/null 2>&1 || die "nix-build not found on PATH — the gate + egress images are built with Nix" 1
-GATE_NIX="$(readlink -f "$GATE_CTX")/gate-image.nix"
-EGRESS_NIX="$(readlink -f "$EGRESS_CTX")/egress-image.nix"
-[[ -f "$GATE_NIX" ]]   || die "gate image expression not found at $GATE_NIX" 1
-[[ -f "$EGRESS_NIX" ]] || die "egress image expression not found at $EGRESS_NIX" 1
-
-# Build for the daemon's architecture, not the host's: on macOS the daemon is the Linux VM.
-case "$(docker info --format '{{.Architecture}}' 2>/dev/null)" in
+case "$(docker info --format '{{.Architecture}}')" in
 	x86_64 | amd64) NIX_SYSTEM=x86_64-linux ;;
 	aarch64 | arm64) NIX_SYSTEM=aarch64-linux ;;
-	*) die "unsupported Docker daemon architecture '$(docker info --format '{{.Architecture}}' 2>/dev/null)' (gate/egress images build for x86_64 and aarch64)" 1 ;;
+	*) die "unsupported Docker daemon architecture" ;;
 esac
-
-# nix-build <expr> -> docker load -> retag to <target>. The expression names its
-# own image:tag; we parse that from `docker load` and retag it deterministically.
-nix_build_load_tag() {
-	local nix="$1" target="$2" tmp loaded
-	tmp="$(mktemp -d)"
-	nix-build "$nix" --argstr system "$NIX_SYSTEM" -o "$tmp/img" >/dev/null \
-		|| { rm -rf "$tmp"; die "nix-build failed for $nix — run it directly to see the error" 1; }
-	loaded="$(docker load -i "$(readlink -f "$tmp/img")" | sed -n 's/^Loaded image: //p' | head -1)"
-	rm -rf "$tmp"
-	[[ -n "$loaded" ]] || die "could not parse the loaded image ref from 'docker load' ($nix)" 1
-	docker tag "$loaded" "$target" || die "docker tag $loaded -> $target failed" 1
-	echo "faber-stack: image $target ready (from $loaded)" >&2
-}
-
-# Gate: per-instance ($PORTITOR_IMAGE = portitor-$INSTANCE). Missing or --build.
-if ! docker image inspect "$PORTITOR_IMAGE" >/dev/null 2>&1 || $BUILD; then
-	echo "faber-stack: building gate image via Nix ($GATE_NIX, $NIX_SYSTEM)..." >&2
-	nix_build_load_tag "$GATE_NIX" "$PORTITOR_IMAGE"
+# nix resolves the expression's relative imports against its real path, not the
+# stow symlink.
+egress_out="$(nix-build "$(readlink -f "$EGRESS_DIR/egress-image.nix")" --argstr system "$NIX_SYSTEM" --no-out-link)" \
+	|| die "nix-build of the egress image failed"
+BASE_TAG="egress-proxy:$(basename "$egress_out" | cut -d- -f1)"
+if ! docker image inspect "$BASE_TAG" >/dev/null 2>&1; then
+	loaded="$(docker load -i "$egress_out" | sed -n 's/^Loaded image: //p' | head -1)"
+	[[ -n "$loaded" ]] || die "docker load of $egress_out printed no image"
+	docker tag "$loaded" "$BASE_TAG"
 fi
-
-# Egress: generic image (egress-proxy), shared across instances. Missing or --build.
-if ! docker image inspect egress-proxy >/dev/null 2>&1 || $BUILD; then
-	echo "faber-stack: building egress image via Nix ($EGRESS_NIX, $NIX_SYSTEM)..." >&2
-	nix_build_load_tag "$EGRESS_NIX" egress-proxy
+filter_hash="$( { echo "$BASE_TAG"; cat "$EGRESS_FILTER"; } | sha256sum | cut -c1-16)"
+EGRESS_IMAGE="egress-proxy-$INSTANCE:$filter_hash"
+if ! docker image inspect "$EGRESS_IMAGE" >/dev/null 2>&1; then
+	ctx="$(mktemp -d)"; cp "$EGRESS_FILTER" "$ctx/filter"; chmod 0644 "$ctx/filter"
+	printf 'FROM %s\nCOPY --chown=0:0 filter /etc/tinyproxy/filter\n' "$BASE_TAG" | docker build -q -t "$EGRESS_IMAGE" -f - "$ctx" >/dev/null \
+		|| { rm -rf "$ctx"; die "docker build of $EGRESS_IMAGE failed"; }
+	rm -rf "$ctx"
 fi
+docker run --rm --network none --entrypoint cat "$EGRESS_IMAGE" /etc/tinyproxy/filter | cmp -s - "$EGRESS_FILTER" \
+	|| die "$EGRESS_IMAGE does not carry $EGRESS_FILTER"
+export EGRESS_IMAGE
+compose up -d --remove-orphans || die "docker compose up of the egress failed"
+[[ "$(docker inspect -f '{{.State.Running}}' "$EGRESS_CT" 2>/dev/null)" == true ]] || die "$EGRESS_CT is not running after compose up"
 
-# ---- (7b) bake this instance's config into derived images ---------------------
-# Nothing on the host is mounted: the containers read config from their image, so it
-# never depends on host file ownership (userns-remap) and a change shows up as a new
-# image, which compose recreates the container for.
-bake_config_image() { # <base-image> <target-image> <context-dir> <COPY line>
-	chmod -R u=rwX,go=rX "$3"
-	printf 'FROM %s\n%s\n' "$1" "$4" | docker build -q -t "$2" -f - "$3" >/dev/null \
-		|| die "docker build of $2 (config layer on $1) failed" 1
-}
-verify_baked() { # <image> <path-in-image> <host-file>
-	docker run --rm --network none --entrypoint cat "$1" "$2" | cmp -s - "$3" \
-		|| die "$1 does not carry $3 at $2 — the baked config does not match the host build" 1
-}
-BAKE_DIR="$(mktemp -d)"; TMPS+=("$BAKE_DIR")
-mkdir -p "$BAKE_DIR/gate/etc/portitor/repos.d" "$BAKE_DIR/egress"
-# Only the config itself: add-role's .lock files and the dot-prefixed temps stay behind.
-cp "$REPOS_D"/*.json "$BAKE_DIR/gate/etc/portitor/repos.d/" || die "no repos.d config to bake under $REPOS_D" 1
-cp "$SIGNERS_HOST" "$BAKE_DIR/gate/etc/portitor/allowed_signers"
-[[ -d "$CHECKS_HOST" ]] && cp -R "$CHECKS_HOST" "$BAKE_DIR/gate/etc/portitor/checks"
-cp "$EGRESS_FILTER" "$BAKE_DIR/egress/filter"
-bake_config_image "$PORTITOR_IMAGE" "$PORTITOR_CONFIG_IMAGE" "$BAKE_DIR/gate" 'COPY --chown=0:0 etc/portitor/ /etc/portitor/'
-bake_config_image egress-proxy "$EGRESS_IMAGE" "$BAKE_DIR/egress" 'COPY --chown=0:0 filter /etc/tinyproxy/filter'
-verify_baked "$PORTITOR_CONFIG_IMAGE" "/etc/portitor/repos.d/$REPO.json" "$CFG"
-verify_baked "$PORTITOR_CONFIG_IMAGE" /etc/portitor/allowed_signers "$SIGNERS_HOST"
-verify_baked "$EGRESS_IMAGE" /etc/tinyproxy/filter "$EGRESS_FILTER"
-echo "faber-stack: config baked into $PORTITOR_CONFIG_IMAGE and $EGRESS_IMAGE" >&2
-
-# ---- (8) bring the stack up -------------------------------------------------
-# restart tears the containers down first (mirror volume persists).
-[[ "$VERB" == restart ]] && compose down >/dev/null 2>&1 || true
-# A changed config is a changed image, so compose recreates exactly the affected container.
-compose up -d || die "docker compose up failed" 1
-
-# ---- (9) wait for the gate to be READY, pinning its host key as the probe --
-# `compose up -d` returns when the container is STARTED, not when its sshd is
-# accepting — the gate entrypoint runs `ssh-keygen -A`, `gh auth login`, config
-# validation, and `exec sshd` LAST. A one-shot ssh-keyscan fired in that window
-# gets nothing and leaves a STALE (or absent) pin; the box then fails host-key
-# verification (StrictHostKeyChecking=yes) on the fresh gate's new key, or the
-# security bind can't read the pin at all. So retry the keyscan until the gate
-# answers: the first success is a total readiness barrier (sshd up ⟹ the
-# entrypoint finished ⟹ gh auth is persisted), and we pin the CURRENT key. Do it
-# BEFORE add-repo so a good pin also gates the mirror fetch, which needs the
-# gate's gh auth. ssh-keyscan runs on the internal net via the egress image
-# (present locally, ships openssh-client) so it never triggers a network pull.
+# ---- 5. the gate ---------------------------------------------------------------
+pubs="$(for r in "${ROLES[@]}"; do printf '%s\n' "${ROLE_PUB[$r]}"; done | jq -R . | jq -sc .)"
+jq -n --arg name "$GATE" --arg vol "$REPOS_VOL" --arg hk "$HOSTKEY_VOL" --arg net "$NET" \
+	--arg cfg "$GATE_CFG" --argjson keys "$pubs" --arg svc "$PAT_SERVICE" --arg acct "$PAT_ACCOUNT" \
+	--arg pin "$PIN" --arg overlay "$GATE_OVERLAY" --argjson packages "$GATE_PACKAGES" \
+	'{name: $name, volume: $vol, host_key_volume: $hk,
+	  networks: [{name: $net, aliases: [$name]}],
+	  config_dir: $cfg, authorized_keys: $keys,
+	  token_command: ["secret-get", $svc, $acct],
+	  host_key_file: $pin,
+	  image: ({packages: $packages} + (if $overlay == "" then {} else {overlay: $overlay} end))}' >"$DEPLOY_CFG"
 mkdir -p "$PROJECT/keys"
-PIN="$PROJECT/keys/portitor_host_key.pub"
-mktmp ptmp "$PROJECT/keys/.portitor_host_key.pub"
-pinned=""
-for _ in $(seq 1 30); do
-	# ssh-keyscan emits the server banner as a `# host:port SSH-2.0-...` comment on
-	# STDOUT (legal known_hosts syntax, so 2>/dev/null does not catch it), but the
-	# security bind wants a file holding exactly ONE host-key line. Keep the first
-	# non-comment, non-blank line. This also hardens the guard below: a scan that
-	# returned only the banner now yields an EMPTY file and correctly retries,
-	# where a bare `-s` test would have pinned the comment as if it were a key.
-	if docker run --rm --network "$NET" egress-proxy \
-			ssh-keyscan -t ed25519 "$GATE_CT" 2>/dev/null \
-			| awk '$1 !~ /^#/ && NF { print; exit }' >"$ptmp" && [[ -s "$ptmp" ]]; then
-		mv "$ptmp" "$PIN"; pinned=1; break
-	fi
-	sleep 1
-done
-if [[ -n "$pinned" ]]; then
-	echo "faber-stack: pinned $GATE_CT host key -> $PIN" >&2
-else
-	echo "faber-stack: WARNING — gate $GATE_CT did not answer in 30s; host key unpinned (stack is up; re-pin any time):" >&2
-	echo "  docker run --rm --network $NET egress-proxy ssh-keyscan -t ed25519 $GATE_CT 2>/dev/null | awk '\$1 !~ /^#/ && NF { print; exit }' > $PIN" >&2
-fi
+"$PORTITOR_BIN" deploy --config "$DEPLOY_CFG" >&2 || die "portitor deploy failed"
 
-# ---- (10) mirror the repo IN the container (needs GitHub + rw /srv/git) -----
-# Gated by the readiness barrier above (sshd up ⟹ gh auth persisted), so the
-# upstream fetch has its credential. Idempotent: skip if the bare mirror already
-# exists. A mirror failure (e.g. bad PAT scope) does NOT tear the stack down —
-# the gate is up; report + name the retry.
-if docker exec -u git "$GATE_CT" test -d "/srv/git/$REPO.git" 2>/dev/null; then
-	echo "faber-stack: mirror /srv/git/$REPO.git already present — skipping add-repo." >&2
-else
-	if ! docker exec -u git "$GATE_CT" portitor add-repo --repo "$REPO" \
-			--upstream "https://github.com/$SLUG.git" >&2; then
-		echo "faber-stack: WARNING — the stack is UP but 'add-repo' (mirror) failed." >&2
-		echo "  Check the PAT scope (Contents+PR on $SLUG), then retry just the mirror:" >&2
-		echo "  docker exec -u git $GATE_CT portitor add-repo --repo $REPO --upstream https://github.com/$SLUG.git" >&2
-	fi
-fi
-
-# ---- (11) print the faber substrate this instance now satisfies ------------
 cat >&2 <<EOF
 
-faber-stack: instance '$INSTANCE' is up. Orchestrator substrate it satisfies:
-
-  network:
-    name: $NET
-    proxy: http://$EGRESS_CT:8888
-    no_proxy: [$GATE_CT, localhost, 127.0.0.1]
-  remote:
-    url: ssh://git@$GATE_CT/srv/git
-    host_key_file: ./keys/portitor_host_key.pub   # pinned at $PIN
-
-  config:     $CONFIG_DIR   (baked into $PORTITOR_CONFIG_IMAGE at /etc/portitor)
-  mirror:     /srv/git/$REPO.git   (volume $REPOS_VOL)
-  egress:     $(grep -v '^#' "$EGRESS_FILTER" | tr '\n' ' ')
+faber-stack: instance '$INSTANCE' is up.
+  network   $NET (egress $EGRESS_CT:$EGRESS_PORT, image $EGRESS_IMAGE)
+  gate      $GATE (config $GATE_CFG, mirror volume $REPOS_VOL, host key pinned at $PIN)
+  egress    $(grep -v '^#' "$EGRESS_FILTER" | tr '\n' ' ')
+Run a workflow from $PROJECT with: faber run <workflow> --param ...
 EOF
-exit 0

@@ -1,79 +1,57 @@
 # faber gate-stack setup — host runbook
 
-End-to-end setup to run a repo's development through the spex/faber → portitor
-gate. This runbook is **generic**: it is parameterized on `<instance>` / `<slug>`
-/ `<pat>` / `<project>`, and uses **spexmachina** as the concrete worked example
-throughout. Each step is an explanation block followed by a separate command
-block (**fish** syntax). Run on your host (faber-on-host). `< … >` marks a value
-you supply.
+End-to-end setup to run a repo's development through the faber → portitor gate, with
+**spexmachina** as the worked example. Each step is an explanation followed by a command
+block (**fish** syntax). `< … >` marks a value you supply.
 
-The whole gate stack is one command — `faber-stack up` — which folds the
-otherwise-manual bring-up (create the internal network, run the gate + egress,
-`docker exec … add-repo`/`add-role`, `ssh-keyscan` the host key) into a single
-idempotent step.
+The whole stack is one command, `faber-stack up <project>`. It reads every instance fact
+from `<project>/stack.json` and `<project>/portitor/policy.json`, and leaves the gate to
+`portitor deploy`.
 
 ## Per-instance isolation
 
-Each repo runs on its **own** gate instance: its own internal network, egress
-proxy, gate container, mirror volume, and **scoped PAT**. A compromised box for
-repo A therefore cannot reach repo B's mirror or PAT. Never share a PAT across
-repos. One knob — `--instance <name>` — derives every object name, so the box's
-`orchestrator.yaml` and the gate stack agree by construction:
+Each repo runs on its **own** instance: its own internal network, egress proxy, gate,
+volumes and **scoped PAT**, so a compromised box for repo A cannot reach repo B's mirror
+or PAT. `stack.json`'s `instance` derives every object name:
 
 ```text
---instance spex  ⇒  network spex-net · egress spex-egress · gate portitor-spex · volume spex-repos · project spex
+instance spex  ⇒  network spex-net · egress spex-egress · gate portitor-spex
+                  · volumes spex-repos, spex-hostkey · pin keys/portitor_host_key.pub
 ```
 
-## Parameters (fill once; the blocks below reference them)
-
-The spexmachina values are shown as the example. `faber`/`faber-box`/`portitor`
-are installed as **verified release binaries** (§1) and the gate image is built
-by faber-stack from dot's own context — so **no source checkout is needed at
-all**. `DOT` is your dot checkout; `PROJECT` is the installed project dir
-(`~/.config/faber/<name>`, stowed from dot — its `keys/` receives the host-key
-pin); `PAT` is the keychain service holding this repo's scoped GitHub PAT.
-
-```fish
-set -x INSTANCE spex
-set -x SLUG     dmitriyb/spexmachina
-set -x PAT      portitor-spex
-set -x PROJECT  ~/.config/faber/spexmachina
-set -x DOT      ~/dot
-```
+`orchestrator.yaml` and `templates.yaml` restate those names; `faber-stack up` refuses
+when they disagree.
 
 ---
 
-## 0. Prerequisites (verify, don't redo)
+## 0. Prerequisites
 
-docker + nix are on the host; faber's own Anthropic setup-token (`anthropic/faber`,
-separate from dcp's `anthropic/personal`) is in the host's secret backend — the one
-`~/.config/dot/host.conf` declares (`security` on macOS, `secret-tool` on Arch,
-`systemd-creds` via `cred-store` on headless hosts);
-`faber`/`faber-box`/`portitor` are installed from their verified releases
-(§1). The faber assets install from dot via **stow**: `faber-stack`/`role-keys`
-→ `~/.local/bin`, the gate compose + egress build-context → `~/.local/share/{portitor,egress}`,
-and this project → `~/.config/faber/spexmachina`. Re-stow after `git -C $DOT pull`.
+- docker and nix on the host.
+- faber's own Anthropic setup-token (`anthropic/faber`, separate from dcp's
+  `anthropic/personal`) in the host's secret backend — the one `~/.config/dot/host.conf`
+  declares (`security` on macOS, `secret-tool` on Arch, `systemd-creds` via `cred-store` on
+  headless hosts).
+- dot stowed: `faber-stack`, `role-keys`, `secret-get` → `~/.local/bin`; the egress build
+  context → `~/.local/share/egress`; this project → `~/.config/faber/spexmachina`.
 
 ```fish
 ~/.config/faber/base/hooks/get-token claude_code_oauth_token >/dev/null; and echo "anthropic token OK"
 docker info >/dev/null; and nix --version
-command -v faber-stack; and command -v role-keys; and command -v faber; and command -v portitor
+for t in faber-stack role-keys secret-get faber faber-box portitor portitor-gate
+    command -q $t; or echo "missing: $t"
+end
 ```
 
 ---
 
 ## 1. Install the release binaries (verified)
 
-Install `faber`, `faber-box`, and `portitor` from their **latest signed
-releases** — signed archives, each verified with `ssh-keygen -Y verify` against
-the shared release-signing key before anything runs. Do **not** build them from
-source. Each tool's own `install.sh` resolves the latest release and performs the
-archive verification; you first verify `install.sh` *itself* with the same key
-(its `install.sh.sig`), exactly as each tool's README documents. faber's installer
-places **both** `faber` and `faber-box` side by side in `INSTALL_DIR` (default
-`/usr/local/bin`) so faber's "`faber-box` next to me" resolution works; portitor's
-installs `portitor`. This is the same install each README documents — run it by
-hand if you prefer; the block below is the verified one-shot.
+Install `faber`, `faber-box`, `portitor` and `portitor-gate` from their latest signed
+releases; never build them from source. First verify each tool's `install.sh` against the
+shared release-signing key; `install.sh` then verifies the archives it installs.
+faber's installer places `faber` and `faber-box` side by side; portitor's places the
+`portitor` / `portitor-gate` pair (`portitor-gate` is the linux build `portitor deploy`
+bakes into the gate image).
 
 ```fish
 # The shared release-signing key (identical across portitor / faber / spex).
@@ -87,105 +65,50 @@ for tool in portitor faber
     and sh install.sh   # VERSION unset ⇒ install.sh resolves + verifies the latest release
     rm -f install.sh install.sh.sig
 end
-git -C "$DOT" pull   # re-stow if it advanced (see §0)
 ```
 
-`faber-stack` runs the **installed** `portitor` binary host-side for `add-role`
-(it picks the first real `portitor` on `PATH`); no `--portitor-bin` is needed
-once the release is installed. The gate container image is built by faber-stack
-from dot's own context (`~/.local/share/portitor/Dockerfile`), which fetches +
-verifies the latest release binary and bakes in `br` (the beads-close check runs
-it inside the gate) — so no portitor checkout is needed at all.
+**Version floor:** faber ≥ 0.8.0 (no host path reaches a box, so Docker userns-remap hosts
+work) and portitor ≥ 0.4.0 (`portitor deploy`).
 
-**Updating later:** `faber upgrade` moves `faber` + `faber-box` forward as a unit
-(they share a contract version); re-run portitor's `install.sh` (above) to move
-`portitor`. The gate image is cached per instance, so to rebuild it against a newer
-portitor, drop it together with its config layer — `docker rmi portitor-<instance>-config
-portitor-<instance>` (e.g. `portitor-spex`), with the gate stopped — and faber-stack
-rebuilds both on the next `up`.
-
-**Version floor for this config:** the review/fix postludes need a faber
-release with the postlude phase (> 0.1.5; older faber silently ignores the
-`postlude:` keys — the hooks simply don't run), and the gate policy in
-`$PROJECT/portitor/policy.json` (transparent-approve: `merge_gate.review:none`
-+ a `bead-closed` check, no `reviews_log`) needs a portitor release with
-merge-gate v2 transparent-approve (>= 0.1.5; an OLDER gate binary strict-refuses
-`review:none`/`checks` — or the retired `review:internal`/`reviews_log` — at
-boot, so run `docker rmi portitor-<instance>-config portitor-<instance>` and the next
-`up` in one step —
-the policy and the new image land together).
-
-**faber ≥ 0.8.0 for hosts with Docker userns-remap and for macOS without host knobs:**
-from 0.8.0 no host path reaches a box (faber-box, hooks and skills are image content;
-results and the agent travel over streams). After every `faber upgrade` and every hook or
-skill edit run `faber build` (`faber-stack up --build` and `faber-epic` include it);
-`faber resume` refuses a run whose hooks changed since it started (`--fresh` starts over).
+**Updating later:** `faber upgrade` moves `faber` + `faber-box` as a unit, `portitor
+upgrade` moves the `portitor` pair. The next `faber-stack up` rebuilds what changed: box
+and gate images are tagged by content hash, so a new binary or a policy edit is a new
+image. The gate itself is replaced on every `up`, changed or not, so `up` refuses while
+boxes are on the instance network. `faber resume` refuses a run whose
+images changed since it started (`--fresh` starts over). `faber-stack prune` removes the
+instance's images no container uses.
 
 ### macOS host notes (skip on Linux)
 
-Docker Desktop needs no `~/.config/faber/host.json` knob any more. faber 0.8.0 **refuses**
-a `host.json` that still carries `agent_socket_group`: delete that line. `box_bin` and the
-`~/.local/libexec/faber-box` copy it pointed at are no longer needed either — `faber build`
-bakes the Linux `faber-box` installed next to `faber`.
+faber 0.8.0 **refuses** a `~/.config/faber/host.json` that still carries
+`agent_socket_group`: delete that line. `box_bin` and the `~/.local/libexec/faber-box`
+copy it pointed at are no longer needed.
 
 ---
 
-## 2. Build the box image
+## 2. Create the role keys
 
-`faber validate` runs the package-resolution proof first (the toolset-image risk
-point); `faber build` then produces the box image. Sanity-check the toolset
-resolves inside the built image (replace the tag with the one `faber build`
-printed).
+Three distinct keypairs — implementer, reviewer, merger — so portitor can tell them apart
+by fingerprint. YubiKey resident + no-touch, so autonomous boxes sign without a prompt.
+Register each pubkey on GitHub as a *Signing Key*. Skip any role whose key you already have.
 
-```fish
-cd "$PROJECT"
-faber validate --config orchestrator.yaml
-faber build    --config orchestrator.yaml
-docker run --rm faber/implement:<toolset-hash> sh -lc 'spex --help >/dev/null && br --version && claude --version'
-```
-
-Day-to-day you can skip this step: `faber-stack up --build` (§6) runs
-validate + build for you before bringing the gate up.
-
----
-
-## 3. Create the role keys
-
-Three distinct keypairs — implementer, reviewer, merger — so portitor can tell
-them apart by fingerprint. YubiKey resident + no-touch, so autonomous boxes sign
-without a prompt. Register each pubkey on GitHub as a *Signing Key* separately.
-Skip any role whose key you already have.
-
-A registered key alone is not enough for the green **Verified** badge: GitHub
-also requires the commit's *committer email* to be a verified email on the
-account that owns the key. That email is **role-registry state** — registered
-with the key binding via `faber add-key --git-email` (step 4); faber reads no
-configuration from the process environment, and a template's `env:` block
-cannot carry it either (the `FABER_` namespace is engine-owned). Without it
-every commit shows **Unverified** (`reason: no_user`) despite a valid
-signature; gated steps refuse to start instead of committing as an
-unverifiable synthetic address. The gate's own signature check is key-based
-and unaffected either way.
+GitHub shows **Verified** only when the commit's committer email is a verified email on the
+key owner's account; that email is registered with the role in step 3. Without it every
+commit shows **Unverified** (`reason: no_user`), and gated steps refuse to start.
 
 ```fish
 for role in implementer reviewer merger
     ssh-keygen -t ed25519-sk -O resident -O no-touch-required \
-        -O application=ssh:$INSTANCE-$role -N "" -C "$INSTANCE-$role" \
-        -f ~/.ssh/{$INSTANCE}_$role
+        -O application=ssh:spex-$role -N "" -C "spex-$role" \
+        -f ~/.ssh/spex_$role
 end
 ```
 
-If the resident credentials already exist on the YubiKey but this host has no
-handle files, recover them with `restore-role-keys` (stowed from dot to
-`~/.local/bin`; PIN + one touch). Do **not** use raw `ssh-keygen -K`: it stamps
-every downloaded handle "user presence required" regardless of the no-touch
-policy the credentials were created with (a stock-OpenSSH limitation), and the
-boxes' autonomous signing then dies with "agent refused operation".
-`restore-role-keys` downloads and restores the client-side no-touch flag in one
-step, installs handle + `.pub` into `~/.ssh`, and verifies with a touch-free
-test signature. The **`.pub` file must land in `~/.ssh`** so `role-keys` emits
-a `pub` path — `faber-stack` requires one for every role (it feeds both
-`AGENT_AUTHORIZED_KEY` and, for signers, `allowed_signers`).
+If the resident credentials exist on the YubiKey but this host has no handle files, recover
+them with `restore-role-keys` (PIN + one touch). Do **not** use raw `ssh-keygen -K`: it
+stamps every handle "user presence required", and the boxes' autonomous signing then dies
+with "agent refused operation". The `.pub` files must land in `~/.ssh`: `faber-stack`
+needs one per role.
 
 ```fish
 restore-role-keys
@@ -193,168 +116,120 @@ restore-role-keys
 
 ---
 
-## 4. Register the roles with faber
+## 3. Register the roles with faber
 
-`role-keys` enumerates your keys, you name each, and it applies `faber add-key`
-locally (the global role→fingerprint registry faber resolves identities against).
-`--git-email` registers the committer email with every role — required before
-any gated step runs (see step 3). Confirm `orchestrator.yaml`'s three
-identities are empty registry entries (`{}`) so faber looks each up by name.
+`role-keys --apply` names each key and runs `faber add-key`, the global
+role → fingerprint registry faber resolves identities against; `--git-email` registers the
+committer email with every role. `orchestrator.yaml`'s identities stay empty entries
+(`implementer: {}` …) so faber looks each up by name. `faber-stack up` reads the same
+registry through `role-keys --json`.
 
 ```fish
 role-keys --apply --git-email <verified-account-email>
 ```
 
-The identities block should read:
-
-```yaml
-identities:
-  implementer: {}
-  reviewer:    {}
-  merger:      {}
-```
-
-`faber-stack` consumes the **same** role material as `role-keys --json` on stdin
-(step 6) — you do not transcribe the `portitor add-role` lines by hand any more.
-
 ---
 
-## 5. Store the scoped PAT
+## 4. Store the scoped PAT
 
-One secret-store entry per instance — a Contents+PR token scoped to just this repo.
-Never share a PAT across repos. `faber-stack` reads it by `--pat $PAT` from the host's
-declared backend and hands it to the gate **only** as a docker file-secret
-(`/run/secrets/gh_token`) — never on argv, never a container env var, so `docker inspect`
-never reveals it. The faber token from §0 is stored the same way, at `anthropic faber`.
-
-```fish
-security add-generic-password -s $PAT -a default -w '<CONTENTS+PR PAT>'   # macOS
-secret-tool store --label=$PAT service $PAT account default               # Arch
-cred-store $PAT default                                                   # headless
-```
-
-**Hosts with Docker userns-remap:** supported. The gate stack mounts no host path (config is
-baked into per-instance images), and from faber 0.8.0 neither do the boxes.
-
----
-
-## 6. Bring up the gate stack — one command
-
-The heart of the runbook. Pipe `role-keys --json` into `faber-stack up`. It
-validates the inputs, seeds the portitor config and builds the roles **host-side**,
-then bakes that config into `portitor-$INSTANCE-config` (and the allow-list into
-`egress-proxy-$INSTANCE`), so no host path is mounted. The **static gate policy**
-— `action_roles` / `merge_gate` / `content_rules` / `identity_only_roles` — comes
-from the declarative `$PROJECT/portitor/policy.json` (override with `--policy`);
-faber-stack overlays only the computed fields (roles map, signer path, slug,
-committer emails). It also writes the per-instance
-egress allow-list, brings up `portitor-$INSTANCE` + `$INSTANCE-egress` on
-`$INSTANCE-net`, mirrors the repo **in the container**, pins the gate host key
-into `$PROJECT/keys/`, and prints the orchestrator substrate it satisfies.
-Idempotent — re-run any time; it converges, never duplicating roles, mirrors, or
-filter lines.
-
-The two `--allow` entries widen the egress allow-list beyond the default
-`api.anthropic.com`: implement/fix boxes run `go build`/`go test` on a fresh
-clone, so the Go module proxy and checksum db must be reachable. The allow-list
-is CONVERGED on every `up` — flags omitted from a later run are dropped again —
-so always run the command with the full set.
-
-The `--commit-email` entry seeds the gate's `allowed_committer_emails` policy:
-portitor rejects any pushed commit whose committer email isn't listed, closing
-the gap where a box whose role has a misregistered committer email would land
-commits GitHub can never verify. Like `--allow`, it is CONVERGED on every `up` — omit
-it and the field (and check) is dropped again. It needs a portitor release
-that knows the key (an older gate binary refuses a config carrying it).
+One fine-grained PAT per instance, on this repo only: **Contents** read/write, **Pull
+requests** read/write, **Actions** read (write to let the gate rerun jobs), **Commit
+statuses** read. Never share a PAT across repos. `portitor deploy` runs `secret-get
+<pat_service> <pat_account>` and delivers the PAT as a file inside the gate container: it
+is never on an argv, in an env var, in an image or in a host file.
 
 ```fish
-role-keys --json \
-    | faber-stack up --instance $INSTANCE --slug $SLUG --pat $PAT --project $PROJECT \
-        --allow proxy.golang.org --allow sum.golang.org \
-        --commit-email dvbozhko@gmail.com \
-        --build
-```
-
-`--build` folds step 2 in: `faber validate` + `faber build` run first (against
-the absolute `$PROJECT/orchestrator.yaml`), so this one command yields images
-plus gate and the only thing left is `faber run`.
-
-On the first `up`, faber-stack builds the gate image from dot's context
-(`~/.local/share/portitor/`): it fetches + SSHSIG-verifies the latest portitor
-release binary and bakes in `br` for the beads-close check (needs network for
-that one build; cached afterwards). Host-side `add-role` uses the **installed**
-release `portitor` binary. Add `--allow <host>` (repeatable) to widen the egress
-allow-list beyond the default `api.anthropic.com`; add `--map <portitor-role>=<name>`
-if your registry names a role differently (e.g. `--map implementer=implementer_work`).
-
-Verify the printed substrate matches `orchestrator.yaml` — `network.name`,
-`network.proxy`, `remote.url`, `no_proxy`, and that
-`keys/portitor_host_key.pub` now exists.
-
-```fish
-cat "$PROJECT/keys/portitor_host_key.pub"
+security add-generic-password -s portitor-spex -a default -w '<PAT>'   # macOS
+secret-tool store --label=portitor-spex service portitor-spex account default   # Arch
+cred-store portitor-spex default                                       # headless
+secret-get portitor-spex default >/dev/null; and echo "PAT OK"
 ```
 
 ---
 
-## 7. Test the agent
+## 5. Bring up the stack — one command
 
-Everything the box needs — including the `portitor` client (`portitor pr …`) the
-steps use to talk to the gate (the box holds no GitHub credential; the client
-forwards each PR action over the same pinned SSH channel git uses) — was baked
-into the image by the step-2 build, and the gate is up from step 6.
-Run one bead through the full **Gate B** chain (implement → review loop →
-auto-merge). Pick a ready bead first.
+Copy `stack.example.json` to `stack.json` (host-local, gitignored) and fill it in:
 
-Pass the config by **absolute path**: with a relative `--config`, faber
-resolves the library paths (hooks, skills) relative to the process CWD and
-every gated box dies at docker's bind-mount guard ("host path is relative").
+| Field | Meaning |
+|---|---|
+| `instance` | derives every object name (above) |
+| `slug` | `<owner>/<repo>` on GitHub |
+| `repo` | optional: the gate's repo name, default the name part of `slug` |
+| `policy` | optional: the gate policy, default `portitor/policy.json` (relative paths resolve against the project) |
+| `config_dir` | optional: where the generated gate config, egress filter and `deploy.json` live, default `~/.config/portitor/<instance>` |
+| `pat_service`, `pat_account` | where step 4 stored the PAT (`pat_account` defaults to `default`) |
+| `allow` | the **complete** egress allow-list; boxes reach nothing else, `api.anthropic.com` included |
+| `commit_emails` | required, non-empty: the gate's `allowed_committer_emails`; a pushed commit with another committer email is refused |
+| `map` | optional `{<portitor role>: <registry name>}` when the registry names a role differently |
+
+An unknown key in `stack.json` is refused. The tools the policy's commands need inside the
+gate are not host data: they live beside the policy, in `portitor/gate-image.json`
+(`{overlay, packages}`, the overlay path relative to that file; spexmachina's adds `br`
+from `portitor/gate-overlay.nix`).
+
+`faber-stack up` then, on every run:
+
+1. checks every input before anything is built or written: `stack.json`, that no box is on
+   the instance network, that `orchestrator.yaml` and `templates.yaml` name this instance,
+   `faber validate`, the policy and its check scripts, the role registry, `gate-image.json`;
+2. builds the gate config afresh under `<config_dir>/gate` from `policy.json`, `stack.json`
+   and the role registry (roles are the ones the policy grants), and validates it with
+   `portitor validate-config` before it replaces the previous one;
+3. runs `faber build` from the project dir (existing image tags are skipped);
+4. builds the egress image with the allow-list inside and starts `<instance>-egress`;
+5. runs `portitor deploy`: builds the gate image, validates the config inside it, reads the
+   PAT (`secret-get` prints which secret, at the moment it reads it), replaces the gate,
+   verifies it, and writes the host-key pin on the first deploy.
+
+It converges: a field removed from `stack.json` or `policy.json` is gone after the next run.
 
 ```fish
-cd "$PROJECT"
-br ready
-faber run bead --config "$PROJECT/orchestrator.yaml" --param bead=<bead-id>
+cp ~/.config/faber/spexmachina/stack.example.json ~/.config/faber/spexmachina/stack.json
+$EDITOR ~/.config/faber/spexmachina/stack.json
+faber-stack up spexmachina
 ```
 
-For an epic, the same full chain runs as a pull-loop, one cycle at a time:
-each cycle's box picks the next ready epic bead from inside the clone (br in
-the image; the host needs no br), lands it, and the loop ends on the first
-cycle that finds nothing ready — or that finds a blocking drift report on
-main (settle sentinel `halt_reason: blocking_drift`; triage with /drift-workflow,
-then rerun). Sequential landing is also correctness —
-every merge advances main and the gate's stale-base rule rejects branches
-claimed off an older main. A failed cycle fail-stops the epic after the
-already-landed beads; `faber resume` continues — run `portitor-branch clear` (alias `pbr`) first to
-drop the failed cycle's stale mirror branch.
+**Migrating from the flag-driven `faber-stack`:** an old `stack.json` is refused. Rename
+`commit_email` to `commit_emails` (a list), add `api.anthropic.com` to `allow` (the list is
+now complete, nothing is added implicitly), and drop any `gate_image` (it moved to
+`portitor/gate-image.json`).
 
-```fish
-faber run epic --config "$PROJECT/orchestrator.yaml" --param epic=<epic-id>
-```
+**Migrating from the compose-built gate:** remove the old container and images once
+(`docker rm -f portitor-spex; docker rmi portitor-spex-config portitor-spex`) and the old
+pin (`rm ~/.config/faber/spexmachina/keys/portitor_host_key.pub`): the new gate keeps its
+host key in `spex-hostkey`, and `portitor deploy` refuses a pin that volume does not hold.
+The `spex-repos` mirror volume is reused.
 
 ---
 
-## 8. Lifecycle
+## 6. Run
 
-`status`/`down` need only `--instance` (no slug/pat/project/stdin); `restart`
-takes the same inputs as `up`, roles on stdin exactly as in step 6. `down` keeps
-the `$INSTANCE-repos` mirror volume, so a later `up` is instant.
+Workflows run from the project dir: faber reads `orchestrator.yaml` there and keeps its run
+state in `./.faber`.
 
 ```fish
-faber-stack status --instance $INSTANCE
-faber-stack down   --instance $INSTANCE
-role-keys --json \
-    | faber-stack restart --instance $INSTANCE --slug $SLUG --pat $PAT --project $PROJECT \
-        --allow proxy.golang.org --allow sum.golang.org \
-        --commit-email dvbozhko@gmail.com
+cd ~/.config/faber/spexmachina
+faber run bead --param bead=<bead-id>   # pick one with `br ready` in a spexmachina checkout
+faber run epic --param epic=<epic-id>
 ```
+
+An epic is a pull-loop of the bead chain: each cycle's box picks the next ready epic bead,
+lands it, and the loop ends on the first cycle that finds nothing ready or finds a blocking
+drift report on main (`halt_reason: blocking_drift`; triage with /drift-workflow, then
+rerun). A failed cycle stops the epic after the beads already landed; run
+`portitor-branch clear` (alias `pbr`) to drop its stale mirror branch, then
+`faber resume <run-id>` (`faber runs` lists them).
 
 ---
 
-## What each step unlocks
+## 7. Lifecycle
 
-```text
-1–2  release binaries + box image         → the FULL toolset, portitor client included
-3–5  role keys + registry + scoped PAT   → the inputs faber-stack consumes
-6    faber-stack up                      → gate + egress + net + mirror + host-key, one command
-7    faber run                           → full Gate B (implement → review loop → merge)
+```fish
+faber-stack status spexmachina           # containers, images (in use / unused), volumes, pin
+faber-stack down spexmachina             # remove the gate, egress and network; volumes and
+                                         # pin stay. Refused while boxes are on the network
+faber-stack down spexmachina --volumes   # also the volumes and pin — refused while a mirror
+                                         # branch holds commits GitHub does not have
+faber-stack prune spexmachina            # remove this instance's unused images
 ```

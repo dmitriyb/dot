@@ -1,4 +1,4 @@
-# agent-common.sh — sourced by docker-claude, cred-store, faber's get-token and faber-stack;
+# agent-common.sh — sourced by docker-claude, cred-store, faber's get-token and secret-get;
 # never executed. Single source of truth for the host.conf reader and the secret-backend reads.
 
 # Depth-robust: launchers can live anywhere under the repo, no hardcoded `cd ../../..`.

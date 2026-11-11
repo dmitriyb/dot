@@ -1,8 +1,7 @@
 # base — the shared faber component library
 
-One copy of the pieces every project in this tree runs. `spexmachina`,
-`faber-stack-service` and both `-li` variants pull these in with
-`include: [../base/images.yaml, ../base/skills.yaml, ../base/hooks.yaml]`.
+One copy of the pieces every project in this tree runs. `spexmachina` pulls them in
+with `include: [../base/images.yaml, ../base/skills.yaml, ../base/hooks.yaml]`.
 
 Editing anything here edits every project. That is the point: these files
 diverged once — `spexmachina` grew bead-id spec resolution and removed-node
@@ -28,14 +27,13 @@ faber has no way to parameterise:
   gate container this instance talks to. `run.env` is a plain string map; the
   only interpolation faber has (`${params...}`, `${steps...}`) is confined to a
   workflow's `with:` bindings. So the value cannot come from the substrate today.
-- **`workflows.yaml`** — its `repo` param default names the project's repo, and
-  `faber-epic` relies on that default (it passes only `--param epic=`;
-  `faber-e2e` does pass `--param repo=`). A shared default would point one
-  project at another's repository.
+- **`workflows.yaml`** — its `repo` param default names the project's repo, so
+  `faber run epic --param epic=<id>` needs no `--param repo`. A shared default
+  would point one project at another's repository.
 
 Both are one-line facts wearing a whole file. The fixes are known: a network
 alias so `PORTITOR_HOST` is a constant (or a substrate-level `env:` in faber),
-and `faber-epic` passing `--param repo` from `stack.json`'s `slug`.
+and a workflow `repo` taken from the substrate.
 
 ## Assembly rules worth knowing before editing
 

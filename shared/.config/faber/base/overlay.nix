@@ -6,7 +6,7 @@
 # Provides the three tools NOT in nixpkgs — proven via `faber validate`:
 #   claude-code, br, spex   (git/openssh/go/gopls/coreutils/bash resolve natively).
 #
-# All three hashes below are REAL (spex is the v0.1.0 signed release, both arch
+# All three hashes below are REAL (spex is the v0.2.0-rc.1 signed release, both arch
 # hashes off its manifest.json; claude-code round-trips a smoke; br is the v0.2.16
 # glibc release). Every asset carries verified arm64 and x86_64 hashes, so the box
 # builds on either architecture.

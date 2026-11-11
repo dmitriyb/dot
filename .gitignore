@@ -23,7 +23,7 @@
 __pycache__/
 *.pyc
 
-# nix-build default output symlinks (gate-image.nix / egress-image.nix)
+# nix-build default output symlinks (egress-image.nix, goose-image.nix)
 result
 result-*
 

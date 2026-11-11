@@ -1,8 +1,8 @@
 # Scratch/test image: Block's goose CLI against an OpenAI-compatible server on
 # the container host (LM Studio). NOT the faber box image — this is the phase-A
 # harness check for local-model agents; the faber-native variant lives in the
-# goose-local faber project config. Same nixpkgs pin as the spex-box / gate /
-# egress images, read from the shared manifest.
+# retired goose-local faber project (shared/.config/faber/old/). Same nixpkgs pin as
+# the spex-box and egress images, read from the shared manifest.
 #
 #   nix-build goose-image.nix && docker load -i result   # -> goose-local:nix
 
@@ -69,7 +69,7 @@ pkgs.dockerTools.buildLayeredImage {
     chmod 1777 tmp
 
     # OpenSSL and Go clients look for ca-certificates.crt; cacert installs
-    # ca-bundle.crt. Relative link, resolved at runtime (gate-image precedent).
+    # ca-bundle.crt. Relative link, resolved at runtime.
     mkdir -p etc/ssl/certs
     ln -s ca-bundle.crt etc/ssl/certs/ca-certificates.crt
   '';

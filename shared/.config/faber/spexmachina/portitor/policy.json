@@ -170,5 +170,7 @@
   },
   "identity_only_roles": [
     "merger"
-  ]
+  ],
+  "default_branch": "main",
+  "require_up_to_date_with_default": true
 }

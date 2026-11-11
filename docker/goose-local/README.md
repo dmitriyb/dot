@@ -4,7 +4,7 @@ Phase-A test harness: Block's **goose** CLI in a Nix-built container, talking to
 an OpenAI-compatible inference server on the container host (LM Studio serving
 Qwen3.8-27B). Proves the agent ↔ local-endpoint ↔ tool-calling loop with no
 faber involvement. The faber-native variant (invoke profile, `faber build/run`)
-is separate — see the goose-local faber project config.
+is separate — see the retired goose-local faber project in `shared/.config/faber/old/`.
 
 Not production: runs on the default bridge network (host reachability), config
 mounted rw, dummy API key. The faber egress/portitor invariants do not apply
