@@ -1,5 +1,8 @@
 # Installed as ~/.ssh/rc; sshd runs it with /bin/sh at every login, before the shell.
 # One stable agent path for shells that outlive the session that created them.
-if [ -n "$SSH_AUTH_SOCK" ] && [ -S "$SSH_AUTH_SOCK" ]; then
-	ln -sf "$SSH_AUTH_SOCK" "$HOME/.ssh/agent.sock"
+# -S follows symlinks, so a session that already inherited the stable path would
+# otherwise link it to itself and every later access fails with ELOOP.
+link="$HOME/.ssh/agent.sock"
+if [ -n "$SSH_AUTH_SOCK" ] && [ "$SSH_AUTH_SOCK" != "$link" ] && [ -S "$SSH_AUTH_SOCK" ]; then
+        ln -sfn "$SSH_AUTH_SOCK" "$link"
 fi
