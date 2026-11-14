@@ -1,74 +1,83 @@
 #!/usr/bin/env bash
-# ssh-load-keys — load resident FIDO2 keys from the YubiKey into the running
-# ssh-agent, EXCLUDING any sign-only / no-touch key listed in ~/.ssh/signing-key-hashes.
+# ssh-load-keys — load the named resident FIDO2 keys from the YubiKey into the
+# running ssh-agent, and nothing else.
 #
-# A no-touch key must never live in the main (forwarded) agent: it would let
-# anything inside a forwarded container sign with no touch. Those keys are
-# loaded only by faber, one per step, into that step's ephemeral agent.
-#
-# Resident keys are downloaded with `ssh-keygen -K` (PIN + one touch), loaded
-# selectively, then the handle files are discarded — nothing is left on disk.
+# An allowlist, not a denylist: the main agent is forwarded into containers, so a
+# key that is merely forgotten must stay out of it rather than slip in.
 set -euo pipefail
 
-if [[ $# -gt 0 ]]; then
-	case "$1" in
-		-h|--help)
-			cat >&2 <<'EOF2'
-Usage: ssh-load-keys        (no arguments)
+usage() {
+	cat >&2 <<'EOF2'
+Usage: ssh-load-keys <application> ...   load these (application ssh:<name>)
+       ssh-load-keys                     list what the YubiKey holds, pick by index
 
-Loads the YubiKey's resident FIDO2 keys into the running ssh-agent, EXCLUDING
-any sign-only / no-touch key listed in ~/.ssh/signing-key-hashes (those load
-only into faber's per-step ephemeral agents). Needs the YubiKey
-plugged in; asks PIN + one touch; downloaded handle files are discarded.
+Downloads the YubiKey's resident keys (PIN + one touch), adds only the named
+ones to the running ssh-agent, checks the agent holds them, and deletes the
+downloaded handle files.
 EOF2
-			exit 0 ;;
-		*) echo "ssh-load-keys: takes no arguments (got: $1); see --help" >&2; exit 2 ;;
+	exit "${1:-0}"
+}
+for a in "$@"; do
+	case "$a" in
+		-h | --help) usage 0 ;;
+		-*) echo "ssh-load-keys: unknown option: $a" >&2; usage 2 ;;
 	esac
-fi
+done
+[[ $# -gt 0 || -t 0 ]] || { echo "ssh-load-keys: name the keys to load, or run it on a terminal to pick them" >&2; usage 2; }
+[[ -S "${SSH_AUTH_SOCK:-}" ]] || { echo "ssh-load-keys: no ssh-agent (SSH_AUTH_SOCK unset or not a socket)" >&2; exit 1; }
 
-SIGNING_HASH_FILE="$HOME/.ssh/signing-key-hashes"
+tmp="$(mktemp -d)"
+trap 'rm -rf "$tmp"' EXIT
 
-if [[ ! -S "${SSH_AUTH_SOCK:-}" ]]; then
-    echo "No ssh-agent found (SSH_AUTH_SOCK is unset or invalid)." >&2
-    exit 1
-fi
-
-_sha256() {
-    if command -v sha256sum >/dev/null 2>&1; then
-        sha256sum | awk '{print $1}'
-    else
-        shasum -a 256 | awk '{print $1}'
-    fi
-}
-
-# True if the given key handle's application suffix is listed in SIGNING_HASH_FILE.
-_is_signing_key() {
-    local suffix h
-    suffix="${1##*_sk_rk_}"
-    h="$(printf '%s' "$suffix" | _sha256)"
-    grep -vE '^[[:space:]]*(#|$)' "$SIGNING_HASH_FILE" 2>/dev/null | grep -qix "$h"
-}
-
-dir="$(mktemp -d)"
-trap 'rm -rf "$dir"' EXIT
-
-# Downloads every resident credential as id_<type>_sk_rk_<application> handle files.
-# -N "" skips the passphrase prompt; the files are deleted moments later anyway.
-( cd "$dir" && ssh-keygen -K -N "" >/dev/null )
+echo "ssh-load-keys: downloading resident keys (PIN + one touch)…" >&2
+(cd "$tmp" && ssh-keygen -K -N "" >/dev/null)
 
 shopt -s nullglob
-loaded=0
-for key in "$dir"/id_*_sk_rk_*; do
-    [[ "$key" == *.pub ]] && continue          # private handle files only
-    _is_signing_key "$key" && continue         # keep sign-only keys out of the main agent
-    if ssh-add "$key" >/dev/null 2>&1; then
-        loaded=$((loaded + 1))
-    fi
+declare -a FILE APP FP
+for f in "$tmp"/id_*_sk_rk_*; do
+	[[ "$f" == *.pub ]] && continue
+	FILE+=("$f")
+	APP+=("${f##*_sk_rk_}")
+	FP+=("$(ssh-keygen -lf "$f.pub" | awk '{print $2}')")
 done
+[[ ${#FILE[@]} -gt 0 ]] || { echo "ssh-load-keys: the YubiKey holds no resident keys" >&2; exit 1; }
+listing() { for i in "${!FILE[@]}"; do printf '  %d  %-28s %s\n' "$((i + 1))" "${APP[$i]}" "${FP[$i]}" >&2; done; }
 
-if [[ "$loaded" -eq 0 ]]; then
-    echo "Warning: no keys were loaded." >&2
+chosen=()
+if [[ $# -gt 0 ]]; then
+	for name in "$@"; do
+		hits=()
+		for i in "${!APP[@]}"; do [[ "${APP[$i]}" == "$name" ]] && hits+=("$i"); done
+		if [[ ${#hits[@]} -ne 1 ]]; then
+			echo "ssh-load-keys: ${#hits[@]} resident keys match '$name' (need exactly 1); nothing loaded. The YubiKey holds:" >&2
+			listing; exit 1
+		fi
+		chosen+=("${hits[0]}")
+	done
+else
+	echo "ssh-load-keys: resident keys on the YubiKey:" >&2
+	listing
+	echo "Indices to load, space-separated; empty line to quit:" >&2
+	read -r line || line=""
+	[[ -n "${line// /}" ]] || { echo "ssh-load-keys: nothing chosen" >&2; exit 0; }
+	for n in $line; do
+		[[ "$n" =~ ^[0-9]+$ && "$n" -ge 1 && "$n" -le ${#FILE[@]} ]] || { echo "ssh-load-keys: '$n' is not an index from the list; nothing loaded" >&2; exit 2; }
+		chosen+=("$((n - 1))")
+	done
 fi
 
-echo "Loaded keys (sign-only keys excluded):"
-ssh-add -l
+for i in "${chosen[@]}"; do
+	ssh-add "${FILE[$i]}" || { echo "ssh-load-keys: ssh-add failed for ${APP[$i]}" >&2; exit 1; }
+done
+
+agent="$(ssh-add -l 2>/dev/null || true)"
+missing=0
+for i in "${chosen[@]}"; do
+	if grep -qF " ${FP[$i]} " <<<"$agent"; then
+		echo "ssh-load-keys: ${APP[$i]} loaded (${FP[$i]})" >&2
+	else
+		echo "ssh-load-keys: ${APP[$i]} (${FP[$i]}) is NOT in the agent after ssh-add" >&2
+		missing=1
+	fi
+done
+exit "$missing"
