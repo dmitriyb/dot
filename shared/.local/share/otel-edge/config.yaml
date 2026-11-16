@@ -20,7 +20,7 @@ processors:
   batch: {}
 
 exporters:
-  otlp:
+  otlp_grpc:
     endpoint: ${env:OTEL_EDGE_UPSTREAM}
     tls:
       insecure: true   # transport security = the tunnel / Pangolin, not TLS here
@@ -37,12 +37,12 @@ service:
     metrics:
       receivers: [otlp]
       processors: [batch]
-      exporters: [otlp]
+      exporters: [otlp_grpc]
     logs:
       receivers: [otlp]
       processors: [batch]
-      exporters: [otlp]
+      exporters: [otlp_grpc]
     traces:
       receivers: [otlp]
       processors: [batch]
-      exporters: [otlp]
+      exporters: [otlp_grpc]

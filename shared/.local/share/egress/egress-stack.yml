@@ -40,7 +40,7 @@ services:
               - {key: account, value: personal, action: upsert}
           batch: {}
         exporters:
-          otlp:
+          otlp_grpc:
             endpoint: host.docker.internal:4317
             tls:
               insecure: true
@@ -49,7 +49,7 @@ services:
             metrics:
               receivers: [otlp]
               processors: [resource, batch]
-              exporters: [otlp]
+              exporters: [otlp_grpc]
     extra_hosts:
       - host.docker.internal:host-gateway   # the host's collector: the server's, or otel-edge
     networks:
