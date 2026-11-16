@@ -13,7 +13,7 @@ data-exfiltration and any REST/libgit2 bypass to arbitrary hosts.
 |------|------|
 | `egress-image.nix` | builds `egress-proxy` via Nix `dockerTools` (glibc) — tinyproxy; pins nixpkgs from the shared `versions.json`. `nix-build egress-image.nix && docker load -i result` (faber-stack does this for you) |
 | `tinyproxy.conf` | proxy config: `CONNECT` to 443 only, private client ranges, `Filter "/etc/tinyproxy/filter"` with `FilterDefaultDeny Yes` + `FilterExtended On` + `FilterCaseSensitive Off` |
-| `egress-stack.yml` | the compose file `faber-stack` runs per instance: the `${INSTANCE}-net` internal network and the `${INSTANCE}-egress` container |
+| `egress-stack.yml` | the compose file `faber-stack` runs per instance: the `${INSTANCE}-net` internal network, the `${INSTANCE}-egress` container, and the `${INSTANCE}-otel` telemetry relay (boxes push OTLP metrics to it; it stamps `surface`, `faber.project` and `account`, and forwards to `host.docker.internal:4317`) |
 | `filter` | the **baked default** allow-list (`api.anthropic.com` only) |
 
 ## Per-instance egress seam

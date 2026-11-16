@@ -53,9 +53,10 @@
     "track": "pinned",
     "version": "0.158.0",
     "source": "docker.io/otel/opentelemetry-collector-contrib",
-    "note": "Edge collector image (otel-edge) AND the infra repo server collector run this version — the claude-usage plan verified its metric translation. Bump both together.",
+    "note": "Edge collector image (otel-edge), the faber telemetry relay (faber-stack) AND the infra repo server collector run this version — the claude-usage plan verified its metric translation. Bump them together.",
     "consumers": [
-      "otel-edge"
+      "otel-edge",
+      "faber-stack"
     ]
   }
 }

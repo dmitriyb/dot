@@ -1,17 +1,57 @@
-# egress-stack.yml — one per faber instance: the instance's internal network and
-# its allow-listing egress proxy. faber-stack exports INSTANCE and EGRESS_IMAGE and
-# runs `docker compose -p ${INSTANCE} -f egress-stack.yml up -d --remove-orphans`;
+# egress-stack.yml — one per faber instance: the instance's internal network, its
+# allow-listing egress proxy and its telemetry relay. faber-stack exports INSTANCE,
+# EGRESS_IMAGE, OTEL_IMAGE and FABER_PROJECT and runs
+# `docker compose -p ${INSTANCE} -f egress-stack.yml up -d --remove-orphans`;
 # the gate on the same network is portitor deploy's, not this file's.
 #
-# The egress sits on the internal ${INSTANCE}-net (box-facing) and the default
-# bridge (internet). Boxes join ${INSTANCE}-net only, so their sole outbound paths
-# are the gate (git over SSH) and this proxy (allow-listed HTTPS).
+# The egress and the relay sit on the internal ${INSTANCE}-net (box-facing) and the
+# default bridge (outside). Boxes join ${INSTANCE}-net only, so their sole outbound
+# paths are the gate (git over SSH), this proxy (allow-listed HTTPS) and the relay
+# (OTLP metrics, forwarded to the host's collector).
 
 services:
   egress:
     image: ${EGRESS_IMAGE:-egress-proxy}   # egress-proxy + this instance's allow-list, built by faber-stack
     container_name: ${INSTANCE}-egress
     restart: unless-stopped
+    networks:
+      default: {}
+      instance: {}
+
+  # Boxes cannot leave the internal network, so they push OTLP here; upserts stamp
+  # who the data is from, so a box cannot override these attributes.
+  otel:
+    image: ${OTEL_IMAGE:-unset}            # pinned in versions.json, exported by faber-stack
+    container_name: ${INSTANCE}-otel
+    restart: unless-stopped
+    command: ["--config=env:OTEL_RELAY_CONFIG"]
+    environment:
+      OTEL_RELAY_CONFIG: |
+        receivers:
+          otlp:
+            protocols:
+              grpc:
+                endpoint: 0.0.0.0:4317
+        processors:
+          resource:
+            attributes:
+              - {key: surface, value: faber, action: upsert}
+              - {key: faber.project, value: "${FABER_PROJECT:-unset}", action: upsert}
+              - {key: account, value: personal, action: upsert}
+          batch: {}
+        exporters:
+          otlp:
+            endpoint: host.docker.internal:4317
+            tls:
+              insecure: true
+        service:
+          pipelines:
+            metrics:
+              receivers: [otlp]
+              processors: [resource, batch]
+              exporters: [otlp]
+    extra_hosts:
+      - host.docker.internal:host-gateway   # the host's collector: the server's, or otel-edge
     networks:
       default: {}
       instance: {}

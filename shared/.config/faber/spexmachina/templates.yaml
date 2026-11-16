@@ -15,7 +15,14 @@ templates:
     identity: implementer
     run:
       resources: {memory: 8g, cpus: 4}
-      env: {FABER_AGENT_CLI: claude, PORTITOR_HOST: portitor-spex}  # PORTITOR_HOST: the gate container the pr/portitor client targets
+      # PORTITOR_HOST: the gate container the pr/portitor client targets. OTEL_*:
+      # telemetry to this instance's relay; every template merges this map.
+      env: &env {FABER_AGENT_CLI: claude, PORTITOR_HOST: portitor-spex,
+                 CLAUDE_CODE_ENABLE_TELEMETRY: "1", OTEL_METRICS_EXPORTER: otlp,
+                 OTEL_EXPORTER_OTLP_PROTOCOL: grpc, OTEL_EXPORTER_OTLP_ENDPOINT: "http://spex-otel:4317",
+                 OTEL_EXPORTER_OTLP_METRICS_TEMPORALITY_PREFERENCE: cumulative,
+                 OTEL_METRICS_INCLUDE_SESSION_ID: "true", OTEL_METRICS_INCLUDE_ACCOUNT_UUID: "false",
+                 OTEL_METRICS_INCLUDE_VERSION: "false", OTEL_RESOURCE_ATTRIBUTES: faber.role=implement}
     skill: implement
     invoke:   # inline over the built-in claude profile: session capture only
       session_dir: .claude/projects
@@ -47,7 +54,7 @@ templates:
     identity: implementer
     run:
       resources: {memory: 8g, cpus: 4}
-      env: {FABER_AGENT_CLI: claude, PORTITOR_HOST: portitor-spex}  # PORTITOR_HOST: the gate container the pr/portitor client targets
+      env: {<<: *env, OTEL_RESOURCE_ATTRIBUTES: faber.role=implement-next}
     skill: implement
     invoke:   # inline over the built-in claude profile: session capture only
       session_dir: .claude/projects
@@ -76,7 +83,7 @@ templates:
     image: spex-box
     identity: reviewer             # the ONLY role permitted to close beads (portitor role rule)
     run:
-      env: {FABER_AGENT_CLI: claude, PORTITOR_HOST: portitor-spex}  # PORTITOR_HOST: the gate container the pr/portitor client targets
+      env: {<<: *env, OTEL_RESOURCE_ATTRIBUTES: faber.role=review}
     skill: review
     invoke:   # inline over the built-in claude profile: session capture only
       session_dir: .claude/projects
@@ -98,7 +105,7 @@ templates:
     image: spex-box
     identity: implementer          # fixes are authored by the implementer identity
     run:
-      env: {FABER_AGENT_CLI: claude, PORTITOR_HOST: portitor-spex}  # PORTITOR_HOST: the gate container the pr/portitor client targets
+      env: {<<: *env, OTEL_RESOURCE_ATTRIBUTES: faber.role=fix}
     skill: fix
     invoke:   # inline over the built-in claude profile: session capture only
       session_dir: .claude/projects
@@ -126,7 +133,6 @@ templates:
     image: spex-box                # shares the toolset; only needs git/openssh + the portitor client
     identity: merger               # commit-less landing identity (portitor action policy gates merge)
     run:
-      # PORTITOR_HOST: the gate container the pr/portitor client targets.
       # CHECKS_*: the prelude's CLIENT-side policy — how long to wait overall, how
       # often to poll, how long an empty rollup is read as "the run has not
       # registered yet" rather than "this PR has no CI", how long a non-CLEAN
@@ -135,7 +141,7 @@ templates:
       # blip decides the step. The per-check stuck budgets and the re-run
       # attempt cap are GATE-side (the per-repo `checks` config), so they stay
       # authoritative.
-      env: {FABER_AGENT_CLI: claude, PORTITOR_HOST: portitor-spex,
+      env: {<<: *env, OTEL_RESOURCE_ATTRIBUTES: faber.role=merge,
             CHECKS_CEILING_SECONDS: "720", CHECKS_POLL_SECONDS: "10",
             CHECKS_APPEAR_SECONDS: "60", CHECKS_SETTLE_SECONDS: "90",
             CHECKS_API_TRIES: "3", CHECKS_API_RETRY_SECONDS: "5"}

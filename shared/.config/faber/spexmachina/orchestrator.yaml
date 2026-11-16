@@ -20,7 +20,7 @@ version: 1
 network:
   name: spex-net                         # this repo's own faber internal network
   proxy: http://spex-egress:8888         # this repo's allow-list egress (stack.json's allow)
-  no_proxy: [portitor-spex, localhost, 127.0.0.1]   # token rides in the box (file mode); proxy carries no secret
+  no_proxy: [portitor-spex, spex-otel, localhost, 127.0.0.1]   # gate + telemetry relay; token rides in the box (file mode), proxy carries no secret
 
 remote:                                  # portitor step: the box's ONLY git remote (per-repo instance)
   url: ssh://git@portitor-spex/srv/git   # security module splices <repo>.git per step

@@ -1,6 +1,7 @@
 #!/usr/bin/env bash
 # faber-stack — the environment one faber project's boxes run against: its
-# internal network, its allow-listing egress proxy and its portitor gate.
+# internal network, its allow-listing egress proxy, its telemetry relay and its
+# portitor gate.
 #
 #   faber-stack up      <project>             converge: images, config, egress, gate
 #   faber-stack down    <project> [--volumes] remove the containers (and, with
@@ -28,7 +29,7 @@ die() { echo "faber-stack: $1" >&2; exit "${2:-1}"; }
 say() { echo "faber-stack: $*" >&2; }
 
 usage() {
-	sed -n '4,9p' "${BASH_SOURCE[0]}" | sed 's/^# \{0,1\}//' >&2
+	sed -n '5,10p' "${BASH_SOURCE[0]}" | sed 's/^# \{0,1\}//' >&2
 	exit "${1:-0}"
 }
 
@@ -100,6 +101,7 @@ done
 # ---- every object name derives from the instance ---------------------------
 NET="${INSTANCE}-net"
 EGRESS_CT="${INSTANCE}-egress"
+OTEL_CT="${INSTANCE}-otel"
 GATE="portitor-${INSTANCE}"
 REPOS_VOL="${INSTANCE}-repos"
 HOSTKEY_VOL="${INSTANCE}-hostkey"
@@ -116,10 +118,15 @@ EGRESS_STACK="$EGRESS_DIR/egress-stack.yml"
 	|| die "egress assets not found under $EGRESS_DIR — stow the dot repo" 1
 EGRESS_PORT="$(awk '$1 == "Port" { print $2; exit }' "$EGRESS_DIR/tinyproxy.conf")"
 [[ "$EGRESS_PORT" =~ ^[0-9]+$ ]] || die "no Port in $EGRESS_DIR/tinyproxy.conf" 1
+VERSIONS="$DATA_HOME/versions.json"
+OTEL_IMAGE="$(jq -er '."otel-collector-contrib" | "\(.source):\(.version)"' "$VERSIONS" 2>/dev/null)" \
+	|| die "no otel-collector-contrib pin in $VERSIONS — stow the dot repo" 1
+FABER_PROJECT="$(basename -- "$PROJECT")"
+[[ "$FABER_PROJECT" =~ ^[A-Za-z0-9._-]+$ ]] || die "project dir name '$FABER_PROJECT' is not a plain name" 2
 
 docker info >/dev/null 2>&1 || die "docker is not running — start docker"
 
-export INSTANCE EGRESS_IMAGE="${EGRESS_IMAGE:-unset}"
+export INSTANCE EGRESS_IMAGE="${EGRESS_IMAGE:-unset}" OTEL_IMAGE FABER_PROJECT
 compose() { docker compose -p "$INSTANCE" -f "$EGRESS_STACK" "$@"; }
 gate_ids() { docker ps -aq --filter "label=portitor.deploy=$GATE"; }
 # Containers on the instance network other than the stack's own: running faber
@@ -127,7 +134,7 @@ gate_ids() { docker ps -aq --filter "label=portitor.deploy=$GATE"; }
 net_others() {
 	docker network inspect "$NET" >/dev/null 2>&1 || return 0
 	docker network inspect -f '{{range .Containers}}{{.Name}}{{"\n"}}{{end}}' "$NET" \
-		| grep -vx -e "$GATE" -e "$EGRESS_CT" -e '' || true
+		| grep -vx -e "$GATE" -e "$EGRESS_CT" -e "$OTEL_CT" -e '' || true
 }
 
 owned_images() {
@@ -213,8 +220,9 @@ $missing"
 	compose down --remove-orphans || die "docker compose down of the egress failed"
 	[[ -z "$(gate_ids)" ]] || die "gate containers remain: $(gate_ids | tr '\n' ' ')"
 	if docker inspect "$EGRESS_CT" >/dev/null 2>&1; then die "$EGRESS_CT remains after compose down"; fi
+	if docker inspect "$OTEL_CT" >/dev/null 2>&1; then die "$OTEL_CT remains after compose down"; fi
 	if docker network inspect "$NET" >/dev/null 2>&1; then die "$NET remains after compose down"; fi
-	say "removed $GATE, $EGRESS_CT and $NET"
+	say "removed $GATE, $EGRESS_CT, $OTEL_CT and $NET"
 	if $WITH_VOLUMES; then
 		for v in "$REPOS_VOL" "$HOSTKEY_VOL"; do
 			docker volume inspect "$v" >/dev/null 2>&1 || continue
@@ -277,6 +285,17 @@ if [[ -f "$PROJECT/templates.yaml" ]]; then
 		expect "templates.yaml PORTITOR_HOST" "$(unquote "$host")" "$GATE"
 	done < <(sed -e 's/^[[:space:]]*#.*//' -e 's/[[:space:]]#.*//' "$PROJECT/templates.yaml" \
 		| grep -o 'PORTITOR_HOST:[ ]*[^,} ]*' | sed 's/^PORTITOR_HOST:[ ]*//')
+	otel_wired=false
+	while IFS= read -r ep; do
+		expect "templates.yaml OTEL_EXPORTER_OTLP_ENDPOINT" "$(unquote "$ep")" "http://$OTEL_CT:4317"
+		otel_wired=true
+	done < <(sed -e 's/^[[:space:]]*#.*//' -e 's/[[:space:]]#.*//' "$PROJECT/templates.yaml" \
+		| grep -o 'OTEL_EXPORTER_OTLP_ENDPOINT:[ ]*[^,} ]*' | sed 's/^OTEL_EXPORTER_OTLP_ENDPOINT:[ ]*//')
+	# Without the exemption the box's exporter may route through the egress, which refuses it.
+	if $otel_wired; then
+		tr -d "[] \"'" <<<"$no_proxy" | tr ',' '\n' | grep -qx "$OTEL_CT" \
+			|| die "$ORCH: network.no_proxy lacks $OTEL_CT, which templates.yaml sends telemetry to" 2
+	fi
 fi
 say "faber validate ($ORCH)"
 (cd "$PROJECT" && faber validate --config "$ORCH") || die "faber validate failed"
@@ -402,6 +421,7 @@ docker run --rm --network none --entrypoint cat "$EGRESS_IMAGE" /etc/tinyproxy/f
 export EGRESS_IMAGE
 compose up -d --remove-orphans || die "docker compose up of the egress failed"
 [[ "$(docker inspect -f '{{.State.Running}}' "$EGRESS_CT" 2>/dev/null)" == true ]] || die "$EGRESS_CT is not running after compose up"
+[[ "$(docker inspect -f '{{.State.Running}}' "$OTEL_CT" 2>/dev/null)" == true ]] || die "$OTEL_CT is not running after compose up"
 
 # ---- 5. the gate ---------------------------------------------------------------
 pubs="$(for r in "${ROLES[@]}"; do printf '%s\n' "${ROLE_PUB[$r]}"; done | jq -R . | jq -sc .)"
@@ -421,6 +441,7 @@ cat >&2 <<EOF
 
 faber-stack: instance '$INSTANCE' is up.
   network   $NET (egress $EGRESS_CT:$EGRESS_PORT, image $EGRESS_IMAGE)
+  telemetry $OTEL_CT:4317 -> host.docker.internal:4317 (project $FABER_PROJECT)
   gate      $GATE (config $GATE_CFG, mirror volume $REPOS_VOL, host key pinned at $PIN)
   egress    $(grep -v '^#' "$EGRESS_FILTER" | tr '\n' ' ')
 Run a workflow from $PROJECT with: faber run <workflow> --param ...
