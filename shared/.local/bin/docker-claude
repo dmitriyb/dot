@@ -305,8 +305,8 @@ collect_mode_inputs() {
       -v claude-personal-repos:/workspace
       -v claude-fish-data-personal:/home/dev/.local/share/fish
       -v claude-tmux-data-personal:/home/dev/.local/share/tmux)
-    # Aggregates only: no session/account labels; the per-run instance id stops concurrent
-    # containers' counters colliding. Opt out: DOCKER_CLAUDE_NO_TELEMETRY=1. See plans/.
+    # The session id keeps concurrent sessions' counters distinct; no account labels.
+    # Opt out: DOCKER_CLAUDE_NO_TELEMETRY=1. See plans/.
     if [[ -z "${DOCKER_CLAUDE_NO_TELEMETRY:-}" ]]; then
       run_args+=(
         -e CLAUDE_CODE_ENABLE_TELEMETRY=1
@@ -314,8 +314,8 @@ collect_mode_inputs() {
         -e OTEL_EXPORTER_OTLP_PROTOCOL=grpc
         -e OTEL_EXPORTER_OTLP_ENDPOINT="${DOCKER_CLAUDE_OTEL_ENDPOINT:-http://host.docker.internal:4317}"
         -e OTEL_EXPORTER_OTLP_METRICS_TEMPORALITY_PREFERENCE=cumulative
-        -e OTEL_RESOURCE_ATTRIBUTES="account=personal,surface=dcp,service.instance.id=$(uuidgen | tr '[:upper:]' '[:lower:]')"
-        -e OTEL_METRICS_INCLUDE_SESSION_ID=false
+        -e OTEL_RESOURCE_ATTRIBUTES=account=personal,surface=dcp
+        -e OTEL_METRICS_INCLUDE_SESSION_ID=true
         -e OTEL_METRICS_INCLUDE_ACCOUNT_UUID=false
         -e OTEL_METRICS_INCLUDE_VERSION=false
       )
