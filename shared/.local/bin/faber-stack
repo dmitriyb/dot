@@ -406,7 +406,13 @@ BASE_TAG="egress-proxy:$(basename "$egress_out" | cut -d- -f1)"
 if ! docker image inspect "$BASE_TAG" >/dev/null 2>&1; then
 	loaded="$(docker load -i "$egress_out" | sed -n 's/^Loaded image: //p' | head -1)"
 	[[ -n "$loaded" ]] || die "docker load of $egress_out printed no image"
-	docker tag "$loaded" "$BASE_TAG"
+	docker tag "$loaded" "$BASE_TAG" && docker image inspect "$BASE_TAG" >/dev/null 2>&1 \
+		|| die "could not tag $loaded as $BASE_TAG"
+	# The store-hash tag is the only one this script uses; drop the build's own.
+	if [[ "$loaded" != "$BASE_TAG" ]]; then
+		docker image rm "$loaded" >/dev/null || die "could not untag $loaded"
+		if docker image inspect "$loaded" >/dev/null 2>&1; then die "$loaded is still tagged after docker image rm"; fi
+	fi
 fi
 filter_hash="$( { echo "$BASE_TAG"; cat "$EGRESS_FILTER"; } | sha256sum | cut -c1-16)"
 EGRESS_IMAGE="egress-proxy-$INSTANCE:$filter_hash"
