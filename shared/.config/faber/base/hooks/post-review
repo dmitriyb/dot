@@ -367,7 +367,12 @@ if [ "$verdict" = approve ]; then
       title="$(br show "$bead" --json 2>/dev/null | jq -r '.[0].title // ""')"
       br close "$bead" --reason "Reviewed and approved in PR#$pr. All review feedback addressed." >/dev/null \
         || die "br close $bead failed"
-      br epic close-eligible >/dev/null 2>&1 || true
+      # An epic closed over an untriaged drift report had to be reopened by hand.
+      if ls drifts/drift-*.json >/dev/null 2>&1; then
+        echo "post-review: drift report(s) in drifts/ are untriaged — not closing eligible epics; bead $bead still closes" >&2
+      else
+        br epic close-eligible >/dev/null 2>&1 || true
+      fi
       git add .beads/issues.jsonl
       if git diff --cached --quiet; then
         die "br close $bead changed nothing in .beads/issues.jsonl — the close cannot be signed or pushed"
