@@ -56,7 +56,7 @@ epic="${FABER_INPUT_EPIC:?FABER_INPUT_EPIC is required}"
 bundle="${FABER_BUNDLE_DIR:?FABER_BUNDLE_DIR is required}"
 
 # Blocking drift reports halt the epic before any bead is selected: the spec is
-# disputed, and the authoring loop (/drift-fix in the repo) must rule before
+# disputed, and the authoring loop (/drift in the repo) must rule before
 # more work builds on the disputed contract. Non-blocking reports never gate.
 blocking="$(grep -l '"blocking"[[:space:]]*:[[:space:]]*true' drifts/drift-*.json 2>/dev/null || true)"
 if [ -n "$blocking" ]; then
@@ -131,8 +131,29 @@ JOURNAL=".spex/history.jsonl"
 [ -f "$JOURNAL" ] || JOURNAL="spec/.history.jsonl"
 key="$bead"
 
-mapjson="$(spex map context "$key")" \
-  || die "spex map context $key failed for bead $bead — the box cannot implement without spec context"
+if ! mapjson="$(spex map context "$key")"; then
+  # /mint's riding-work task pairs with no spec node, so the resolver cannot know it; the title is the only marker /mint sets.
+  if [[ "$title" == *": work riding with the epic" ]] \
+     && br dep list "$bead" --json 2>/dev/null \
+        | jq -e --arg e "$epic" 'any(.[]?; (.depends_on_id // .depends_on)==$e and (((.type // ""))|test("parent")))' >/dev/null 2>&1; then
+    description="$(jq -r '.[0].description // ""' <<<"$json")"
+    [ -n "$description" ] || die "riding-work task $bead carries no description — nothing to implement"
+    {
+      echo "# Implement bead $bead (next ready in epic $epic)"
+      echo
+      echo "- title: $title"
+      echo
+      echo "## Work riding with the epic (no spec node)"
+      echo
+      echo "/mint created this task from the proposal's \`### Work riding with the epic\` section; no spec node declares it. The description below is your contract."
+      echo
+      printf '%s\n' "$description"
+    } > "$bundle/CONTEXT.md"
+    echo "next-bead-context: selected $bead (work riding with the epic; no spec node)"
+    exit 0
+  fi
+  die "spex map context $key failed for bead $bead — the box cannot implement without spec context"
+fi
 
 # The resolver, not the bead's label, says which kind of cycle this is: a bead
 # whose node left the spec resolves to {"removed": true, ...} — a biography, no
