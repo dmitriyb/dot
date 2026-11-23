@@ -27,14 +27,14 @@
   },
   "spex": {
     "track": "pinned",
-    "version": "0.2.0-rc.1",
+    "version": "0.4.0",
     "anchor": "sha256",
     "source": "github:dmitriyb/spexmachina",
     "asset_template": "https://github.com/dmitriyb/spexmachina/releases/download/v${version}/spex_${version}_linux_${arch}.tar.gz",
     "note": "The box overlay installs the prebuilt signed release (statically linked Go ELF, no autopatchelf); version + both sha256 come from the release manifest.json. Nothing reads this entry: shared/.config/faber/base/overlay.nix, the faber box overlay, hard-codes its own copy (faber stages an overlay alone, so it cannot read this file). The values here record that pin and are kept equal to it by hand.",
     "sha256": {
-      "linux_arm64": "a8f41c3bc68a9274c643b28ca91ba448f41cbedbf5f071ec8a4e90bd07804bc4",
-      "linux_amd64": "8dbf8189030a99098f0bb0153eff4a88ddf0b56c874392d8b59adba61b7d2e8c"
+      "linux_arm64": "380fa336e91e2326b57b818e680a2856d506586c0b6782c84d5b8cb8b841c387",
+      "linux_amd64": "19b87aef7c7eb6c6a5ea3332c5abeabd495780e4cb1d5f76192aad66c5448ec4"
     },
     "consumers": []
   },

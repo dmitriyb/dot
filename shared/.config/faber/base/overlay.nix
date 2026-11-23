@@ -6,7 +6,7 @@
 # Provides the three tools NOT in nixpkgs — proven via `faber validate`:
 #   claude-code, br, spex   (git/openssh/go/gopls/coreutils/bash resolve natively).
 #
-# All three hashes below are REAL (spex is the v0.2.0-rc.1 signed release, both arch
+# All three hashes below are REAL (spex is the v0.4.0 signed release, both arch
 # hashes off its manifest.json; claude-code round-trips a smoke; br is the v0.2.16
 # glibc release). Every asset carries verified arm64 and x86_64 hashes, so the box
 # builds on either architecture.
@@ -40,10 +40,10 @@ let
   # first release carrying the .spex/ state dir + ProjectResolver: older
   # binaries pre-flight on spec/.snapshot.json and refuse the migrated repo,
   # which broke the boxes' `spex map context` once PR#355 landed on main.
-  spexVersion = "0.2.0-rc.1";
+  spexVersion = "0.4.0";
   spexSha256 = {
-    "arm64" = "a8f41c3bc68a9274c643b28ca91ba448f41cbedbf5f071ec8a4e90bd07804bc4";
-    "amd64" = "8dbf8189030a99098f0bb0153eff4a88ddf0b56c874392d8b59adba61b7d2e8c";
+    "arm64" = "380fa336e91e2326b57b818e680a2856d506586c0b6782c84d5b8cb8b841c387";
+    "amd64" = "19b87aef7c7eb6c6a5ea3332c5abeabd495780e4cb1d5f76192aad66c5448ec4";
   };
 
   # --- br (beads_rust) pin -----------------------------------------------------
