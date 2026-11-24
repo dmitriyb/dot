@@ -8,5 +8,19 @@
       "Bash(git push --no-verify:*)",
       "Bash(git config core.hooksPath:*)"
     ]
+  },
+  "hooks": {
+    "PreToolUse": [
+      {
+        "matcher": "",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "/home/dev/.claude/budget/gate.py /home/dev/.claude/budget",
+            "timeout": 30
+          }
+        ]
+      }
+    ]
   }
 }

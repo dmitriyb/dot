@@ -11,5 +11,19 @@
       "Bash(git am:*)",
       "Bash(git config core.hooksPath:*)"
     ]
+  },
+  "hooks": {
+    "PreToolUse": [
+      {
+        "matcher": "",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "/home/dev/.claude/budget/gate.py /home/dev/.claude/budget",
+            "timeout": 30
+          }
+        ]
+      }
+    ]
   }
 }

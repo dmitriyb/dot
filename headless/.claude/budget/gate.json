@@ -1,0 +1,6 @@
+{
+  "protected_paths": [".claude/budget/", ".local/bin/budget"],
+  "protected_command": "budget",
+  "main_read": ["Read", "TaskStop", "AskUserQuestion", "ToolSearch", "ListAgents"],
+  "agent_end": ["SubagentHandback", "StructuredOutput"]
+}
