@@ -1,11 +1,11 @@
 #!/usr/bin/env python3
 """Tests of dcp's budget gate and budget command (headless/.claude/budget, headless/.local/bin/budget) on generated
-transcripts. usage: test_budget_gate.py [<gate.py>]; prints each mismatch, exit 1 on any."""
+transcripts. usage: test_budget_gate.py [<gate.py> [<budget>]]; prints each mismatch, exit 1 on any."""
 import json, os, shutil, subprocess, sys, tempfile
 DOT = os.path.abspath(os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "..", ".."))
 SRC = os.path.join(DOT, "headless", ".claude", "budget")
 GATE = os.path.abspath(sys.argv[1]) if len(sys.argv) > 1 else os.path.join(SRC, "gate.py")
-CMD = os.path.join(DOT, "headless", ".local", "bin", "budget")
+CMD = os.path.abspath(sys.argv[2]) if len(sys.argv) > 2 else os.path.join(DOT, "headless", ".local", "bin", "budget")
 SID = "00000000-0000-4000-8000-000000000001"
 INFLIGHT, LATE = "ainflight", "alate"
 T = lambda s: f"2026-01-01T00:00:{s:02d}.000Z"
@@ -47,6 +47,9 @@ def layout(budget):
 
 NONE, UNDER, CROSSED = layout(None), layout({"limit": 10**15}), layout({"limit": 140_000})
 DEDUP, EARLY, BROKEN = layout({"limit": 200_000}), layout({"limit": 200_000, "start": T(0)}), layout({"limit": "x"})
+# the main session's latest message (m1) holds a 100k context
+CTX_OVER, CTX_UNDER = layout({"limit": 10**15, "context_limit": 50_000}), layout({"limit": 10**15, "context_limit": 500_000})
+CTX_ONLY = layout({"limit": None, "context_limit": 50_000})
 ev = lambda tool, aid=None, inp=None: {"session_id": SID, "transcript_path": TP, "tool_name": tool, "agent_id": aid, "tool_input": inp or {}}
 bash = lambda c, aid=None: ev("Bash", aid, {"command": c})
 cases = [
@@ -85,6 +88,14 @@ cases = [
     ("no false refusal: budgeting in an echo", UNDER, bash("echo budgeting"), "allow"),
     ("gate error: main Agent refused", BROKEN, ev("Agent"), "deny"),
     ("gate error: main Bash allowed", BROKEN, bash("ls"), "allow"),
+    ("context over cap: main Workflow with wrapper", CTX_OVER, ev("Workflow", inp={"script": good}), "deny"),
+    ("context over cap: main Agent", CTX_OVER, ev("Agent"), "deny"),
+    ("context over cap: main Write of the next brief", CTX_OVER, ev("Write", inp={"file_path": "/workspace/x/brief.md"}), "allow"),
+    ("context over cap: main Bash", CTX_OVER, bash("ls"), "allow"),
+    ("context over cap: an agent's Agent", CTX_OVER, ev("Agent", INFLIGHT), "allow"),
+    ("context under cap: main Agent", CTX_UNDER, ev("Agent"), "allow"),
+    ("cap without a token limit: main Agent", CTX_ONLY, ev("Agent"), "deny"),
+    ("cap without a token limit: main Bash", CTX_ONLY, bash("ls"), "allow"),
 ]
 bad = 0
 for name, d, e, want in cases:
@@ -123,6 +134,18 @@ r = run(["lots"]); checks.append(("bad amount refused", r.returncode != 0 and lo
 r = run(["1M"], sid=None); checks.append(("no session id refused", r.returncode != 0 and "CLAUDE_CODE_SESSION_ID" in r.stderr))
 r = run([]); checks.append(("show reports spend", r.returncode == 0 and "of 500,000 tokens" in r.stdout))
 r = run(["off"]); checks.append(("off removes", r.returncode == 0 and not os.path.exists(bf)))
+r = run(["80M", "--context", "150k"]); c1 = load()
+checks.append(("set 80M with a 150k cap", r.returncode == 0 and c1.get("limit") == 80_000_000 and c1.get("context_limit") == 150_000))
+r = run(["+20M"]); checks.append(("raise keeps the cap", load().get("limit") == 100_000_000 and load().get("context_limit") == 150_000))
+r = run(["--context", "300k"]); c2 = load()
+checks.append(("cap alone changes only the cap", r.returncode == 0 and c2.get("context_limit") == 300_000 and c2.get("limit") == 100_000_000 and c2.get("start") == c1.get("start")))
+r = run([]); checks.append(("show reports the cap", r.returncode == 0 and "main context 100,000 of a 300,000 cap" in r.stdout))
+r = run(["--context", "off"]); checks.append(("cap off keeps the limit", load().get("context_limit") is None and load().get("limit") == 100_000_000))
+r = run(["off"]); r = run(["--context", "100k"]); c3 = load()
+checks.append(("cap with no budget: no token limit", r.returncode == 0 and c3.get("limit") is None and c3.get("context_limit") == 100_000))
+r = run(["+5M"]); checks.append(("raise with no token limit refused", r.returncode != 0 and load().get("limit") is None))
+r = run(["--context"]); checks.append(("cap without an amount refused", r.returncode != 0 and load().get("context_limit") == 100_000))
+r = run(["off"])
 for name, ok in checks:
     if not ok:
         bad += 1

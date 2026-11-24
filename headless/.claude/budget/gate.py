@@ -1,14 +1,16 @@
 #!/usr/bin/env python3
 """PreToolUse budget gate. usage: gate.py <budget-dir>  (the hook event on stdin)
 <budget-dir>/gate.json: the protected paths and command, the reads the main session keeps past the limit, the calls an
-agent may end with. <budget-dir>/budgets/<session>.json: {"session_id", "start", "limit"}, written only by the owner's
-`budget` command; absent: no limit. Refused at any spend: a call, other than Read, that names a protected path or runs
-the protected command; a Workflow call whose script lacks budget-wrapper.js verbatim or calls agent()/workflow()
-outside it. Past the crossing (the first message at which spend since start reaches the limit): every main-session
-call but the reads, and every call of an agent whose transcript starts at or after the crossing. A gate error refuses
-Agent and Workflow and allows the rest."""
+agent may end with. <budget-dir>/budgets/<session>.json: {"session_id", "start", "limit", "context_limit"}, written
+only by the owner's `budget` command; absent: no limit. Refused at any spend: a call, other than Read, that names a
+protected path or runs the protected command; a Workflow call whose script lacks budget-wrapper.js verbatim or calls
+agent()/workflow() outside it; with a context cap, the main session's Agent and Workflow calls once its last message
+is larger than the cap. Past the crossing (the first message at which spend since start reaches the limit): every
+main-session call but the reads, and every call of an agent whose transcript starts at or after the crossing. A gate
+error refuses Agent and Workflow and allows the rest."""
 import glob, json, os, re, sys
 KINDS = ("input_tokens", "output_tokens", "cache_read_input_tokens", "cache_creation_input_tokens")
+CONTEXT = ("input_tokens", "cache_read_input_tokens", "cache_creation_input_tokens")
 AGENT_MSG = ("this agent started after the limit was reached. Do not retry. End now: reply exactly BUDGET-REFUSED, "
              "or, if you must return structured output, return it with budget_refused set to true and every required field minimal.")
 
@@ -38,6 +40,21 @@ def spend(main, start, limit):
         if cross is None and limit is not None and cum >= limit:
             cross = ts
     return cum, cross, first
+
+
+def context(main):
+    """The main session's context: the input of its latest message, cached or not."""
+    last = ("", 0)
+    for line in open(main, encoding="utf-8", errors="replace"):
+        try:
+            d = json.loads(line)
+        except ValueError:
+            continue
+        m = d.get("message") if isinstance(d.get("message"), dict) else {}
+        u = m.get("usage")
+        if u and (d.get("timestamp") or "") >= last[0]:
+            last = (d.get("timestamp") or "", sum(u.get(k) or 0 for k in CONTEXT))
+    return last[1]
 
 
 def protected(tool, inp, cfg):
@@ -73,27 +90,32 @@ def decide(ev, b, cfg, wrapper):
     tool, aid, inp = ev.get("tool_name"), ev.get("agent_id"), ev.get("tool_input") or {}
     p = protected(tool, inp, cfg)
     if p:
-        return "deny", f"BUDGET: {p}.", None, None
+        return "deny", f"BUDGET: {p}."
     if b is None:
-        return "allow", "", None, None
-    cum, cross, first = spend(ev["transcript_path"], b["start"], b["limit"])
-    head = f"BUDGET: {cum} of {b['limit']} tokens spent"
+        return "allow", ""
+    if aid is None and tool in ("Agent", "Workflow") and b.get("context_limit"):
+        size = context(ev["transcript_path"])
+        if size > b["context_limit"]:
+            return "deny", (f"BUDGET: the main context is {size} tokens, over this session's cap of {b['context_limit']}; "
+                            "write the next brief and stop, so that a fresh session continues from it.")
+    cum, cross, first = spend(ev["transcript_path"], b["start"], b.get("limit"))
+    head = f"BUDGET: {cum} of {b.get('limit')} tokens spent"
     if tool == "Workflow":
         w = wrapper_refusal(inp, wrapper)
         if w:
-            return "deny", f"{head}; {w}.", cum, cross
+            return "deny", f"{head}; {w}."
     if not cross:
-        return "allow", "", cum, cross
+        return "allow", ""
     if aid is None:
         if tool not in cfg["main_read"]:
-            return "deny", f"{head}; past the limit the main session may only read; stop and wait for the owner.", cum, cross
-        return "allow", "", cum, cross
+            return "deny", f"{head}; past the limit the main session may only read; stop and wait for the owner."
+        return "allow", ""
     if tool in cfg["agent_end"]:
-        return "allow", "", cum, cross
+        return "allow", ""
     start = first.get(f"agent-{aid}.jsonl")
     if start is None or start >= cross:
-        return "deny", f"{head}; {AGENT_MSG}", cum, cross
-    return "allow", "", cum, cross
+        return "deny", f"{head}; {AGENT_MSG}"
+    return "allow", ""
 
 
 def main(argv):
@@ -101,12 +123,10 @@ def main(argv):
     ev = json.load(sys.stdin)
     tool, sid = ev.get("tool_name"), ev.get("session_id") or ""
     bpath = os.path.join(d, "budgets", f"{os.path.basename(sid)}.json")
-    b = None
     try:
         cfg = json.load(open(os.path.join(d, "gate.json")))
-        if os.path.exists(bpath):
-            b = json.load(open(bpath))
-        verdict, why, _, _ = decide(ev, b, cfg, open(os.path.join(d, "budget-wrapper.js"), encoding="utf-8").read().strip())
+        b = json.load(open(bpath)) if os.path.exists(bpath) else None
+        verdict, why = decide(ev, b, cfg, open(os.path.join(d, "budget-wrapper.js"), encoding="utf-8").read().strip())
     except Exception as e:
         verdict = "deny" if tool in ("Agent", "Workflow") else "allow"
         why = f"BUDGET GATE ERROR {type(e).__name__}: {e}; Agent and Workflow are refused until the owner fixes it."
