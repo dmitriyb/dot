@@ -55,6 +55,9 @@ live state do not.
   or taken from documents that summarize it.
 - Every fact in a reply is backed by a tool output from this session or marked
   unverified.
+- A proposal's premises are facts too: each premise about another repository,
+  an earlier experiment, or how something is built or run is read in this
+  session before the proposal is made, and the proposal names its source.
 - Never name anything verified or done unless you ran it in this session and
   can quote the output.
 - Prefer the deployed thing over its source, and running it over reading it.
